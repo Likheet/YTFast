@@ -25,6 +25,8 @@ pub struct WebConfig {
     pub user_session_id: Option<String>,
     /// The page's full client context, sent as the request `context`.
     pub innertube_context: Option<Value>,
+    /// Where the player code is (`/s/player/<id>/.../base.js`).
+    pub player_js_url: Option<String>,
 }
 
 impl WebConfig {
@@ -81,6 +83,13 @@ impl WebConfig {
             session_index,
             delegated_session_id: text("DELEGATED_SESSION_ID").or(sync_delegated),
             user_session_id: text("USER_SESSION_ID").or(sync_user),
+            player_js_url: text("PLAYER_JS_URL").or_else(|| {
+                // Also in the player's own settings on some pages.
+                map.get("WEB_PLAYER_CONTEXT_CONFIGS")
+                    .and_then(|c| crate::read::find_key(c, "jsUrl"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
             innertube_context: context,
         }
     }

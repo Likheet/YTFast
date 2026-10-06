@@ -35,6 +35,9 @@ pub fn cover(app: &App, ui: &egui::Ui, rect: Rect, thumb: Option<&Thumb>, round:
     }
 }
 
+/// How long the pointer rests on a song before it is found ahead of time.
+const WARM_AFTER: f32 = 0.35;
+
 /// One song in a list. `number` (on an album's page) is shown instead of
 /// the cover; `playing` marks the song playing now.
 pub fn track_row(
@@ -53,6 +56,17 @@ pub fn track_row(
     if response.hovered() {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(4), PALETTE.surface);
+        // A song the pointer rests on is found ahead of time, so a click
+        // starts it at once.
+        let resting = ui.input(|i| i.pointer.time_since_last_movement());
+        if resting >= WARM_AFTER {
+            app.warm(&track.video_id);
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f32(
+                    WARM_AFTER - resting + 0.05,
+                ));
+        }
     }
     let art = Rect::from_min_size(
         pos2(rect.left() + 8.0, rect.center().y - 20.0),

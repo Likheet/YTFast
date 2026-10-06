@@ -15,7 +15,7 @@ pub enum Command {
     /// Play a whole song from the start. `length` is in seconds.
     Play {
         entry: u64,
-        bytes: Vec<u8>,
+        data: std::sync::Arc<ytfast_core::stream::SongData>,
         gain: f32,
         length: f64,
     },
@@ -103,9 +103,14 @@ enum Engine {
 }
 
 impl Engine {
-    fn play(&mut self, bytes: Vec<u8>, gain: f32, length: f64) -> Result<(), String> {
+    fn play(
+        &mut self,
+        data: std::sync::Arc<ytfast_core::stream::SongData>,
+        gain: f32,
+        length: f64,
+    ) -> Result<(), String> {
         match self {
-            Self::Real(player) => player.play_song(bytes, gain).map_err(|e| e.to_string()),
+            Self::Real(player) => player.play_song(data, gain).map_err(|e| e.to_string()),
             Self::Silent(s) => {
                 *s = Silent {
                     started: Some(Instant::now()),
@@ -237,11 +242,11 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                 match command {
                     Command::Play {
                         entry: id,
-                        bytes,
+                        data,
                         gain,
                         length: song_length,
                     } => {
-                        match engine.play(bytes, gain, song_length) {
+                        match engine.play(data, gain, song_length) {
                             Ok(()) => {
                                 entry = Some(id);
                                 length = song_length;

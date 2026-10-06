@@ -270,6 +270,8 @@ fn run(rt: &Runtime, args: &Args, folders: &Folders, report: &mut Report) {
             yt_dlp: yt_dlp.clone(),
             download: net::download_client(),
             cookies_file: cookies_file.clone(),
+            // The check tests yt-dlp's way, which the app falls back on.
+            direct: None,
         };
         let reported = play::run(rt, &preparer, songs, resolved, report);
         (reported, before)

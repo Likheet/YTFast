@@ -9,11 +9,14 @@ use std::sync::mpsc;
 
 use tokio::sync::{Mutex, OnceCell, RwLock, Semaphore};
 use ytfast_core::cookies::CookieJar;
+use ytfast_core::direct::Direct;
 use ytfast_core::helpers::{self, Progress};
 use ytfast_core::innertube::{ApiError, Session};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
 use ytfast_core::read::{Page, PlayerInfo, Track};
+use ytfast_core::solver::{self, Solver};
+use ytfast_core::stream::SongData;
 use ytfast_core::ytdlp::{Browser, YtDlp};
 
 use crate::demo;
@@ -67,6 +70,9 @@ pub enum Request {
     PlaylistQueue {
         playlist_id: String,
     },
+    /// Find a song's audio ahead of time (it was pointed at, or is the
+    /// top search result), so it starts at once if played.
+    Warm(String),
     /// A History report (see `playreport`).
     Report(String),
     /// A picture, by address.
@@ -75,15 +81,18 @@ pub enum Request {
 
 /// A song ready to play.
 pub struct Ready {
-    pub bytes: Vec<u8>,
+    /// The audio, still arriving while it plays.
+    pub data: Arc<SongData>,
     pub gain: f32,
     pub info: PlayerInfo,
     pub format: String,
     pub premium: bool,
     pub length: Option<f64>,
-    /// How long finding the audio and downloading it took.
+    /// How long finding the audio took, and its first part then.
     pub find_time: std::time::Duration,
-    pub download_time: std::time::Duration,
+    pub start_time: std::time::Duration,
+    /// Found the website's way (not through yt-dlp).
+    pub direct: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +187,10 @@ struct Folders {
     helpers: PathBuf,
     yt_dlp_cache: PathBuf,
     session: PathBuf,
+    /// YouTube's player code, for finding songs the fast way.
+    player: PathBuf,
+    /// The solver program.
+    solver: PathBuf,
 }
 
 impl Folders {
@@ -202,6 +215,8 @@ impl Folders {
         Ok(Self {
             helpers: dirs.data_local_dir().join("helpers"),
             yt_dlp_cache: cache.join("yt-dlp"),
+            player: cache.join("player"),
+            solver: cache.join("solver"),
             session,
         })
     }
@@ -273,6 +288,18 @@ async fn serve(
         images: Semaphore::new(6),
         download: net::download_client(),
     });
+    // Rest the solver when YtFast is not being used.
+    {
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if let Some(direct) = shared.preparer().await.and_then(|p| p.direct) {
+                    direct.rest_if_idle(SOLVER_IDLE).await;
+                }
+            }
+        });
+    }
     while let Some(request) = requests.recv().await {
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
@@ -298,6 +325,13 @@ async fn serve(
                 } => up_next(&shared, video_id, playlist_id).await,
                 Request::PlaylistQueue { playlist_id } => {
                     playlist_queue(&shared, playlist_id).await
+                }
+                Request::Warm(video_id) => {
+                    if !shared.demo
+                        && let Some(preparer) = shared.preparer().await
+                    {
+                        preparer.warm(&video_id).await;
+                    }
                 }
                 Request::Report(url) => report(&shared, url).await,
                 Request::Image(url) => image(&shared, url).await,
@@ -379,14 +413,59 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
     let name = account
         .map(|a| a.name)
         .unwrap_or_else(|| "your account".into());
+    let session = Arc::new(session);
+    let direct = fast_way(shared, &helpers, &session);
     *shared.signed_in.write().await = Some(Preparer {
-        session: Arc::new(session),
+        session,
         yt_dlp,
         download: shared.download.clone(),
         cookies_file,
+        direct,
     });
     Ok(name)
 }
+
+/// Sets up finding songs the website's way, and gets it ready in the
+/// background so the first song is quick too. `None` when it cannot be set
+/// up; songs then come through yt-dlp, more slowly.
+fn fast_way(
+    shared: &Shared,
+    helpers: &helpers::Helpers,
+    session: &Arc<Session>,
+) -> Option<Arc<Direct>> {
+    let Some(ejs) = solver::find_ejs(&helpers.yt_dlp) else {
+        log::warn!("yt-dlp's solver scripts were not found; songs will start more slowly");
+        return None;
+    };
+    let solver = match Solver::new(helpers.deno.clone(), &ejs, &shared.folders.solver) {
+        Ok(solver) => solver,
+        Err(e) => {
+            log::warn!("the solver could not be set up: {e}");
+            return None;
+        }
+    };
+    let direct = Arc::new(Direct::new(
+        Arc::clone(session),
+        solver,
+        shared.folders.player.clone(),
+    ));
+    let warming = Arc::clone(&direct);
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        match warming.warm_up().await {
+            Ok(()) => log::info!(
+                "the fast way is ready ({:.1} s)",
+                started.elapsed().as_secs_f64()
+            ),
+            Err(e) => log::warn!("the fast way could not get ready: {e}"),
+        }
+    });
+    Some(direct)
+}
+
+/// How long the solver may sit unused before it is stopped to free its
+/// memory. It starts again in about a second when needed.
+const SOLVER_IDLE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 fn api_error(shared: &Shared, error: ApiError) -> String {
     if matches!(error, ApiError::SignedOut) {
@@ -478,14 +557,15 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
             shared.send(Event::Prepared {
                 entry,
                 result: Ok(Ready {
-                    bytes: Vec::new(),
+                    data: SongData::complete(Vec::new()),
                     gain: 1.0,
                     info: PlayerInfo::default(),
                     format: "Demo (silent)".into(),
                     premium: true,
                     length: Some(demo::length(&video_id)),
                     find_time: std::time::Duration::ZERO,
-                    download_time: std::time::Duration::ZERO,
+                    start_time: std::time::Duration::ZERO,
+                    direct: true,
                 }),
             });
         }
@@ -522,7 +602,7 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
     let result = cell
         .get_or_init(|| async {
             preparer
-                .prepare(&video_id, None, &|_, _| {})
+                .prepare(&video_id, None)
                 .await
                 .map(Arc::new)
                 .map_err(classify)
@@ -553,14 +633,15 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
         log::warn!("preparing a song failed: {}", failure.message);
     }
     let result = result.map(|p| Ready {
-        bytes: p.bytes.clone(),
+        data: Arc::clone(&p.data),
         gain: p.gain,
         info: p.info.clone(),
         format: p.format.clone(),
         premium: p.premium,
         length: p.duration_seconds,
         find_time: p.find_time,
-        download_time: p.download_time,
+        start_time: p.start_time,
+        direct: p.direct,
     });
     shared.send(Event::Prepared { entry, result });
 }
