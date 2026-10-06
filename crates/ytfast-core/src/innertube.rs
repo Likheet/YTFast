@@ -22,6 +22,8 @@ const CLIENT_NAME: &str = "WEB_REMIX";
 const CLIENT_NAME_ID: &str = "67";
 /// Only used when the page gives no version (yt-dlp's value, July 2026).
 const FALLBACK_CLIENT_VERSION: &str = "1.20260707.12.00";
+/// The songs saved in the library: a long list, like a playlist.
+pub(crate) const LIBRARY_SONGS: &str = "FEmusic_liked_videos";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -118,6 +120,15 @@ impl Session {
         context
     }
 
+    /// The context of another YouTube client: the page's, with the
+    /// client's name and version replaced.
+    fn context_as(&self, client_name: &str, client_version: &str) -> Value {
+        let mut context = self.context();
+        context["client"]["clientName"] = json!(client_name);
+        context["client"]["clientVersion"] = json!(client_version);
+        context
+    }
+
     fn headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         let mut put = |name: &'static str, value: &str| {
@@ -169,17 +180,42 @@ impl Session {
         self.call_with(endpoint, &[], body).await
     }
 
+    /// [`Session::call`] as another YouTube client, with the same sign-in:
+    /// the request says it comes from `client_name` at `client_version`
+    /// (as ytmusicapi does to get timed lyrics, which YouTube sends to its
+    /// Android app, `ANDROID_MUSIC`).
+    pub async fn call_as(
+        &self,
+        endpoint: &str,
+        body: Value,
+        client_name: &str,
+        client_version: &str,
+    ) -> Result<Value, ApiError> {
+        let context = self.context_as(client_name, client_version);
+        self.send(endpoint, &[], body, context).await
+    }
+
     /// [`Session::call`], with more in the address.
     async fn call_with(
         &self,
         endpoint: &str,
         query: &[(&str, &str)],
+        body: Value,
+    ) -> Result<Value, ApiError> {
+        self.send(endpoint, query, body, self.context()).await
+    }
+
+    async fn send(
+        &self,
+        endpoint: &str,
+        query: &[(&str, &str)],
         mut body: Value,
+        context: Value,
     ) -> Result<Value, ApiError> {
         if !body.is_object() {
             body = json!({});
         }
-        body["context"] = self.context();
+        body["context"] = context;
         let mut url = format!("{ORIGIN}/youtubei/v1/{endpoint}?prettyPrint=false");
         if let Some(key) = &self.config.api_key {
             url.push_str("&key=");
@@ -270,8 +306,9 @@ impl Session {
         if browse_id.starts_with("MPRE") {
             page.fill_album_songs();
         }
-        // Only lists of songs go on; other pages' tokens load more shelves.
-        let more = if browse_id.starts_with("VL") {
+        // Only lists of songs go on (playlists, the library's songs); other
+        // pages' tokens load more shelves.
+        let more = if browse_id.starts_with("VL") || browse_id == LIBRARY_SONGS {
             read::track_continuation(&reply)
         } else {
             None
@@ -325,20 +362,7 @@ impl Session {
         video_id: &str,
         playlist_id: Option<&str>,
     ) -> Result<Vec<Track>, ApiError> {
-        let radio = format!("RDAMVM{video_id}");
-        let body = json!({
-            "enablePersistentPlaylistPanel": true,
-            "isAudioOnly": true,
-            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
-            "videoId": video_id,
-            "playlistId": playlist_id.unwrap_or(&radio),
-            "watchEndpointMusicSupportedConfigs": {
-                "watchEndpointMusicConfig": {
-                    "hasPersistentPlaylistPanel": true,
-                    "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
-                }
-            }
-        });
+        let body = next_body(video_id, playlist_id);
         Ok(read::up_next(&self.call("next", body).await?))
     }
 
@@ -443,6 +467,27 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// The body of a `next` request for a song: what plays after it (the
+/// playlist or album it came from, or a radio of similar songs when
+/// `playlist_id` is `None`), and what YouTube says about it. Follows
+/// ytmusicapi's `get_watch_playlist`.
+pub(crate) fn next_body(video_id: &str, playlist_id: Option<&str>) -> Value {
+    let radio = format!("RDAMVM{video_id}");
+    json!({
+        "enablePersistentPlaylistPanel": true,
+        "isAudioOnly": true,
+        "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+        "videoId": video_id,
+        "playlistId": playlist_id.unwrap_or(&radio),
+        "watchEndpointMusicSupportedConfigs": {
+            "watchEndpointMusicConfig": {
+                "hasPersistentPlaylistPanel": true,
+                "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +553,42 @@ mod tests {
         assert_eq!(context["client"]["gl"], "AU");
         assert_eq!(context["client"]["clientVersion"], "1.2");
         assert_eq!(context["user"]["lockedSafetyMode"], false);
+    }
+
+    #[test]
+    fn another_client_keeps_the_rest_of_the_context() {
+        let s = session(WebConfig {
+            client_version: Some("1.2".into()),
+            innertube_context: Some(json!({
+                "client": { "clientName": "WEB_REMIX", "hl": "de", "visitorData": "v" },
+                "user": { "lockedSafetyMode": false }
+            })),
+            ..WebConfig::default()
+        });
+        let context = s.context_as("ANDROID_MUSIC", "7.21.50");
+        assert_eq!(context["client"]["clientName"], "ANDROID_MUSIC");
+        assert_eq!(context["client"]["clientVersion"], "7.21.50");
+        assert_eq!(context["client"]["hl"], "de");
+        assert_eq!(context["client"]["visitorData"], "v");
+        assert_eq!(context["user"]["lockedSafetyMode"], false);
+        // The usual calls are unchanged.
+        assert_eq!(s.context()["client"]["clientName"], "WEB_REMIX");
+        // Without a page config too.
+        let bare = session(WebConfig::default()).context_as("ANDROID_MUSIC", "7.21.50");
+        assert_eq!(bare["client"]["clientName"], "ANDROID_MUSIC");
+    }
+
+    #[test]
+    fn next_bodies() {
+        let radio = next_body("abcdefghijk", None);
+        assert_eq!(radio["videoId"], "abcdefghijk");
+        assert_eq!(radio["playlistId"], "RDAMVMabcdefghijk");
+        assert_eq!(radio["isAudioOnly"], true);
+        assert_eq!(
+            radio["watchEndpointMusicSupportedConfigs"]["watchEndpointMusicConfig"]["musicVideoType"],
+            "MUSIC_VIDEO_TYPE_ATV"
+        );
+        let album = next_body("abcdefghijk", Some("OLAK5uy_x"));
+        assert_eq!(album["playlistId"], "OLAK5uy_x");
     }
 }

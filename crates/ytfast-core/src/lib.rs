@@ -5,8 +5,11 @@
 //! - [`cookies`]: the YouTube sign-in, read from a browser's cookies.
 //! - [`auth`] and [`ytcfg`]: what makes requests look like the web client.
 //! - [`innertube`]: requests to YouTube Music's internal API.
+//! - [`library`]: more of the account, and changing it: ratings, the
+//!   library, subscriptions, playlists, search suggestions, lyrics.
 //! - [`read`]: reading YouTube's replies (the only place that does), and
 //!   the page model the app draws.
+//! - [`lyrics`]: lyrics, and LRCLIB for songs YouTube has none for.
 //! - [`playreport`]: telling YouTube what was played (History, mixes).
 //! - [`helpers`] and [`ytdlp`]: yt-dlp, which finds each song's audio.
 //! - [`audio`]: downloading and playing that audio.
@@ -20,6 +23,8 @@ pub mod cookies;
 pub mod direct;
 pub mod helpers;
 pub mod innertube;
+pub mod library;
+pub mod lyrics;
 pub mod net;
 pub mod playreport;
 pub mod prepare;

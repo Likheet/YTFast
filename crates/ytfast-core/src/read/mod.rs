@@ -9,11 +9,21 @@
 
 use serde_json::Value;
 
-mod page;
-
+mod edit;
 mod formats;
+mod page;
+mod search;
+mod song;
+
+pub use edit::{created_playlist_id, edit_status};
 pub use formats::{StreamFormat, best_stream, stream_formats};
 pub use page::{Card, Header, Item, Page, PageKind, Section, Shape, Target, Thumb, page, up_next};
+pub use search::search_suggestions;
+pub use song::{Rating, SongDetails, lyrics, song_details};
+
+/// Where a browse link says what kind of page it opens.
+const PAGE_TYPE: &str =
+    "/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType";
 
 /// Two flags YouTube puts in every reply (`GFEEDBACK` tracking params).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -178,12 +188,22 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         .and_then(parse_duration)
         .or(byline.duration_seconds)
         .or_else(|| columns.iter().skip(1).find_map(|c| parse_duration(c)));
-    // On an album's page the third column is the play count.
+    // The artist and album pages the row links to: in its columns, or in
+    // its menu's "Go to album" and "Go to artist".
+    let mut links = Links::default();
+    for part in ["flexColumns", "menu"] {
+        if let Some(node) = row.get(part) {
+            links.add(node);
+        }
+    }
+    // On an album's page the third column is the play count; on an
+    // artist's page the album is the fourth column.
     let album = columns
         .get(2)
         .filter(|c| !c.is_empty() && parse_duration(c).is_none() && !is_count_or_year(c))
         .cloned()
-        .or(byline.album);
+        .or(byline.album)
+        .or(links.album);
     let kind = TrackKind::from_music_video_type(
         find_key(row, "watchEndpointMusicConfig")
             .and_then(|c| c.get("musicVideoType"))
@@ -198,8 +218,92 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         duration_seconds,
         kind,
         thumbnail: row.get("thumbnail").and_then(Thumb::best),
-        ..Track::default()
+        artist_id: links.artist_id,
+        album_id: links.album_id,
     })
+}
+
+/// The pages a song's text links to, for "Go to artist" and "Go to
+/// album": its first artist and its album.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Links {
+    /// The first artist's page (`UC...`).
+    pub artist_id: Option<String>,
+    /// The album's page (`MPREb_...`).
+    pub album_id: Option<String>,
+    /// The album's name: the words of the link to it.
+    pub album: Option<String>,
+}
+
+impl Links {
+    /// Fills in what is still missing from the links under `node` (a
+    /// row's columns, a byline, a menu), taking the first of each kind.
+    pub(crate) fn add(&mut self, node: &Value) {
+        match node {
+            Value::Object(map) => {
+                if let Some(browse) = map
+                    .get("navigationEndpoint")
+                    .and_then(|e| e.get("browseEndpoint"))
+                {
+                    // A run of text carries its words next to its link.
+                    self.add_link(browse, map.get("text").and_then(Value::as_str));
+                }
+                map.values().for_each(|v| self.add(v));
+            }
+            Value::Array(items) => items.iter().for_each(|v| self.add(v)),
+            _ => {}
+        }
+    }
+
+    fn add_link(&mut self, browse: &Value, words: Option<&str>) {
+        let Some(id) = browse.get("browseId").and_then(Value::as_str) else {
+            return;
+        };
+        let page_type = browse.pointer(PAGE_TYPE).and_then(Value::as_str);
+        let kind = match page_type {
+            Some(_) => PageKind::from_page_type(page_type),
+            // Without the page type, the ID tells.
+            None if id.starts_with("UC") || id.starts_with("MPLAUC") => PageKind::Artist,
+            None => PageKind::Album,
+        };
+        match kind {
+            PageKind::Artist if self.artist_id.is_none() => {
+                // A library artist's page (`MPLAUC...`) is the artist's
+                // own page with a prefix.
+                self.artist_id = Some(id.strip_prefix("MPLA").unwrap_or(id).to_string());
+            }
+            // Only real album pages: a "Go to album" can also point at the
+            // album's playlist.
+            PageKind::Album if self.album_id.is_none() && id.starts_with("MPRE") => {
+                self.album_id = Some(id.to_string());
+                self.album = words
+                    .map(str::trim)
+                    .filter(|w| !w.is_empty())
+                    .map(str::to_string);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether a like or save toggle is on (liked, saved), from its like
+/// actions. The side a toggle shows is what clicking it does: like when it
+/// is off, remove the like when it is on. Newer replies say which side
+/// shows (`isToggled`); older ones swap the two sides instead.
+pub(crate) fn toggle_on(toggle: &Value) -> Option<bool> {
+    let side = if toggle.get("isToggled").and_then(Value::as_bool) == Some(true) {
+        "toggledServiceEndpoint"
+    } else {
+        "defaultServiceEndpoint"
+    };
+    let status = find_key(toggle.get(side)?, "likeEndpoint")?
+        .get("status")?
+        .as_str()?;
+    match status {
+        "LIKE" => Some(false),
+        "INDIFFERENT" => Some(true),
+        _ => None,
+    }
 }
 
 /// The parts of a "Song • Artist • Album • 3:45" line.
@@ -515,11 +619,123 @@ mod tests {
         let rows = tracks(&fixture("playlist_collaborative.json"));
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].duration_seconds, Some(214));
-        assert_eq!(rows[0].album, None);
+        // The length's column is not taken for the album; the album is
+        // the fourth column's link.
+        assert_eq!(rows[0].album.as_deref(), Some("Whenever You Need Somebody"));
+        assert_eq!(rows[0].album_id.as_deref(), Some("MPREb_dcYZhAh5urI"));
         // The same song twice: different rows, told apart by set_video_id.
         assert_eq!(rows[1].video_id, "dQw4w9WgXcQ");
         assert_eq!(rows[1].kind, TrackKind::MusicVideo);
         assert_ne!(rows[0].set_video_id, rows[1].set_video_id);
+    }
+
+    #[test]
+    fn rows_link_their_artist_and_album() {
+        // A playlist's row: the artist and album columns are links.
+        let rows = tracks(&fixture("playlist_signed_in_premium.json"));
+        assert_eq!(
+            rows[0].artist_id.as_deref(),
+            Some("UC2Eotb0QaPkaJI4Cw4oHZ6Q")
+        );
+        assert_eq!(rows[0].album_id.as_deref(), Some("MPREb_5tjDwqVSJCv"));
+        // An artist's top song by several artists: the first of them, and
+        // the album (with its name) from the fourth column.
+        let top = tracks(&fixture("artist.json"));
+        assert_eq!(
+            top[0].artist_id.as_deref(),
+            Some("UCFQwlbXuZQLsnUcL01Ip6_w")
+        );
+        assert_eq!(top[0].album_id.as_deref(), Some("MPREb_NGwQppgBRiS"));
+        assert_eq!(top[0].album.as_deref(), Some("Mesmerizer"));
+        // An album's songs link their artist; their album is the page.
+        let songs = tracks(&fixture("album.json"));
+        assert_eq!(
+            songs[0].artist_id.as_deref(),
+            Some("UCnAcxgRZ065f_eXK1o85c1w")
+        );
+        assert_eq!(songs[0].album_id, None);
+    }
+
+    #[test]
+    fn links_from_the_menu_and_without_page_types() {
+        // No links in the columns: the menu's "Go to album" and "Go to
+        // artist". A library artist's page stands for the artist's own.
+        let reply = serde_json::json!({"musicShelfRenderer": {"contents": [
+            {"musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": "abcdefghijk"},
+                "flexColumns": [
+                    {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "A song"}]}}},
+                    {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "A singer"}]}}}
+                ],
+                "menu": {"menuRenderer": {"items": [
+                    {"menuNavigationItemRenderer": {
+                        "text": {"runs": [{"text": "Start radio"}]},
+                        "navigationEndpoint": {"watchEndpoint": {"videoId": "abcdefghijk", "playlistId": "RDAMVMabcdefghijk"}}
+                    }},
+                    {"menuNavigationItemRenderer": {
+                        "text": {"runs": [{"text": "Go to album"}]},
+                        "navigationEndpoint": {"browseEndpoint": {
+                            "browseId": "MPREb_album01",
+                            "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {
+                                "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                            }}
+                        }}
+                    }},
+                    {"menuNavigationItemRenderer": {
+                        "text": {"runs": [{"text": "Go to artist"}]},
+                        "navigationEndpoint": {"browseEndpoint": {
+                            "browseId": "MPLAUCsinger01",
+                            "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {
+                                "pageType": "MUSIC_PAGE_TYPE_LIBRARY_ARTIST"
+                            }}
+                        }}
+                    }}
+                ]}}
+            }},
+            // Links without page types: the IDs tell. A "Go to album" to
+            // the album's playlist is not an album page.
+            {"musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": "bcdefghijkl"},
+                "flexColumns": [
+                    {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Another"}]}}},
+                    {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [
+                        {"text": "Someone", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCsomeone01"}}},
+                        {"text": " • "},
+                        {"text": "Their album", "navigationEndpoint": {"browseEndpoint": {"browseId": "OLAK5uy_list"}}}
+                    ]}}}
+                ]
+            }}
+        ]}});
+        let rows = tracks(&reply);
+        assert_eq!(rows[0].artist_id.as_deref(), Some("UCsinger01"));
+        assert_eq!(rows[0].album_id.as_deref(), Some("MPREb_album01"));
+        // The menu's words are not the album's name.
+        assert_eq!(rows[0].album, None);
+        assert_eq!(rows[1].artist_id.as_deref(), Some("UCsomeone01"));
+        assert_eq!(rows[1].album_id, None);
+        assert_eq!(rows[1].album.as_deref(), Some("Their album"));
+    }
+
+    #[test]
+    fn like_and_save_toggles() {
+        let toggle = |toggled: Option<bool>, default: &str, then: &str| {
+            let mut t = serde_json::json!({
+                "defaultServiceEndpoint": {"likeEndpoint": {"status": default}},
+                "toggledServiceEndpoint": {"likeEndpoint": {"status": then}}
+            });
+            if let Some(on) = toggled {
+                t["isToggled"] = on.into();
+            }
+            toggle_on(&t)
+        };
+        // Saying which side shows.
+        assert_eq!(toggle(Some(false), "LIKE", "INDIFFERENT"), Some(false));
+        assert_eq!(toggle(Some(true), "LIKE", "INDIFFERENT"), Some(true));
+        // Swapping the sides.
+        assert_eq!(toggle(None, "LIKE", "INDIFFERENT"), Some(false));
+        assert_eq!(toggle(None, "INDIFFERENT", "LIKE"), Some(true));
+        // Not a like toggle.
+        assert_eq!(toggle_on(&serde_json::json!({"isToggled": true})), None);
     }
 
     #[test]

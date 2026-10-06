@@ -8,7 +8,10 @@
 
 use serde_json::Value;
 
-use super::{Byline, Track, TrackKind, collect, find_key, parse_duration, text, track};
+use super::{
+    Byline, Links, PAGE_TYPE, Track, TrackKind, collect, find_key, parse_duration, text, toggle_on,
+    track,
+};
 
 /// The largest picture YouTube offered. [`Thumb::sized`] asks for another
 /// size where YouTube allows it.
@@ -64,7 +67,7 @@ pub enum PageKind {
 }
 
 impl PageKind {
-    fn from_page_type(page_type: Option<&str>) -> Self {
+    pub(crate) fn from_page_type(page_type: Option<&str>) -> Self {
         match page_type {
             Some("MUSIC_PAGE_TYPE_ALBUM" | "MUSIC_PAGE_TYPE_AUDIOBOOK") => Self::Album,
             Some("MUSIC_PAGE_TYPE_PLAYLIST") => Self::Playlist,
@@ -103,11 +106,7 @@ impl Target {
     fn from_endpoint(node: &Value) -> Option<Self> {
         if let Some(browse) = node.get("browseEndpoint") {
             let id = browse.get("browseId")?.as_str()?.to_string();
-            let kind = PageKind::from_page_type(
-                browse
-                    .pointer("/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType")
-                    .and_then(Value::as_str),
-            );
+            let kind = PageKind::from_page_type(browse.pointer(PAGE_TYPE).and_then(Value::as_str));
             let params = browse
                 .get("params")
                 .and_then(Value::as_str)
@@ -265,7 +264,7 @@ pub fn page(reply: &Value) -> Page {
     let header = HEADERS
         .iter()
         .find_map(|key| find_key(reply, key).map(|h| (*key, h)))
-        .map(|(key, h)| header(key, h))
+        .map(|(key, h)| header(key, h, reply))
         // A mood or genre page has only a title.
         .or_else(|| {
             let title = reply
@@ -277,9 +276,70 @@ pub fn page(reply: &Value) -> Page {
             })
         });
     let mut sections = Vec::new();
+    // Home's moods come first, above its shelves.
+    sections.extend(chips(reply));
     walk(reply, &mut sections);
     sections.retain(|s| !s.items.is_empty());
     Page { header, sections }
+}
+
+/// The row of buttons above Home's shelves (Energize, Relax, Workout...),
+/// as a section of cards without pictures. Each opens Home for that mood.
+/// Search's filter buttons search rather than open a page, and are left
+/// out.
+fn chips(reply: &Value) -> Option<Section> {
+    let items: Vec<Item> = chip_cloud(reply)?
+        .get("chips")?
+        .as_array()?
+        .iter()
+        .filter_map(|chip| {
+            let chip = chip.get("chipCloudChipRenderer")?;
+            let title = chip
+                .get("text")
+                .and_then(text)
+                .filter(|t| !t.trim().is_empty())?;
+            let browse = chip.pointer("/navigationEndpoint/browseEndpoint")?;
+            let open = Target::Browse {
+                id: browse.get("browseId")?.as_str()?.to_string(),
+                kind: PageKind::Other,
+                params: browse
+                    .get("params")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            };
+            Some(Item::Card(Card {
+                title,
+                subtitle: String::new(),
+                thumbnail: None,
+                round: false,
+                open: Some(open),
+                play: None,
+            }))
+        })
+        .collect();
+    if items.is_empty() {
+        return None;
+    }
+    Some(Section {
+        title: String::new(),
+        items,
+        more: None,
+        shape: Shape::Grid,
+    })
+}
+
+/// The first row of buttons (`chipCloudRenderer`) outside the shelves and
+/// the header.
+fn chip_cloud(node: &Value) -> Option<&Value> {
+    match node {
+        Value::Object(map) => map.iter().find_map(|(key, value)| match key.as_str() {
+            "chipCloudRenderer" => Some(value),
+            key if SHELVES.contains(&key) || HEADERS.contains(&key) => None,
+            _ => chip_cloud(value),
+        }),
+        Value::Array(items) => items.iter().find_map(chip_cloud),
+        _ => None,
+    }
 }
 
 /// Collects shelves in document order, without looking inside headers
@@ -448,16 +508,23 @@ fn top_result(shelf: &Value) -> Option<Item> {
     }) = &open
     {
         let byline = Byline::parse(&subtitle);
+        let mut links = Links::default();
+        for part in ["subtitle", "menu"] {
+            if let Some(node) = shelf.get(part) {
+                links.add(node);
+            }
+        }
         return Some(Item::Track(Track {
             video_id: video_id.clone(),
             set_video_id: None,
             title,
             artists: byline.artists,
-            album: byline.album,
+            album: byline.album.or(links.album),
             duration_seconds: byline.duration_seconds,
             kind: TrackKind::Unknown,
             thumbnail,
-            ..Track::default()
+            artist_id: links.artist_id,
+            album_id: links.album_id,
         }));
     }
     Some(Item::Card(Card {
@@ -470,14 +537,15 @@ fn top_result(shelf: &Value) -> Option<Item> {
     }))
 }
 
-fn header(key: &str, h: &Value) -> Header {
+/// `reply` is the whole page, for what lies outside the header.
+fn header(key: &str, h: &Value, reply: &Value) -> Header {
     let t = |field: &str| h.get(field).and_then(text).unwrap_or_default();
     let subtitle = match key {
         // An artist page has no subtitle; YouTube shows listeners instead.
         "musicImmersiveHeaderRenderer" => t("monthlyListenerCount"),
         _ => t("subtitle"),
     };
-    Header {
+    let mut header = Header {
         title: t("title"),
         subtitle,
         detail: t("secondSubtitle"),
@@ -485,7 +553,106 @@ fn header(key: &str, h: &Value) -> Header {
         thumbnail: h.get("thumbnail").and_then(Thumb::best),
         round: key == "musicImmersiveHeaderRenderer",
         ..Header::default()
+    };
+    // An artist's (or a channel's) Subscribe button.
+    if let Some(button) = find_key(h, "subscribeButtonRenderer") {
+        header.channel_id = button
+            .get("channelId")
+            .or_else(|| find_key(button, "channelIds").and_then(|ids| ids.get(0)))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        header.subscribed = button.get("subscribed").and_then(Value::as_bool);
     }
+    // Albums and playlists can be saved to the library.
+    if matches!(
+        key,
+        "musicResponsiveHeaderRenderer" | "musicDetailHeaderRenderer"
+    ) {
+        let (saves, saved) = save_button(h);
+        // The account's own playlists come inside an editing frame, and
+        // have no Save button.
+        let own = find_key(reply, "musicEditablePlaylistDetailHeaderRenderer");
+        header.editable = own.is_some();
+        header.saved = saved;
+        header.library_id = saves
+            .or_else(|| {
+                own.and_then(|o| o.get("playlistId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            // What the header's play button plays: an album's own
+            // playlist, or the playlist itself.
+            .or_else(|| match play_button(h) {
+                Some(Target::Watch { playlist_id, .. }) => playlist_id,
+                _ => None,
+            })
+            .or_else(|| {
+                find_key(reply, "musicPlaylistShelfRenderer")
+                    .and_then(|s| s.get("playlistId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+    }
+    header
+}
+
+/// The header's Save button: the playlist it saves (when it says), and
+/// whether that is in the library.
+fn save_button(h: &Value) -> (Option<String>, Option<bool>) {
+    // The header's own buttons, or an older header's menu buttons; not
+    // the description's "More" toggle.
+    let buttons: Vec<&Value> = h
+        .get("buttons")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            find_key(h, "topLevelButtons")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
+        .collect();
+    let saves = |node: &Value| {
+        find_key(node, "likeEndpoint")
+            .and_then(|like| like.pointer("/target/playlistId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    // Signed in, the button saves with a like.
+    for button in &buttons {
+        for kind in ["toggleButtonRenderer", "buttonRenderer"] {
+            if let Some(b) = button.get(kind)
+                && let Some(on) = toggle_on(b)
+            {
+                return (saves(b), Some(on));
+            }
+        }
+        if let Some(like) = button.get("likeButtonRenderer") {
+            let saved = like
+                .get("likeStatus")
+                .and_then(Value::as_str)
+                .map(|status| status == "LIKE");
+            let id = like
+                .pointer("/target/playlistId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            return (id, saved);
+        }
+    }
+    // Or the menu's "Save to library".
+    let mut entries = Vec::new();
+    collect(h, "toggleMenuServiceItemRenderer", &mut entries);
+    if let Some((entry, on)) = entries.iter().find_map(|e| Some((*e, toggle_on(e)?))) {
+        return (saves(entry), Some(on));
+    }
+    // Signed out, the button only asks to sign in, but shows the state.
+    let saved = buttons
+        .iter()
+        .find_map(|b| b.get("toggleButtonRenderer"))
+        .and_then(|t| t.get("isToggled"))
+        .and_then(Value::as_bool);
+    (None, saved)
 }
 
 /// The songs of an Up next or radio list (the `next` reply). Unplayable
@@ -513,6 +680,12 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
                 .and_then(text)
                 .unwrap_or_default(),
         );
+        let mut links = Links::default();
+        for part in ["longBylineText", "menu"] {
+            if let Some(node) = video.get(part) {
+                links.add(node);
+            }
+        }
         Some(Track {
             video_id: video.get("videoId")?.as_str()?.to_string(),
             set_video_id: video
@@ -521,7 +694,7 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
                 .map(str::to_string),
             title: video.get("title").and_then(text).unwrap_or_default(),
             artists: byline.artists,
-            album: byline.album,
+            album: byline.album.or(links.album),
             duration_seconds: video
                 .get("lengthText")
                 .and_then(text)
@@ -533,7 +706,8 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
                     .and_then(Value::as_str),
             ),
             thumbnail: video.get("thumbnail").and_then(Thumb::best),
-            ..Track::default()
+            artist_id: links.artist_id,
+            album_id: links.album_id,
         })
     })
     .collect()
@@ -732,6 +906,189 @@ mod tests {
             { "url": "https://a.example/big", "width": 544 }
         ]}));
         assert_eq!(best.unwrap().url, "https://a.example/big");
+    }
+
+    #[test]
+    fn real_headers_library_details() {
+        // An artist: Subscribe, nothing to save.
+        let artist = page(&fixture("artist.json")).header.unwrap();
+        assert_eq!(
+            artist.channel_id.as_deref(),
+            Some("UCJwGWV914kBlV4dKRn7AEFA")
+        );
+        assert_eq!(artist.subscribed, Some(false));
+        assert_eq!(artist.library_id, None);
+        assert_eq!(artist.saved, None);
+        assert!(!artist.editable);
+        // An album (signed out): its own playlist, from the play button.
+        let album = page(&fixture("album.json")).header.unwrap();
+        assert_eq!(
+            album.library_id.as_deref(),
+            Some("OLAK5uy_kW9hN-oBmekJ06jhhfStpwRd5pcRKIztY")
+        );
+        assert_eq!(album.saved, Some(false));
+        assert_eq!(album.channel_id, None);
+        assert!(!album.editable);
+        // The account's own playlist: editable, and no Save button.
+        let own = page(&fixture("playlist_signed_in_premium.json"))
+            .header
+            .unwrap();
+        assert!(own.editable);
+        assert_eq!(
+            own.library_id.as_deref(),
+            Some("PLaZPMsuQNCsWn0iVMtGbaUXO6z-EdZaZm")
+        );
+        assert_eq!(own.saved, None);
+        // Someone else's playlist (signed out).
+        let other = page(&fixture("playlist_collaborative.json"))
+            .header
+            .unwrap();
+        assert!(!other.editable);
+        assert_eq!(
+            other.library_id.as_deref(),
+            Some("PLxyTaDz8f5PBc-8kE36gvB-eflhODG2dw")
+        );
+        assert_eq!(other.saved, Some(false));
+    }
+
+    #[test]
+    fn signed_in_save_buttons() {
+        // An album's Save button signed in, as in ytmusicapi's saved
+        // album reply (March 2024).
+        let album = |saved: bool| {
+            serde_json::json!({"contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [
+                {"musicResponsiveHeaderRenderer": {
+                    "title": {"runs": [{"text": "Revival"}]},
+                    "buttons": [
+                        {"toggleButtonRenderer": {
+                            "isToggled": saved,
+                            "defaultIcon": {"iconType": "LIBRARY_ADD"},
+                            "defaultServiceEndpoint": {"likeEndpoint": {"status": "LIKE", "target": {"playlistId": "OLAK5uy_saves"}}},
+                            "toggledIcon": {"iconType": "LIBRARY_SAVED"},
+                            "toggledServiceEndpoint": {"likeEndpoint": {"status": "INDIFFERENT", "target": {"playlistId": "OLAK5uy_saves"}}}
+                        }},
+                        {"musicPlayButtonRenderer": {"playNavigationEndpoint": {"watchEndpoint": {"videoId": "abcdefghijk", "playlistId": "OLAK5uy_plays"}}}}
+                    ]
+                }}
+            ]}}}}]}}})
+        };
+        let saved = page(&album(true)).header.unwrap();
+        assert_eq!(saved.saved, Some(true));
+        assert_eq!(saved.library_id.as_deref(), Some("OLAK5uy_saves"));
+        assert_eq!(page(&album(false)).header.unwrap().saved, Some(false));
+
+        // An older header: a like button among its menu's buttons.
+        let older = serde_json::json!({"header": {"musicDetailHeaderRenderer": {
+            "title": {"runs": [{"text": "Old album"}]},
+            "menu": {"menuRenderer": {"topLevelButtons": [
+                {"buttonRenderer": {"navigationEndpoint": {"watchPlaylistEndpoint": {"playlistId": "OLAK5uy_old"}}}},
+                {"likeButtonRenderer": {"likeStatus": "LIKE", "target": {"playlistId": "OLAK5uy_old"}}}
+            ]}}
+        }}});
+        let header = page(&older).header.unwrap();
+        assert_eq!(header.saved, Some(true));
+        assert_eq!(header.library_id.as_deref(), Some("OLAK5uy_old"));
+    }
+
+    #[test]
+    fn home_moods_come_first() {
+        let reply = serde_json::json!({"contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {
+            "contents": [
+                {"musicCarouselShelfRenderer": {
+                    "header": {"musicCarouselShelfBasicHeaderRenderer": {"title": {"runs": [{"text": "Listen again"}]}}},
+                    "contents": [{"musicTwoRowItemRenderer": {"title": {"runs": [{"text": "An album"}]}}}]
+                }}
+            ],
+            "header": {"chipCloudRenderer": {"chips": [
+                {"chipCloudChipRenderer": {
+                    "text": {"runs": [{"text": "Energize"}]},
+                    "navigationEndpoint": {"browseEndpoint": {"browseId": "FEmusic_home", "params": "ggMPOg1uX1BmNzc2V2p0YXJ5"}},
+                    "isSelected": false
+                }},
+                {"chipCloudChipRenderer": {
+                    "text": {"runs": [{"text": "Relax"}]},
+                    "navigationEndpoint": {"browseEndpoint": {"browseId": "FEmusic_home", "params": "ggMPOg1uX1JtNHZ1a0RYWFhK"}}
+                }},
+                // Nothing to open: left out.
+                {"chipCloudChipRenderer": {"text": {"runs": [{"text": "Broken"}]}}}
+            ]}}
+        }}}}]}}});
+        let home = page(&reply);
+        assert_eq!(titles(&home), ["", "Listen again"]);
+        let moods = &home.sections[0];
+        assert_eq!(moods.shape, Shape::Grid);
+        assert_eq!(moods.items.len(), 2);
+        let Item::Card(energize) = &moods.items[0] else {
+            panic!("a card")
+        };
+        assert_eq!(energize.title, "Energize");
+        assert_eq!(energize.thumbnail, None);
+        assert_eq!(
+            energize.open,
+            Some(Target::Browse {
+                id: "FEmusic_home".into(),
+                kind: PageKind::Other,
+                params: Some("ggMPOg1uX1BmNzc2V2p0YXJ5".into())
+            })
+        );
+
+        // Search's filter buttons search instead: no section for them.
+        let search = serde_json::json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {
+            "header": {"chipCloudRenderer": {"chips": [
+                {"chipCloudChipRenderer": {
+                    "text": {"runs": [{"text": "Songs"}]},
+                    "navigationEndpoint": {"searchEndpoint": {"query": "daft punk", "params": "EgWKAQIIAWoMEA4QChADEAQQCRAF"}}
+                }}
+            ]}},
+            "contents": [{"musicShelfRenderer": {
+                "title": {"runs": [{"text": "Songs"}]},
+                "contents": [{"musicResponsiveListItemRenderer": {"playlistItemData": {"videoId": "abcdefghijk"}}}]
+            }}]
+        }}}}]}}});
+        assert_eq!(titles(&page(&search)), ["Songs"]);
+    }
+
+    #[test]
+    fn top_result_and_up_next_link_artist_and_album() {
+        let link = |words: &str, id: &str, page_type: &str| {
+            serde_json::json!({"text": words, "navigationEndpoint": {"browseEndpoint": {
+                "browseId": id,
+                "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": page_type}}
+            }}})
+        };
+        let artist = "MUSIC_PAGE_TYPE_ARTIST";
+        let album = "MUSIC_PAGE_TYPE_ALBUM";
+        let search = serde_json::json!({"contents": [{"musicCardShelfRenderer": {
+            "title": {"runs": [{"text": "One More Time", "navigationEndpoint": {"watchEndpoint": {"videoId": "searchSong1"}}}]},
+            "subtitle": {"runs": [
+                {"text": "Song"}, {"text": " • "},
+                link("Daft Punk", "UCdaftpunk01", artist), {"text": " • "},
+                link("Discovery", "MPREb_discovery", album), {"text": " • "},
+                {"text": "5:20"}
+            ]}
+        }}]});
+        let Item::Track(top) = &page(&search).sections[0].items[0] else {
+            panic!("a song")
+        };
+        assert_eq!(top.artist_id.as_deref(), Some("UCdaftpunk01"));
+        assert_eq!(top.album_id.as_deref(), Some("MPREb_discovery"));
+        assert_eq!(top.album.as_deref(), Some("Discovery"));
+
+        let next = serde_json::json!({"playlistPanelRenderer": {"contents": [{"playlistPanelVideoRenderer": {
+            "videoId": "nextSong001",
+            "title": {"runs": [{"text": "First"}]},
+            "longBylineText": {"runs": [
+                link("Artist One", "UCartist0001", artist), {"text": " & "},
+                link("Artist Two", "UCartist0002", artist), {"text": " • "},
+                link("Album One", "MPREb_album0001", album), {"text": " • "},
+                {"text": "2020"}
+            ]}
+        }}]}});
+        let tracks = up_next(&next);
+        assert_eq!(tracks[0].artists, "Artist One & Artist Two");
+        assert_eq!(tracks[0].artist_id.as_deref(), Some("UCartist0001"));
+        assert_eq!(tracks[0].album_id.as_deref(), Some("MPREb_album0001"));
+        assert_eq!(tracks[0].album.as_deref(), Some("Album One"));
     }
 
     #[test]
