@@ -2,7 +2,7 @@
 //! album, a playlist or an artist. All of them are a header and sections.
 
 use egui::{Align, Layout, Sense, Vec2, vec2};
-use ytfast_core::read::{Card, Header, Item, Page, Section, Shape, Track};
+use ytfast_core::read::{Card, Header, Item, Page, Section, Shape, Target, Track};
 
 use crate::app::{Action, App, Loadable};
 use crate::backend::Route;
@@ -226,6 +226,18 @@ fn header_block(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header
                     tracks: page.tracks(),
                     source: source(route),
                 });
+            }
+            // An artist's radio: their best-known song, then songs like it.
+            if header.channel_id.is_some()
+                && count > 0
+                && theme::pill_button(ui, "Radio", false).clicked()
+                && let Some(first) = page.tracks().into_iter().next()
+            {
+                let radio = Target::Watch {
+                    video_id: Some(first.video_id.clone()),
+                    playlist_id: None,
+                };
+                app.act(Action::Play(radio, Some(first)));
             }
             header_actions(app, ui, route, header);
         });

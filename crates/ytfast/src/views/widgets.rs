@@ -229,6 +229,20 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, queued: Option<u64
         );
     }
     crate::views::playlists_menu(app, ui, track);
+    if queued.is_none()
+        && let Some(set_video_id) = &track.set_video_id
+        && let Some(playlist_id) = app.editable_playlist()
+    {
+        item(
+            ui,
+            "Remove from this playlist",
+            Action::RemoveFromPlaylist {
+                playlist_id,
+                video_id: track.video_id.clone(),
+                set_video_id: set_video_id.clone(),
+            },
+        );
+    }
     if let Some(album) = &track.album_id {
         item(
             ui,

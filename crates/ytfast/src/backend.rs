@@ -12,9 +12,10 @@ use ytfast_core::cookies::CookieJar;
 use ytfast_core::direct::Direct;
 use ytfast_core::helpers::{self, Progress};
 use ytfast_core::innertube::{ApiError, Session};
+use ytfast_core::library::{LibraryTab, Privacy, SearchFilter};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
-use ytfast_core::read::{Page, PlayerInfo, Track};
+use ytfast_core::read::{Page, PlayerInfo, Rating, SongDetails, Track};
 use ytfast_core::solver::{self, Solver};
 use ytfast_core::stream::SongData;
 use ytfast_core::ytdlp::{Browser, YtDlp};
@@ -67,14 +68,12 @@ impl SearchKind {
         }
     }
 
-    /// The search `params` YouTube Music's web client sends for each (as
-    /// ytmusicapi has them).
-    fn params(self) -> &'static str {
+    fn filter(self) -> SearchFilter {
         match self {
-            Self::Songs => "EgWKAQIIAWoMEA4QChADEAQQCRAF",
-            Self::Albums => "EgWKAQIYAWoMEA4QChADEAQQCRAF",
-            Self::Artists => "EgWKAQIgAWoMEA4QChADEAQQCRAF",
-            Self::Playlists => "EgeKAQQoAEABagwQDhAKEAMQBBAJEAU%3D",
+            Self::Songs => SearchFilter::Songs,
+            Self::Albums => SearchFilter::Albums,
+            Self::Artists => SearchFilter::Artists,
+            Self::Playlists => SearchFilter::Playlists,
         }
     }
 }
@@ -133,6 +132,8 @@ pub enum Request {
     },
     /// Songs and artists related to a song.
     Related(String),
+    /// A song started playing: read what the account thinks of it.
+    Details(String),
     /// A change to the account: likes, playlists, the library.
     Edit(Edit),
     /// Whether to start songs the website's way (else always yt-dlp).
@@ -255,14 +256,11 @@ pub enum Event {
     Lyrics(String, Option<crate::lyrics::Lyrics>),
     Related(String, Result<Page, String>),
     /// What the account thinks of a song, as YouTube says.
-    #[allow(dead_code)] // Sent once song details are read from YouTube.
     Liked(String, crate::app::LikeState),
     /// A change to the account failed; the app undoes what it showed.
     EditFailed(Edit, String),
     /// A change to the account went through.
     Edited(Edit),
-    /// A playlist was made (its ID), for "New playlist".
-    PlaylistMade(String, String),
 }
 
 /// The window's end of the backend.
@@ -390,6 +388,9 @@ struct Shared {
     download: reqwest::Client,
     /// Start songs the website's way (see [`Request::FastWay`]).
     fast_way: std::sync::atomic::AtomicBool,
+    /// What YouTube said about songs played (likes, lyrics, related),
+    /// asked once per song.
+    details: Mutex<HashMap<String, Arc<OnceCell<SongDetails>>>>,
 }
 
 impl Shared {
@@ -424,6 +425,7 @@ async fn serve(
         images: Semaphore::new(6),
         download: net::download_client(),
         fast_way: std::sync::atomic::AtomicBool::new(true),
+        details: Mutex::new(HashMap::new()),
     });
     // Rest the solver when YtFast is not being used.
     {
@@ -485,6 +487,7 @@ async fn serve(
                     duration,
                 } => lyrics(&shared, video_id, title, artist, album, duration).await,
                 Request::Related(video_id) => related(&shared, video_id).await,
+                Request::Details(video_id) => song_started(&shared, video_id).await,
                 Request::Edit(change) => edit(&shared, change).await,
                 Request::FastWay(on) => shared
                     .fast_way
@@ -652,25 +655,16 @@ async fn page(shared: &Shared, route: Route) {
         Route::Browse { id, params } => session.long_page(id, params.as_deref()).await,
         Route::Search(query) => session.search(query).await.map(|p| (p, None)),
         Route::SearchOnly(query, kind) => session
-            .call(
-                "search",
-                serde_json::json!({ "query": query, "params": kind.params() }),
-            )
-            .await
-            .map(|reply| (ytfast_core::read::page(&reply), None)),
-        Route::LibrarySongs => session.long_page("FEmusic_liked_videos", None).await,
-        Route::LibraryAlbums => session
-            .page("FEmusic_liked_albums", None)
+            .search_filtered(query, kind.filter())
             .await
             .map(|p| (p, None)),
+        Route::LibrarySongs => session.long_page(LibraryTab::Songs.browse_id(), None).await,
+        Route::LibraryAlbums => session.library(LibraryTab::Albums).await.map(|p| (p, None)),
         Route::LibraryArtists => session
-            .page("FEmusic_library_corpus_track_artists", None)
+            .library(LibraryTab::Artists)
             .await
             .map(|p| (p, None)),
-        Route::History => session
-            .page("FEmusic_history", None)
-            .await
-            .map(|p| (p, None)),
+        Route::History => session.history_page().await.map(|p| (p, None)),
         Route::Settings => return,
     };
     let more = match result {
@@ -854,6 +848,14 @@ async fn suggest(shared: &Shared, text: String) {
         .filter(|s| s.to_lowercase().contains(&lower))
         .map(|s| s.to_string())
         .collect()
+    } else if let Some(p) = shared.preparer().await {
+        p.session
+            .search_suggestions(&text)
+            .await
+            .unwrap_or_else(|e| {
+                log::info!("search suggestions did not load: {e}");
+                Vec::new()
+            })
     } else {
         Vec::new()
     };
@@ -897,46 +899,215 @@ async fn report(shared: &Shared, url: String) {
 /// big (the player page's); larger pictures only cost memory.
 const IMAGE_SIDE: u32 = 544;
 
+/// The most songs whose details are kept.
+const MAX_DETAILS: usize = 50;
+
+/// What YouTube says about a song: the account's like, and where its
+/// lyrics and related songs are. Asked once per song (the website asks
+/// the same when a song starts); a failure is asked again next time.
+async fn details(
+    shared: &Shared,
+    session: &Session,
+    video_id: &str,
+) -> Result<SongDetails, ApiError> {
+    let cell = {
+        let mut cells = shared.details.lock().await;
+        if cells.len() >= MAX_DETAILS && !cells.contains_key(video_id) {
+            cells.clear();
+        }
+        Arc::clone(cells.entry(video_id.to_string()).or_default())
+    };
+    cell.get_or_try_init(|| session.song_details(video_id, None))
+        .await
+        .cloned()
+}
+
+async fn song_started(shared: &Shared, video_id: String) {
+    if shared.demo {
+        return;
+    }
+    let Some(p) = shared.preparer().await else {
+        return;
+    };
+    match details(shared, &p.session, &video_id).await {
+        Ok(found) => {
+            if let Some(rating) = found.like {
+                shared.send(Event::Liked(video_id, like_state(rating)));
+            }
+        }
+        Err(e) => log::info!("the song's details did not load: {e}"),
+    }
+}
+
+fn like_state(rating: Rating) -> crate::app::LikeState {
+    match rating {
+        Rating::Like => crate::app::LikeState::Liked,
+        Rating::Dislike => crate::app::LikeState::Disliked,
+        Rating::Indifferent => crate::app::LikeState::Neutral,
+    }
+}
+
+fn rating(like: crate::app::LikeState) -> Rating {
+    match like {
+        crate::app::LikeState::Liked => Rating::Like,
+        crate::app::LikeState::Disliked => Rating::Dislike,
+        crate::app::LikeState::Neutral => Rating::Indifferent,
+    }
+}
+
 async fn lyrics(
     shared: &Shared,
     video_id: String,
-    _title: String,
-    _artist: String,
-    _album: Option<String>,
-    _duration: Option<f64>,
+    title: String,
+    artist: String,
+    album: Option<String>,
+    duration: Option<f64>,
 ) {
     let found = if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         Some(demo::lyrics(&video_id))
+    } else if let Some(p) = shared.preparer().await {
+        let song = Song {
+            video_id: &video_id,
+            title: &title,
+            artist: &artist,
+            album: album.as_deref(),
+            duration,
+        };
+        find_lyrics(shared, &p.session, &song)
+            .await
+            .map(crate::lyrics::Lyrics::from)
     } else {
         None
     };
     shared.send(Event::Lyrics(video_id, found));
 }
 
+/// The song whose lyrics are wanted.
+struct Song<'a> {
+    video_id: &'a str,
+    title: &'a str,
+    artist: &'a str,
+    album: Option<&'a str>,
+    duration: Option<f64>,
+}
+
+/// Lyrics that follow the song when any can be found: YouTube Music's own
+/// timed lyrics, else LRCLIB's, else YouTube Music's plain ones.
+async fn find_lyrics(
+    shared: &Shared,
+    session: &Session,
+    song: &Song<'_>,
+) -> Option<ytfast_core::lyrics::Lyrics> {
+    let youtube = match details(shared, session, song.video_id).await {
+        Ok(SongDetails {
+            lyrics_id: Some(id),
+            ..
+        }) => session.lyrics(&id).await.unwrap_or_else(|e| {
+            log::info!("YouTube Music's lyrics did not load: {e}");
+            None
+        }),
+        Ok(_) => None,
+        Err(e) => {
+            log::info!("the song's details did not load: {e}");
+            None
+        }
+    };
+    if youtube.as_ref().is_some_and(|l| l.synced) {
+        return youtube;
+    }
+    match ytfast_core::lyrics::lrclib(
+        &shared.download,
+        song.title,
+        song.artist,
+        song.album,
+        song.duration,
+    )
+    .await
+    {
+        Ok(Some(found)) if found.synced || youtube.is_none() => Some(found),
+        Ok(_) => youtube,
+        Err(e) => {
+            log::info!("LRCLIB did not answer: {e}");
+            youtube
+        }
+    }
+}
+
 async fn related(shared: &Shared, video_id: String) {
     let result = if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         Ok(demo::page(&Route::Explore))
+    } else if let Some(p) = shared.preparer().await {
+        match details(shared, &p.session, &video_id).await {
+            Ok(SongDetails {
+                related_id: Some(id),
+                ..
+            }) => p
+                .session
+                .page(&id, None)
+                .await
+                .map_err(|e| api_error(shared, e)),
+            Ok(_) => Err("YouTube Music has nothing related to this song.".into()),
+            Err(e) => Err(api_error(shared, e)),
+        }
     } else {
-        Err("Related songs are not available yet.".to_string())
+        Err("Not signed in.".into())
     };
     shared.send(Event::Related(video_id, result));
 }
 
 async fn edit(shared: &Shared, change: Edit) {
     if shared.demo {
-        if let Edit::CreatePlaylist { title, .. } = &change {
-            shared.send(Event::PlaylistMade(
-                format!("demo-playlist-{title}"),
-                title.clone(),
-            ));
+        if matches!(change, Edit::CreatePlaylist { .. }) {
+            shared.send(Event::Edited(change));
         }
         return;
     }
-    let result: Result<(), String> = Err("This is not available yet.".into());
-    if let Err(message) = result {
-        shared.send(Event::EditFailed(change, message));
+    let Some(p) = shared.preparer().await else {
+        shared.send(Event::EditFailed(change, "Not signed in.".into()));
+        return;
+    };
+    let session = &p.session;
+    let result = match &change {
+        Edit::Rate { video_id, like } => session.rate_song(video_id, rating(*like)).await,
+        Edit::AddToPlaylist {
+            playlist_id,
+            video_id,
+        } => {
+            session
+                .add_to_playlist(playlist_id, std::slice::from_ref(video_id))
+                .await
+        }
+        Edit::RemoveFromPlaylist {
+            playlist_id,
+            video_id,
+            set_video_id,
+        } => {
+            session
+                .remove_from_playlist(playlist_id, &[(video_id.clone(), set_video_id.clone())])
+                .await
+        }
+        Edit::CreatePlaylist { title, video_ids } => session
+            .create_playlist(title, "", Privacy::Private, video_ids)
+            .await
+            .map(|_| ()),
+        Edit::RenamePlaylist { playlist_id, name } => {
+            session.rename_playlist(playlist_id, name).await
+        }
+        Edit::DeletePlaylist { playlist_id } => session.delete_playlist(playlist_id).await,
+        Edit::Save { playlist_id, save } => session.save_to_library(playlist_id, *save).await,
+        Edit::Subscribe {
+            channel_id,
+            subscribe,
+        } => session.subscribe(channel_id, *subscribe).await,
+    };
+    match result {
+        Ok(()) => shared.send(Event::Edited(change)),
+        Err(e) => {
+            let message = api_error(shared, e);
+            shared.send(Event::EditFailed(change, message));
+        }
     }
 }
 

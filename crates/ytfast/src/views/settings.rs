@@ -1,7 +1,7 @@
 //! YTFast's settings: a few switches, the account, and where problems are
 //! noted.
 
-use egui::{Color32, CornerRadius, Sense, Vec2, pos2, vec2};
+use egui::{Color32, CornerRadius, Sense, pos2, vec2};
 
 use crate::app::{Action, App, Auth, Setting};
 use crate::theme::{self, PALETTE};
@@ -108,7 +108,6 @@ fn switch(app: &App, ui: &mut egui::Ui, title: &str, about: &str, on: bool, whic
                 9.0,
                 if on { Color32::BLACK } else { PALETTE.text },
             );
-            let _ = Vec2::ZERO;
             if response.clicked() {
                 app.act(Action::Toggle(which));
             }
