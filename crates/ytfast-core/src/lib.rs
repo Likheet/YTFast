@@ -17,6 +17,7 @@
 pub mod audio;
 pub mod auth;
 pub mod cookies;
+pub mod direct;
 pub mod helpers;
 pub mod innertube;
 pub mod net;
@@ -24,5 +25,7 @@ pub mod playreport;
 pub mod prepare;
 pub mod read;
 pub mod redact;
+pub mod solver;
+pub mod stream;
 pub mod ytcfg;
 pub mod ytdlp;

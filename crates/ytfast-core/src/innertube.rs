@@ -357,23 +357,59 @@ impl Session {
     /// What YouTube says about one song: whether it plays for this account,
     /// its loudness, and where to report listening.
     pub async fn player(&self, video_id: &str) -> Result<PlayerInfo, ApiError> {
-        // The signature timestamp only matters for stream addresses, which
-        // YtFast takes from yt-dlp; ytmusicapi sends the same placeholder.
-        let days = unix_now() / 86_400;
-        let reply = self
-            .call(
-                "player",
-                json!({
-                    "videoId": video_id,
-                    "playbackContext": {
-                        "contentPlaybackContext": { "signatureTimestamp": days.saturating_sub(1) }
-                    },
-                    "contentCheckOk": true,
-                    "racyCheckOk": true,
-                }),
-            )
-            .await?;
-        Ok(read::player_info(&reply))
+        Ok(read::player_info(&self.player_reply(video_id, None).await?))
+    }
+
+    /// The whole `player` reply. `sts` is the player code's signature
+    /// timestamp ([`crate::direct::signature_timestamp`]); stream addresses
+    /// only unlock with the player whose timestamp was sent. Without one,
+    /// the placeholder ytmusicapi sends.
+    pub async fn player_reply(&self, video_id: &str, sts: Option<u64>) -> Result<Value, ApiError> {
+        let sts = sts.unwrap_or_else(|| (unix_now() / 86_400).saturating_sub(1));
+        self.call(
+            "player",
+            json!({
+                "videoId": video_id,
+                "playbackContext": {
+                    "contentPlaybackContext": {
+                        "html5Preference": "HTML5_PREF_WANTS",
+                        "signatureTimestamp": sts
+                    }
+                },
+                "contentCheckOk": true,
+                "racyCheckOk": true,
+            }),
+        )
+        .await
+    }
+
+    /// Where YouTube Music's player code is, from the page.
+    pub fn player_js_url(&self) -> Option<String> {
+        let path = self.config.player_js_url.as_deref()?;
+        Some(if path.starts_with("http") {
+            path.to_string()
+        } else {
+            format!("{ORIGIN}{path}")
+        })
+    }
+
+    /// A public YouTube file as text (the player code). No sign-in is sent.
+    pub async fn fetch_text(&self, url: &str) -> Result<String, ApiError> {
+        let response = self
+            .http
+            .get(url)
+            .header("Referer", format!("{ORIGIN}/"))
+            .send()
+            .await
+            .map_err(network)?;
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            return Err(ApiError::Http {
+                status,
+                message: "the file could not be fetched".into(),
+            });
+        }
+        response.text().await.map_err(network)
     }
 
     /// Sends one listening report (see `playreport.rs`). Returns the HTTP

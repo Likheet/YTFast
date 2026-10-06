@@ -321,7 +321,7 @@ impl YtDlp {
 
 /// On Windows, a program started from a windowed app opens a console
 /// window of its own unless told not to.
-fn no_console_window(command: &mut tokio::process::Command) {
+pub(crate) fn no_console_window(command: &mut tokio::process::Command) {
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;

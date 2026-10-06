@@ -11,6 +11,8 @@ use serde_json::Value;
 
 mod page;
 
+mod formats;
+pub use formats::{StreamFormat, best_stream, stream_formats};
 pub use page::{Card, Header, Item, Page, PageKind, Section, Shape, Target, Thumb, page, up_next};
 
 /// Two flags YouTube puts in every reply (`GFEEDBACK` tracking params).

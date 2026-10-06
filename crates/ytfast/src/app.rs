@@ -164,6 +164,8 @@ pub struct App {
     /// A short message shown above the player bar.
     pub notice: Option<(String, Instant)>,
     pub actions: RefCell<Vec<Action>>,
+    /// Songs already asked for ahead of time.
+    warmed: RefCell<std::collections::HashSet<String>>,
 }
 
 fn default_browser() -> Browser {
@@ -233,12 +235,25 @@ impl App {
             show_queue: false,
             notice: None,
             actions: RefCell::new(Vec::new()),
+            warmed: RefCell::new(std::collections::HashSet::new()),
         }
     }
 
     /// Queues an action for after this frame.
     pub fn act(&self, action: Action) {
         self.actions.borrow_mut().push(action);
+    }
+
+    /// Finds a song's audio ahead of time, so it starts at once if played
+    /// (it was pointed at, or is the top search result). Once per song.
+    pub fn warm(&self, video_id: &str) {
+        let mut warmed = self.warmed.borrow_mut();
+        if warmed.len() > 300 {
+            warmed.clear();
+        }
+        if warmed.insert(video_id.to_string()) {
+            self.backend.send(Request::Warm(video_id.to_string()));
+        }
     }
 
     /// The cover texture for a picture address, when it has arrived.
@@ -294,6 +309,13 @@ impl App {
                     }
                 }
                 Event::Page(route, result) => {
+                    // The top search result is the likeliest song to be
+                    // played next.
+                    if let (Route::Search(_), Ok(page)) = (&route, &result)
+                        && let Some(top) = page.tracks().first()
+                    {
+                        self.warm(&top.video_id);
+                    }
                     let loaded = match result {
                         Ok(page) => Loadable::Ready(page),
                         Err(message) => Loadable::Failed(message),
@@ -353,7 +375,7 @@ impl App {
                     .unwrap_or(0.0);
                 self.audio.send(Command::Play {
                     entry,
-                    bytes: ready.bytes,
+                    data: ready.data,
                     gain: ready.gain,
                     length,
                 });
@@ -368,10 +390,11 @@ impl App {
                 } else {
                     ready.format
                 };
+                let way = if ready.direct { "fast way" } else { "yt-dlp" };
                 self.playback.format = format!(
-                    "{quality}\nFound in {:.1} s, downloaded in {:.1} s",
+                    "{quality}\nFound in {:.1} s ({way}), started {:.1} s later",
                     ready.find_time.as_secs_f64(),
-                    ready.download_time.as_secs_f64()
+                    ready.start_time.as_secs_f64()
                 );
                 log::info!("song ready: {}", self.playback.format.replace('\n', "; "));
                 self.playback.state = PlayState::Playing;

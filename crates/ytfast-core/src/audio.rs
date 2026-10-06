@@ -1,19 +1,17 @@
-//! Downloading a song's audio and playing it.
+//! Playing a song's audio.
 //!
-//! A song is downloaded whole into memory (about 4 MB at 128 kbps, 8 MB at
-//! 256 kbps for four minutes), then decoded as it plays. Holding the whole
-//! song means pausing for hours, closing the laptop lid or changing Wi-Fi
-//! cannot break it: YouTube's stream addresses expire after a few hours, but
-//! nothing more needs fetching once a song has arrived.
+//! A song plays from its first bytes while the rest downloads
+//! ([`crate::stream`]); once all of it has arrived it stays in memory, so
+//! pausing for hours, closing the laptop lid or changing Wi-Fi cannot break
+//! it.
 //!
 //! Output goes through `fastframe-audio`, the device stream Spotifast uses:
 //! it costs no CPU while paused, follows the default output when headphones
 //! come and go, and reopens after a failure. symphonia decodes (AAC in MP4)
 //! and rodio's mixer converts to the device's rate.
 
-use std::io::Cursor;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use fastframe_audio::{Buffer, BufferSize, Maintained, OutputOptions, Render};
 use symphonia::core::audio::SampleBuffer;
@@ -25,15 +23,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::core::units::Time;
 
-use crate::redact;
-use crate::ytdlp::AudioFormat;
-
-/// Downloads are fetched in pieces this size. YouTube slows down single
-/// requests for whole files; players ask for ranges.
-const PIECE: u64 = 2 * 1024 * 1024;
-/// No song's audio should be anywhere near this; a guard against a runaway
-/// download.
-const MAX_SIZE: u64 = 200 * 1024 * 1024;
+use crate::stream::SongData;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -45,106 +35,12 @@ pub enum AudioError {
     Device(String),
 }
 
-/// A finished download.
-pub struct Downloaded {
-    pub bytes: Vec<u8>,
-    pub took: Duration,
-}
-
-/// Downloads a whole stream. `progress` gets the bytes so far and the total
-/// when known.
-pub async fn download(
-    http: &reqwest::Client,
-    format: &AudioFormat,
-    progress: &(dyn Fn(u64, Option<u64>) + Sync),
-) -> Result<Downloaded, AudioError> {
-    let started = Instant::now();
-    let fail = |what: String| AudioError::Download(redact::urls(&what));
-    let mut bytes: Vec<u8> =
-        Vec::with_capacity(format.size.unwrap_or(PIECE).min(MAX_SIZE) as usize);
-    let mut total = format.size;
-    loop {
-        let start = bytes.len() as u64;
-        if total.is_some_and(|t| start >= t) {
-            break;
-        }
-        let end = start + PIECE - 1;
-        let end = total.map_or(end, |t| end.min(t - 1));
-        let mut request = http
-            .get(&format.url)
-            .header("Range", format!("bytes={start}-{end}"));
-        for (name, value) in &format.headers {
-            // Compression would make byte ranges meaningless.
-            if !name.eq_ignore_ascii_case("accept-encoding") {
-                request = request.header(name.as_str(), value.as_str());
-            }
-        }
-        let response = request.send().await.map_err(|e| fail(e.to_string()))?;
-        let status = response.status().as_u16();
-        match status {
-            206 => {
-                if let Some(t) = response
-                    .headers()
-                    .get(reqwest::header::CONTENT_RANGE)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(content_range_total)
-                {
-                    total = Some(t);
-                }
-            }
-            // The server sent everything at once.
-            200 if start == 0 => {}
-            403 => {
-                return Err(fail(
-                    "YouTube refused the stream (403). The link may have expired".into(),
-                ));
-            }
-            _ => return Err(fail(format!("YouTube answered HTTP {status}"))),
-        }
-        let whole = status == 200;
-        let body = response.bytes().await.map_err(|e| fail(e.to_string()))?;
-        if body.is_empty() {
-            break;
-        }
-        bytes.extend_from_slice(&body);
-        if bytes.len() as u64 > MAX_SIZE {
-            return Err(fail("the stream was far larger than any song".into()));
-        }
-        progress(bytes.len() as u64, total);
-        if whole || (body.len() as u64) < end - start + 1 && total.is_none() {
-            break;
-        }
-    }
-    if bytes.is_empty() {
-        return Err(fail("YouTube sent no audio".into()));
-    }
-    Ok(Downloaded {
-        bytes,
-        took: started.elapsed(),
-    })
-}
-
-/// The total from `Content-Range: bytes 0-99/1234`.
-fn content_range_total(value: &str) -> Option<u64> {
-    value.rsplit_once('/')?.1.trim().parse().ok()
-}
-
 /// How much to turn a song down, from YouTube's loudness figure. YouTube
 /// only turns loud songs down; quiet ones are left alone.
 pub fn gain_for_loudness(loudness_db: Option<f64>) -> f32 {
     match loudness_db {
         Some(db) if db > 0.0 => 10f64.powf(-db / 20.0).clamp(0.1, 1.0) as f32,
         _ => 1.0,
-    }
-}
-
-/// The song's bytes, shared between the decoders made for seeking.
-#[derive(Clone)]
-struct SharedBytes(Arc<[u8]>);
-
-impl AsRef<[u8]> for SharedBytes {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
     }
 }
 
@@ -165,13 +61,17 @@ struct SongSource {
 }
 
 impl SongSource {
-    /// Opens `bytes` and positions it at `at`.
-    fn open(bytes: &Arc<[u8]>, at: Duration) -> Result<Self, AudioError> {
+    /// Opens a song and positions it at `at`. From the start it plays as
+    /// the bytes arrive; jumping elsewhere needs the whole song, so it
+    /// waits for the download to finish (usually seconds).
+    fn open(data: &Arc<SongData>, at: Duration) -> Result<Self, AudioError> {
         let fail = |what: &str, e: DecodeError| AudioError::Decode(format!("{what}: {e}"));
-        let stream = MediaSourceStream::new(
-            Box::new(Cursor::new(SharedBytes(Arc::clone(bytes)))),
-            Default::default(),
-        );
+        let seekable = !at.is_zero();
+        if seekable {
+            data.wait_complete(WHOLE_SONG_WAIT)
+                .map_err(AudioError::Download)?;
+        }
+        let stream = MediaSourceStream::new(Box::new(data.reader(seekable)), Default::default());
         let mut hint = Hint::new();
         hint.mime_type("audio/mp4").with_extension("m4a");
         let options = FormatOptions {
@@ -310,8 +210,7 @@ impl rodio::Source for SongSource {
 /// The length of a song's audio, by decoding all of it (used to check that
 /// a download is a whole, playable song).
 pub fn decoded_length(bytes: &[u8]) -> Result<Duration, AudioError> {
-    let shared: Arc<[u8]> = Arc::from(bytes);
-    let source = SongSource::open(&shared, Duration::ZERO)?;
+    let source = SongSource::open(&SongData::complete(bytes.to_vec()), Duration::ZERO)?;
     let (rate, channels) = (f64::from(source.rate), f64::from(source.channels));
     let samples = source.count() as f64;
     Ok(Duration::from_secs_f64(samples / channels / rate))
@@ -352,9 +251,12 @@ impl Render for MixerRender {
 }
 
 struct Loaded {
-    bytes: Arc<[u8]>,
+    data: Arc<SongData>,
     gain: f32,
 }
+
+/// The longest a jump waits for the rest of the song to arrive.
+const WHOLE_SONG_WAIT: Duration = Duration::from_secs(60);
 
 /// Plays one song at a time. Lives on one thread (the audio device handle
 /// cannot move between threads on every platform).
@@ -417,13 +319,10 @@ impl Player {
         self.output.device_name()
     }
 
-    /// Starts a new song from the beginning. `gain` is from
-    /// [`gain_for_loudness`].
-    pub fn play_song(&mut self, bytes: Vec<u8>, gain: f32) -> Result<(), AudioError> {
-        self.song = Some(Loaded {
-            bytes: Arc::from(bytes),
-            gain,
-        });
+    /// Starts a new song from the beginning, playing as its bytes arrive.
+    /// `gain` is from [`gain_for_loudness`].
+    pub fn play_song(&mut self, data: Arc<SongData>, gain: f32) -> Result<(), AudioError> {
+        self.song = Some(Loaded { data, gain });
         self.paused = false;
         self.output.resume();
         self.restart_at(Duration::ZERO)
@@ -433,7 +332,7 @@ impl Player {
         let Some(song) = &self.song else {
             return Ok(());
         };
-        let source = SongSource::open(&song.bytes, at)?;
+        let source = SongSource::open(&song.data, at)?;
         // A fresh sink; dropping the old one stops it on the audio thread
         // without waiting.
         let sink = rodio::Sink::connect_new(&self.mixer);
@@ -558,7 +457,7 @@ mod tests {
 
     #[test]
     fn seeking_lands_exactly() {
-        let bytes: Arc<[u8]> = Arc::from(tone());
+        let bytes = SongData::complete(tone());
         let whole = SongSource::open(&bytes, Duration::ZERO).unwrap().count();
         let source = SongSource::open(&bytes, Duration::from_millis(2500)).unwrap();
         let per_second = f64::from(source.rate) * f64::from(source.channels);
@@ -570,7 +469,7 @@ mod tests {
 
     #[test]
     fn seeking_past_the_end_is_not_a_crash() {
-        let bytes: Arc<[u8]> = Arc::from(tone());
+        let bytes = SongData::complete(tone());
         if let Ok(source) = SongSource::open(&bytes, Duration::from_secs(60)) {
             assert!(source.count() < 44_100);
         }
@@ -591,11 +490,26 @@ mod tests {
     }
 
     #[test]
-    fn reads_content_range() {
-        assert_eq!(
-            content_range_total("bytes 0-2097151/3967382"),
-            Some(3_967_382)
-        );
-        assert_eq!(content_range_total("bytes 0-1/*"), None);
+    fn plays_a_song_still_arriving() {
+        // The song arrives in small parts while it is decoded: every sample
+        // comes out, the same as from the whole file.
+        let bytes = tone();
+        let whole = SongSource::open(&SongData::complete(bytes.clone()), Duration::ZERO)
+            .unwrap()
+            .count();
+        let arriving = SongData::new(Some(bytes.len() as u64));
+        let feeder = {
+            let data = Arc::clone(&arriving);
+            std::thread::spawn(move || {
+                for part in bytes.chunks(997) {
+                    data.push_for_test(part);
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                data.finish_for_test();
+            })
+        };
+        let streamed = SongSource::open(&arriving, Duration::ZERO).unwrap().count();
+        feeder.join().unwrap();
+        assert_eq!(streamed, whole);
     }
 }

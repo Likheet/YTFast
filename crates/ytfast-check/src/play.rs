@@ -53,7 +53,7 @@ impl Song {
 struct Prepared {
     song: Song,
     info: PlayerInfo,
-    bytes: Vec<u8>,
+    data: std::sync::Arc<ytfast_core::stream::SongData>,
     gain: f32,
     result: SongResult,
 }
@@ -71,22 +71,10 @@ async fn prepare(
         expected_seconds: song.expected_seconds,
         ..SongResult::default()
     };
-    let progress = |done: u64, total: Option<u64>| {
-        if show_progress {
-            match total {
-                Some(total) => ui::progress(&format!(
-                    "Downloading the audio: {} of {}",
-                    ui::megabytes(done),
-                    ui::megabytes(total)
-                )),
-                None => ui::progress(&format!("Downloading the audio: {}", ui::megabytes(done))),
-            }
-        }
-    };
-    let prepared = preparer.prepare(&song.video_id, resolved, &progress).await;
     if show_progress {
-        ui::end_progress();
+        ui::progress("Finding and downloading the audio...");
     }
+    let prepared = preparer.prepare(&song.video_id, resolved).await;
     let prepared = match prepared {
         Ok(p) => p,
         Err(e) => {
@@ -97,8 +85,6 @@ async fn prepare(
     result.format = prepared.format.clone();
     result.premium = prepared.premium;
     result.find_seconds = prepared.find_time.as_secs_f64();
-    result.download_seconds = prepared.download_time.as_secs_f64();
-    result.size_bytes = prepared.bytes.len() as u64;
     result.loudness_db = prepared.info.loudness_db;
     if result.expected_seconds.is_none() {
         result.expected_seconds = prepared.duration_seconds;
@@ -107,9 +93,15 @@ async fn prepare(
         result.problem = Some(format!("could not get song details for History: {problem}"));
     }
 
-    let (bytes, length) = tokio::task::spawn_blocking(move || {
-        let length = audio::decoded_length(&prepared.bytes);
-        (prepared.bytes, length)
+    // The check waits for the whole song, to prove it is whole and
+    // playable.
+    let download_started = std::time::Instant::now();
+    let data = std::sync::Arc::clone(&prepared.data);
+    let checked = tokio::task::spawn_blocking(move || {
+        data.wait_complete(std::time::Duration::from_secs(300))?;
+        let bytes = data.to_vec();
+        let length = audio::decoded_length(&bytes).map_err(|e| e.to_string());
+        Ok::<_, String>((bytes.len(), length))
     })
     .await
     .map_err(|e| {
@@ -118,10 +110,22 @@ async fn prepare(
             ..result.clone()
         })
     })?;
+    if show_progress {
+        ui::end_progress();
+    }
+    let (size, length) = match checked {
+        Ok(done) => done,
+        Err(e) => {
+            result.problem = Some(e);
+            return Err(Box::new(result));
+        }
+    };
+    result.download_seconds = (prepared.start_time + download_started.elapsed()).as_secs_f64();
+    result.size_bytes = size as u64;
     match length {
         Ok(length) => result.decoded_seconds = Some(length.as_secs_f64()),
         Err(e) => {
-            result.problem = Some(e.to_string());
+            result.problem = Some(e);
             return Err(Box::new(result));
         }
     }
@@ -129,7 +133,7 @@ async fn prepare(
         song,
         gain: prepared.gain,
         info: prepared.info,
-        bytes,
+        data: prepared.data,
         result,
     })
 }
@@ -223,7 +227,7 @@ pub fn run(
         let Prepared {
             song,
             info,
-            bytes,
+            data,
             gain,
             mut result,
         } = match prepared {
@@ -242,7 +246,7 @@ pub fn run(
             }
         };
 
-        if let Err(e) = player.play_song(bytes, gain) {
+        if let Err(e) = player.play_song(data, gain) {
             ui::result(
                 Outcome::Fail,
                 &format!("Song {} could not start: {e}", index + 1),
