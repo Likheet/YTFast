@@ -6,7 +6,7 @@
 //! `demo-artist-Mara Sol`, `demo-playlist-Road trip`, `demo-mood-Chill`.
 
 use ytfast_core::read::{
-    Card, Header, Item, Page, PageKind, Section, Target, Thumb, Track, TrackKind,
+    Card, Header, Item, Page, PageKind, Section, Shape, Target, Thumb, Track, TrackKind,
 };
 
 use crate::backend::Route;
@@ -130,11 +130,19 @@ fn album_card(album: &str) -> Item {
     card(album, &format!("Album • {artist}"), PageKind::Album)
 }
 
+/// A list of songs, or a carousel of cards.
 fn section(title: &str, items: Vec<Item>) -> Section {
+    let cards = items.iter().any(|i| matches!(i, Item::Card(_)));
+    let shape = if cards { Shape::Carousel } else { Shape::List };
+    shaped(title, items, shape)
+}
+
+fn shaped(title: &str, items: Vec<Item>, shape: Shape) -> Section {
     Section {
         title: title.into(),
         items,
         more: None,
+        shape,
     }
 }
 
@@ -156,7 +164,7 @@ pub fn page(route: &Route) -> Page {
         Route::Explore => explore(),
         Route::Library => Page {
             header: None,
-            sections: vec![section(
+            sections: vec![shaped(
                 "Playlists",
                 vec![
                     card("Liked Music", "Auto playlist", PageKind::Playlist),
@@ -165,6 +173,7 @@ pub fn page(route: &Route) -> Page {
                     card("Gym", "Playlist • 14 songs", PageKind::Playlist),
                     card("Sunday morning", "Playlist • 14 songs", PageKind::Playlist),
                 ],
+                Shape::Grid,
             )],
         },
         Route::Liked => {
@@ -190,7 +199,7 @@ fn home() -> Page {
     Page {
         header: None,
         sections: vec![
-            section("Quick picks", songs(0, 8)),
+            shaped("Quick picks", songs(0, 12), Shape::Carousel),
             section(
                 "Listen again",
                 vec![
@@ -225,7 +234,7 @@ fn home() -> Page {
                     ),
                 ],
             ),
-            section("Trending", songs(8, 6)),
+            shaped("Trending", songs(12, 8), Shape::Carousel),
         ],
     }
 }
@@ -263,7 +272,7 @@ fn explore() -> Page {
                 .map(|m| card(m, "", PageKind::Other))
                 .collect(),
             ),
-            section("Trending", songs(14, 6)),
+            shaped("Trending", songs(14, 8), Shape::Carousel),
         ],
     }
 }
@@ -333,7 +342,7 @@ fn browse(id: &str) -> Page {
                 title: name.into(),
                 ..Header::default()
             }),
-            sections: vec![section(
+            sections: vec![shaped(
                 &format!("{name} playlists"),
                 ["Essentials", "Hits", "Deep cuts", "Fresh finds"]
                     .into_iter()
@@ -345,6 +354,7 @@ fn browse(id: &str) -> Page {
                         )
                     })
                     .collect(),
+                Shape::Grid,
             )],
         },
         _ => {
@@ -405,17 +415,19 @@ fn search(query: &str) -> Page {
             .collect();
         sections.push(section("Songs", more));
     }
-    sections.push(section(
+    sections.push(shaped(
         "Albums",
         albums.into_iter().take(4).map(album_card).collect(),
+        Shape::List,
     ));
-    sections.push(section(
+    sections.push(shaped(
         "Artists",
         artists
             .into_iter()
             .take(4)
             .map(|a| card(a, "Artist", PageKind::Artist))
             .collect(),
+        Shape::List,
     ));
     Page {
         header: None,
