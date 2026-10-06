@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- YtFast's mark: a play button with speed lines. -->
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="#ff0033"/>
+  <path d="M 480 352 L 480 672 L 752 512 Z" fill="#ffffff" stroke="#ffffff" stroke-width="56" stroke-linejoin="round"/>
+  <path d="M 296 420 H 388 M 264 512 H 388 M 296 604 H 388" fill="none" stroke="#ffffff" stroke-width="44" stroke-linecap="round"/>
+</svg>

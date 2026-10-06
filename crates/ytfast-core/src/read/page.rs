@@ -53,7 +53,7 @@ impl Thumb {
 }
 
 /// What kind of page a card opens.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageKind {
     Album,
     Playlist,
@@ -194,6 +194,24 @@ impl Page {
         self.sections.iter().flat_map(Section::tracks).collect()
     }
 
+    /// An album's songs come without a picture or an album name: they are
+    /// the album's, as YouTube Music shows them.
+    pub fn fill_album_songs(&mut self) {
+        let Some(header) = &self.header else { return };
+        for section in &mut self.sections {
+            for item in &mut section.items {
+                if let Item::Track(track) = item {
+                    if track.thumbnail.is_none() {
+                        track.thumbnail = header.thumbnail.clone();
+                    }
+                    if track.album.is_none() {
+                        track.album = Some(header.title.clone());
+                    }
+                }
+            }
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.header.is_none() && self.sections.iter().all(|s| s.items.is_empty())
     }
@@ -221,7 +239,17 @@ pub fn page(reply: &Value) -> Page {
     let header = HEADERS
         .iter()
         .find_map(|key| find_key(reply, key).map(|h| (*key, h)))
-        .map(|(key, h)| header(key, h));
+        .map(|(key, h)| header(key, h))
+        // A mood or genre page has only a title.
+        .or_else(|| {
+            let title = reply
+                .pointer("/header/musicHeaderRenderer/title")
+                .and_then(text)?;
+            Some(Header {
+                title,
+                ..Header::default()
+            })
+        });
     let mut sections = Vec::new();
     walk(reply, &mut sections);
     sections.retain(|s| !s.items.is_empty());
@@ -555,6 +583,19 @@ mod tests {
                 .all(|t| !t.title.is_empty() && t.duration_seconds.is_some())
         );
         assert!(titles(&page).contains(&"Releases for you"));
+        // The third column is the play count, not an album.
+        assert!(
+            tracks
+                .iter()
+                .all(|t| t.album.as_deref().is_none_or(|a| !a.ends_with("plays")))
+        );
+        // Filled in from the album.
+        let mut page = page;
+        page.fill_album_songs();
+        for track in page.tracks() {
+            assert_eq!(track.album.as_deref(), Some("17"));
+            assert_eq!(track.thumbnail, header.thumbnail);
+        }
     }
 
     #[test]
@@ -648,5 +689,16 @@ mod tests {
             { "url": "https://a.example/big", "width": 544 }
         ]}));
         assert_eq!(best.unwrap().url, "https://a.example/big");
+    }
+
+    #[test]
+    fn mood_page_title() {
+        let reply = serde_json::json!({
+            "header": {"musicHeaderRenderer": {"title": {"runs": [{"text": "Chill"}]}}},
+            "contents": {}
+        });
+        let header = page(&reply).header.expect("a header");
+        assert_eq!(header.title, "Chill");
+        assert!(header.thumbnail.is_none());
     }
 }

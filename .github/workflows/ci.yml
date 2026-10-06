@@ -1,5 +1,6 @@
-# Checks every push, and builds ytfast-check for the two computers YtFast
-# targets. The builds are downloadable from the run's "Artifacts" section.
+# Checks every push, and builds YtFast (the app) and ytfast-check for the two
+# computers YtFast targets. The builds are downloadable from the run's
+# "Artifacts" section.
 name: CI
 
 on:
@@ -25,13 +26,16 @@ jobs:
         include:
           - name: macOS (Apple Silicon)
             os: macos-latest
-            artifact: ytfast-check-macos-apple-silicon
+            app: YtFast-for-Mac
+            check: ytfast-check-macos-apple-silicon
           - name: Windows (Intel/AMD)
             os: windows-latest
-            artifact: ytfast-check-windows
+            app: YtFast-for-Windows
+            check: ytfast-check-windows
           - name: Linux (checks only)
             os: ubuntu-latest
-            artifact: ""
+            app: ""
+            check: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -54,30 +58,59 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
-      - name: Build ytfast-check
-        if: matrix.artifact != ''
-        run: cargo build --release --locked -p ytfast-check
+      - name: Build
+        if: matrix.app != ''
+        run: cargo build --release --locked -p ytfast -p ytfast-check
 
-      # A tar keeps the "this is a program" permission that a plain zip loses.
+      # The app as YtFast.app, with its icon, signed "ad hoc" (there is no
+      # Apple developer account), so macOS runs it once it is allowed in
+      # Privacy & Security. ditto and tar keep the "this is a program"
+      # permission that a plain zip loses.
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          mkdir dist
-          tar -C target/release -czf dist/ytfast-check-macos.tar.gz ytfast-check
-          cp docs/run-the-check.md dist/HOW-TO-RUN.md
+          mkdir -p dist/app dist/check
+          app=dist/YtFast.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/ytfast "$app/Contents/MacOS/ytfast"
+          cp packaging/macos/Info.plist "$app/Contents/Info.plist"
+          iconset="$RUNNER_TEMP/YtFast.iconset"
+          mkdir -p "$iconset"
+          for size in 16 32 128 256 512; do
+            double=$((size * 2))
+            sips -z "$size" "$size" packaging/icons/macos-1024.png --out "$iconset/icon_${size}x${size}.png" > /dev/null
+            sips -z "$double" "$double" packaging/icons/macos-1024.png --out "$iconset/icon_${size}x${size}@2x.png" > /dev/null
+          done
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/YtFast.icns"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          ditto -c -k --keepParent "$app" dist/app/YtFast-mac.zip
+          cp docs/run-the-app.md dist/app/HOW-TO-RUN.md
+          tar -C target/release -czf dist/check/ytfast-check-macos.tar.gz ytfast-check
+          cp docs/run-the-check.md dist/check/HOW-TO-RUN.md
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          mkdir dist
-          cp target/release/ytfast-check.exe dist/
-          cp docs/run-the-check.md dist/HOW-TO-RUN.md
+          mkdir -p dist/app dist/check
+          cp target/release/ytfast.exe dist/app/YtFast.exe
+          cp docs/run-the-app.md dist/app/HOW-TO-RUN.md
+          cp target/release/ytfast-check.exe dist/check/
+          cp docs/run-the-check.md dist/check/HOW-TO-RUN.md
 
-      - name: Upload
-        if: matrix.artifact != ''
+      - name: Upload the app
+        if: matrix.app != ''
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/
+          name: ${{ matrix.app }}
+          path: dist/app/
+          retention-days: 30
+
+      - name: Upload the check
+        if: matrix.check != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.check }}
+          path: dist/check/
           retention-days: 30

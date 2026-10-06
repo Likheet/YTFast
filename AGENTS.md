@@ -41,14 +41,50 @@ crates/ytfast-core/   the engine (no user interface)
   src/net.rs          HTTP clients
   src/redact.rs       keeping secrets out of messages
   tests/fixtures/     saved YouTube replies (see its README)
+crates/ytfast/        the app: an egui window on fastframe
+  src/main.rs         starts the window (`--demo`, `--verbose`)
+  src/app.rs          the app's state, and what every action does
+  src/backend.rs      network and yt-dlp work, on a thread of its own
+  src/audio_thread.rs the player, on a thread of its own
+  src/queue.rs        what plays now and next
+  src/images.rs       album covers, loaded once and kept for a while
+  src/demo.rs         made-up music for `--demo`
+  src/theme.rs        colours, fonts, icons, drawing helpers
+  src/views/          what the window draws: sidebar, top bar, page,
+                      player bar, Up next, sign-in
+  assets/             icons (Lucide, ISC) and the app's own mark
+  build.rs            the icon and name in the Windows program
 crates/ytfast-check/  step 0: the guided check program
-docs/                 plan, how to run the check
+packaging/            app icon files, the Mac Info.plist, the Windows
+                      resource file
+docs/                 plan, how to run the app and the check
 ```
 
-The app itself (phase 1) will be a new crate, `crates/ytfast`, with an
-egui interface on [fastframe](https://github.com/crmne/fastframe), modelled
-on Spotifast. Copy Spotifast code only where it fits, crediting it (MIT,
-Copyright (c) 2026 Carmine Paolino), as `audio.rs` does.
+The app is modelled on [Spotifast](https://github.com/crmne/spotifast) and
+built on [fastframe](https://github.com/crmne/fastframe). Copy Spotifast
+code only where it fits, crediting it (MIT, Copyright (c) 2026 Carmine
+Paolino), as `audio.rs` does.
+
+## How the app works
+
+- Three threads. The window thread draws and never waits. The backend
+  thread (`backend.rs`, a tokio runtime) does everything that waits on the
+  network or yt-dlp. The audio thread (`audio_thread.rs`) owns the player.
+  They talk through channels: `Request`/`Event` and `Command`/`Status`.
+- Views draw from a shared `&App` and push `Action`s; `App::apply` runs
+  them after the frame is drawn, so nothing changes under a view.
+- Each queue entry has its own ID. Answers about an entry (a song made
+  ready, a song that ended) carry that ID, and answers about an entry no
+  longer playing are ignored.
+- The next song is made ready while the current one plays, and more songs
+  are asked for (YouTube Music's Up next) when the queue is about to run
+  out.
+- Long lists (a playlist, Liked Music) show their first songs at once and
+  load the rest in the background (`Session::more_tracks`).
+- Every page is a header and sections of songs or cards (`read::Page`), so
+  one view draws Home, Explore, search, albums, artists and playlists.
+- `--demo` replaces the account with made-up music and no network or
+  sound, for trying the interface and for screenshots.
 
 ## Rules
 
@@ -65,9 +101,9 @@ Copyright (c) 2026 Carmine Paolino), as `audio.rs` does.
 
 ### Talking to YouTube
 
-- All reading of YouTube's JSON lives in the `read` module (`src/read/`). Readers look for the
-  piece they need wherever it is and return `None` or an empty list rather
-  than failing. When a reply breaks a reader, save a real reply (nothing
+- All reading of YouTube's JSON lives in the `read` module (`src/read/`).
+  Readers look for the piece they need wherever it is and return `None` or
+  an empty list rather than failing. When a reply breaks a reader, save a real reply (nothing
   personal in it) to `tests/fixtures/` and add a test.
 - Don't hard-code client versions or account details: they come from the
   page config (`ytcfg.rs`), with fallbacks.
@@ -99,7 +135,8 @@ Copyright (c) 2026 Carmine Paolino), as `audio.rs` does.
 - yt-dlp: the latest release, checked against its published SHA2-256SUMS.
 - Deno: pinned in `helpers.rs` (`DENO_VERSION` plus one SHA-256 per
   platform, from Deno's `.sha256sum` files). Update them together.
-- On Windows the app (phase 1) must start helpers without a console window.
+- On Windows, helpers start without a console window (`no_console_window`
+  in `ytdlp.rs`); the app has none either in release builds.
 
 ### Where things can be tested
 
@@ -109,6 +146,10 @@ Copyright (c) 2026 Carmine Paolino), as `audio.rs` does.
   and say plainly what still needs a run on the laptops.
 - The check can be exercised in a cloud session up to the sign-in step with
   a fake Firefox profile (a `cookies.sqlite` with made-up YouTube cookies).
+- The app can be seen in a cloud session in demo mode: run it under a
+  virtual screen (Xvfb, with `libxkbcommon-x11-0`), click with `xdotool`
+  and take screenshots with ImageMagick's `import`. Give the window
+  keyboard focus first (`xdotool windowfocus`) or typing goes nowhere.
 
 ### Platforms and licences
 
@@ -130,17 +171,29 @@ On Linux the audio library needs ALSA headers: `sudo apt-get install
 libasound2-dev`.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and
-Linux, and uploads `ytfast-check` for the Mac and for Windows as artifacts.
+Linux, and uploads the app (`YtFast-for-Mac`: YtFast.app, signed ad hoc, in
+a zip; `YtFast-for-Windows`: YtFast.exe) and `ytfast-check` for both as
+artifacts, each with its HOW-TO-RUN guide.
+
+Version numbers live in `Cargo.toml`, `packaging/macos/Info.plist` and
+`packaging/windows/ytfast.rc`: change them together.
 
 ## Current state
 
-Step 0 is built and waiting for the owner to run `ytfast-check` on both
-laptops (see [docs/run-the-check.md](docs/run-the-check.md)). Their report
-decides whether phase 1 starts as planned.
+Step 0 passed on the owner's Windows laptop: Firefox sign-in, account and
+Liked songs, Premium audio (AAC 256 kbps, format 141), playing with pause
+and next, and plays reaching History. Finding the first song's audio took
+about 10 seconds. The Mac run is still to do.
+
+Phase 1 is built (see [docs/plan.md](docs/plan.md)) and waiting for its
+first run on the laptops (see [docs/run-the-app.md](docs/run-the-app.md)).
 
 Tested so far, in a cloud session only: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp
 output, checksums, unpacking, decoding and exact seeking of YouTube's audio
-layout), helper download and verification on Linux, and reading a fake
-Firefox sign-in through yt-dlp. Not yet tested anywhere: anything that talks
-to YouTube, and sound output.
+layout, the queue), helper download and verification on Linux, reading a
+fake Firefox sign-in through yt-dlp, and the app in demo mode under a
+virtual screen (every screen, playing, the queue, search, shortcuts), also
+with saved real pages. Not yet tested: the app with a real account, sound
+from the app, and the Mac and Windows builds of the app beyond CI compiling
+and packaging them.

@@ -1,0 +1,49 @@
+[package]
+name = "ytfast"
+description = "YouTube Music, native and fast"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ytfast"
+path = "src/main.rs"
+
+[dependencies]
+ytfast-core = { path = "../ytfast-core" }
+anyhow = "1"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false }
+directories = "6"
+# The window, as in Spotifast: glow keeps the binary and the build small;
+# a 2D music app needs no wgpu. AccessKit gives screen readers the controls.
+eframe = { version = "0.36", default-features = false, features = ["accesskit", "glow", "default_fonts", "wayland", "x11", "persistence"] }
+egui = "0.36"
+# SVG icons (fastframe-icons serves them through this loader).
+egui_extras = { version = "0.36", features = ["svg"] }
+# Album covers: YouTube serves JPEG and WebP.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Spotifast's shared foundation, at the version Spotifast 0.12 uses.
+# Interface font (Inter), following the desktop's font rendering.
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+# Icons (Lucide), shared and our own.
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+# Media keys and the system's Now Playing panel (macOS) / media overlay
+# (Windows).
+fastframe-now-playing = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+# Scrolling that feels like the platform's.
+fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+
+[build-dependencies]
+# The icon and name in the Windows program file.
+embed-resource = "3"
+
+[lints]
+workspace = true

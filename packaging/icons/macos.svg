@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The mark on macOS's icon grid: an 824-point tile in a 1024 canvas. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#ff0033"/>
+  <g transform="translate(512 512) scale(0.8583) translate(-512 -512)">
+    <path d="M 480 352 L 480 672 L 752 512 Z" fill="#ffffff" stroke="#ffffff" stroke-width="56" stroke-linejoin="round"/>
+    <path d="M 296 420 H 388 M 264 512 H 388 M 296 604 H 388" fill="none" stroke="#ffffff" stroke-width="44" stroke-linecap="round"/>
+  </g>
+</svg>
