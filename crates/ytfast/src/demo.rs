@@ -70,7 +70,8 @@ fn song(i: usize) -> Track {
         album: Some(album.into()),
         kind: TrackKind::Song,
         thumbnail: thumb(album),
-        ..Track::default()
+        artist_id: Some(id_for(artist, PageKind::Artist)),
+        album_id: Some(id_for(album, PageKind::Album)),
     }
 }
 
@@ -101,7 +102,13 @@ fn card(title: &str, subtitle: &str, kind: PageKind) -> Item {
         ("VLLM".to_string(), "LM".to_string())
     } else {
         let id = id_for(title, kind);
-        (id.clone(), id)
+        // A playlist's page is its ID after `VL`, as on YouTube Music.
+        let page = if kind == PageKind::Playlist {
+            format!("VL{id}")
+        } else {
+            id.clone()
+        };
+        (page, id)
     };
     let playable = matches!(kind, PageKind::Album | PageKind::Playlist);
     Item::Card(Card {
@@ -313,6 +320,7 @@ fn explore() -> Page {
 }
 
 fn browse(id: &str) -> Page {
+    let id = id.strip_prefix("VL").unwrap_or(id);
     let rest = id.strip_prefix("demo-").unwrap_or(id);
     let (tag, name) = rest.split_once('-').unwrap_or(("playlist", rest));
     match tag {
@@ -327,6 +335,8 @@ fn browse(id: &str) -> Page {
                     owner: artist.into(),
                     thumbnail: thumb(name),
                     round: false,
+                    library_id: Some(format!("OLAKdemo{}", seed(name))),
+                    saved: Some(false),
                     ..Header::default()
                 }),
                 sections: vec![

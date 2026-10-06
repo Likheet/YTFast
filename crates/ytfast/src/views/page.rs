@@ -406,7 +406,13 @@ const GRID_ROWS: usize = 4;
 /// Save to library, Subscribe, and Rename and Delete for the account's own
 /// playlists.
 fn header_actions(app: &App, ui: &mut egui::Ui, route: &Route, header: &Header) {
-    if let Some(id) = header.library_id.as_ref().filter(|_| !header.editable) {
+    // Only where YouTube Music offers Save (not on the account's own
+    // playlists, nor on mixes).
+    if let Some(id) = header
+        .library_id
+        .as_ref()
+        .filter(|_| !header.editable && header.saved.is_some())
+    {
         let saved = app.saved.get(id).copied().or(header.saved).unwrap_or(false);
         let label = if saved {
             "In your library"
