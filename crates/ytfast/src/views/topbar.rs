@@ -10,11 +10,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .exact_size(theme::TOP_BAR_HEIGHT)
         .resizable(false)
         .show_separator_line(false)
-        .frame(
-            Frame::new()
-                .fill(PALETTE.window)
-                .inner_margin(Margin::symmetric(24, 0)),
-        )
+        .frame(Frame::new().inner_margin(Margin::symmetric(24, 0)))
         .show(ui, |ui| {
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_enabled_ui(app.can_go_back(), |ui| {

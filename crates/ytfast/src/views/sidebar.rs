@@ -16,6 +16,14 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .frame(
             Frame::new()
                 .fill(PALETTE.panel)
+                .stroke(egui::Stroke::new(1.0, PALETTE.outline))
+                .corner_radius(egui::CornerRadius::same(theme::PANEL_RADIUS))
+                .outer_margin(Margin {
+                    left: theme::GAP,
+                    right: 0,
+                    top: theme::GAP,
+                    bottom: 0,
+                })
                 .inner_margin(Margin::symmetric(12, 0)),
         )
         .show(ui, |ui| {
@@ -25,7 +33,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
                 theme::paint_logo(ui, rect);
                 ui.add_space(2.0);
-                theme::label(ui, "YtFast", theme::bold(20.0), PALETTE.text);
+                theme::label(ui, "YTFast", theme::bold(20.0), PALETTE.text);
             });
             ui.add_space(18.0);
 

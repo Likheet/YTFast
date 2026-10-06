@@ -9,7 +9,7 @@ use crate::backend::{Backend, Request};
 
 enum Slot {
     Loading,
-    Ready(TextureHandle),
+    Ready(TextureHandle, crate::colors::Summary),
     Failed,
 }
 
@@ -70,7 +70,7 @@ impl Images {
             Some(cached) => {
                 cached.used = frame;
                 match &cached.slot {
-                    Slot::Ready(texture) => Some(texture.clone()),
+                    Slot::Ready(texture, _) => Some(texture.clone()),
                     Slot::Loading | Slot::Failed => None,
                 }
             }
@@ -89,13 +89,27 @@ impl Images {
         }
     }
 
+    /// The colours of the cover at `url`, asking for it the first time.
+    pub fn summary(&mut self, url: &str, backend: &Backend) -> Option<crate::colors::Summary> {
+        let _texture = self.get(url, backend)?;
+        match &self.cache.get(url)?.slot {
+            Slot::Ready(_, summary) => Some(summary.clone()),
+            _ => None,
+        }
+    }
+
     /// A picture arrived from the backend.
-    pub fn arrived(&mut self, ctx: &egui::Context, url: String, picture: Option<egui::ColorImage>) {
+    pub fn arrived(
+        &mut self,
+        ctx: &egui::Context,
+        url: String,
+        picture: Option<crate::backend::Picture>,
+    ) {
         let (slot, bytes) = match picture {
             Some(picture) => {
-                let bytes = picture.size[0] * picture.size[1] * 4;
-                let texture = ctx.load_texture(&url, picture, egui::TextureOptions::LINEAR);
-                (Slot::Ready(texture), bytes)
+                let bytes = picture.image.size[0] * picture.image.size[1] * 4;
+                let texture = ctx.load_texture(&url, picture.image, egui::TextureOptions::LINEAR);
+                (Slot::Ready(texture, picture.summary), bytes)
             }
             None => (Slot::Failed, 0),
         };

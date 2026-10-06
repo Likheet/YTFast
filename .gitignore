@@ -12,3 +12,6 @@ cookies.txt
 ytfast-check-report*.txt
 
 .DS_Store
+
+# Working copies of helper agents.
+.claude/worktrees/

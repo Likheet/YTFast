@@ -9,8 +9,10 @@
 mod app;
 mod audio_thread;
 mod backend;
+mod colors;
 mod demo;
 mod images;
+mod lyrics;
 mod queue;
 mod theme;
 mod views;
@@ -62,7 +64,7 @@ fn main() -> eframe::Result<()> {
         .expect("the icon is a PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("YtFast")
+            .with_title("YTFast")
             .with_icon(std::sync::Arc::new(icon))
             .with_app_id("ytfast")
             .with_inner_size([1280.0, 820.0])
