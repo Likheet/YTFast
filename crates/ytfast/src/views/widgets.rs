@@ -334,6 +334,7 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card) {
             PALETTE.secondary,
         );
     }
+    response.context_menu(|ui| card_menu(app, ui, card));
     if play_clicked {
         if let Some(target) = card.play.clone() {
             app.act(Action::Play(target, None));
@@ -342,6 +343,93 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card) {
         && let Some(target) = card.open.clone().or_else(|| card.play.clone())
     {
         app.act(Action::Open(target, None));
+    }
+}
+
+/// What a right-click on an album or playlist offers.
+pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
+    use crate::app::QueueMode;
+    ui.set_min_width(200.0);
+    let item = |ui: &mut egui::Ui, text: &str, action: Action| {
+        if ui.button(text).clicked() {
+            app.act(action);
+            ui.close();
+        }
+    };
+    let playlist = match &card.play {
+        Some(Target::Watch {
+            playlist_id: Some(id),
+            ..
+        }) => Some(id.clone()),
+        _ => None,
+    };
+    if let Some(id) = &playlist {
+        item(
+            ui,
+            "Play",
+            Action::QueuePlaylist(id.clone(), QueueMode::Play),
+        );
+        item(
+            ui,
+            "Shuffle",
+            Action::QueuePlaylist(id.clone(), QueueMode::Shuffle),
+        );
+        item(
+            ui,
+            "Play next",
+            Action::QueuePlaylist(id.clone(), QueueMode::Next),
+        );
+        item(
+            ui,
+            "Add to queue",
+            Action::QueuePlaylist(id.clone(), QueueMode::End),
+        );
+        let radio = Target::Watch {
+            video_id: None,
+            playlist_id: Some(format!("RDAMPL{id}")),
+        };
+        item(ui, "Start radio", Action::Play(radio, None));
+        ui.separator();
+        let saved = app.saved.get(id).copied().unwrap_or(false);
+        if saved {
+            item(
+                ui,
+                "Remove from library",
+                Action::ToggleSave {
+                    playlist_id: id.clone(),
+                    save: false,
+                },
+            );
+        } else {
+            item(
+                ui,
+                "Save to library",
+                Action::ToggleSave {
+                    playlist_id: id.clone(),
+                    save: true,
+                },
+            );
+        }
+    }
+    let link = match &card.open {
+        Some(Target::Browse { id, .. }) if id.starts_with("VL") => Some(format!(
+            "https://music.youtube.com/playlist?list={}",
+            &id[2..]
+        )),
+        Some(Target::Browse { id, .. }) if id.starts_with("UC") => {
+            Some(format!("https://music.youtube.com/channel/{id}"))
+        }
+        Some(Target::Browse {
+            id, params: None, ..
+        }) => Some(format!("https://music.youtube.com/browse/{id}")),
+        _ => playlist.map(|id| format!("https://music.youtube.com/playlist?list={id}")),
+    };
+    if let Some(link) = link
+        && ui.button("Copy link").clicked()
+    {
+        ui.ctx().copy_text(link);
+        app.act(Action::Notify("Link copied".into()));
+        ui.close();
     }
 }
 

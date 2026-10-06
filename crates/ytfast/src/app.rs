@@ -108,6 +108,15 @@ impl Default for Playback {
     }
 }
 
+/// What to do with a playlist's songs once they arrive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueMode {
+    Play,
+    Shuffle,
+    Next,
+    End,
+}
+
 /// A switch on the Settings page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setting {
@@ -192,6 +201,10 @@ pub enum Action {
     },
     /// Any other change to the account.
     Edit(Edit),
+    /// Ask for search suggestions.
+    Suggest(String),
+    /// A playlist's or album's songs: play, shuffle, or queue them.
+    QueuePlaylist(String, QueueMode),
     Toggle(Setting),
     OpenDialog(Dialog),
     RenamePlaylist {
@@ -269,6 +282,8 @@ pub struct App {
     pub saved: HashMap<String, bool>,
     pub subscribed: HashMap<String, bool>,
     pub dialog: RefCell<Option<Dialog>>,
+    /// Search suggestions, for the text they were asked for.
+    pub suggestions: (String, Vec<String>),
 }
 
 /// The backdrop's textures: the current song's, and the one fading out.
@@ -357,6 +372,7 @@ impl App {
             saved: HashMap::new(),
             subscribed: HashMap::new(),
             dialog: RefCell::new(None),
+            suggestions: (String::new(), Vec::new()),
         }
     }
 
@@ -544,14 +560,36 @@ impl App {
                 Event::UpNext { video_id, result } => self.more_arrived(&video_id, result),
                 Event::PlaylistQueue {
                     playlist_id,
+                    mode,
                     result,
                 } => match result {
-                    Ok(tracks) if !tracks.is_empty() => {
-                        self.play_tracks(tracks, 0, Some(playlist_id))
-                    }
+                    Ok(tracks) if !tracks.is_empty() => match mode {
+                        QueueMode::Play => self.play_tracks(tracks, 0, Some(playlist_id)),
+                        QueueMode::Shuffle => self.apply(Action::Shuffle {
+                            tracks,
+                            source: Some(playlist_id),
+                        }),
+                        QueueMode::Next => {
+                            let count = tracks.len();
+                            for track in tracks.into_iter().rev() {
+                                self.queue.play_next(track);
+                            }
+                            self.notify(format!("{count} songs play next"));
+                            self.queue_grew();
+                        }
+                        QueueMode::End => {
+                            let count = tracks.len();
+                            for track in tracks {
+                                self.queue.add_to_end(track);
+                            }
+                            self.notify(format!("Added {count} songs to the queue"));
+                            self.queue_grew();
+                        }
+                    },
                     Ok(_) => self.notify("That playlist has no songs that can play."),
                     Err(e) => self.notify(format!("Could not play that: {e}")),
                 },
+                Event::Suggestions(text, found) => self.suggestions = (text, found),
                 Event::Lyrics(video_id, lyrics) => {
                     let state = match lyrics {
                         Some(lyrics) if !lyrics.lines.is_empty() => {
@@ -939,7 +977,10 @@ impl App {
                 playlist_id: Some(playlist_id),
             } => {
                 self.notify("Getting the songs...");
-                self.backend.send(Request::PlaylistQueue { playlist_id });
+                self.backend.send(Request::PlaylistQueue {
+                    playlist_id,
+                    mode: QueueMode::Play,
+                });
             }
             Target::Watch { .. } => {}
             Target::Browse { id, params, .. } => self.navigate(Route::browse(id, params)),
@@ -1061,6 +1102,11 @@ impl App {
                 }));
             }
             Action::Edit(change) => self.backend.send(Request::Edit(change)),
+            Action::Suggest(text) => self.backend.send(Request::Suggest(text)),
+            Action::QueuePlaylist(playlist_id, mode) => {
+                self.backend
+                    .send(Request::PlaylistQueue { playlist_id, mode });
+            }
             Action::Toggle(which) => {
                 let s = &mut self.settings;
                 match which {

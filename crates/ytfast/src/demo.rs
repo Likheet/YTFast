@@ -193,7 +193,7 @@ pub fn page(route: &Route) -> Page {
             }
         }
         Route::Browse { id, .. } => browse(id),
-        Route::Search(query) => search(query),
+        Route::Search(query) | Route::SearchOnly(query, _) => search(query),
         Route::LibrarySongs | Route::History => Page {
             header: None,
             sections: vec![section("", songs(3, 16))],
