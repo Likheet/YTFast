@@ -3,39 +3,51 @@
 
 use egui::{Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke, Vec2};
 
-/// Colours, after YouTube Music's dark theme.
+/// Colours: a near-black base, glass panels the backdrop shows through,
+/// and the accent taken from the playing song's cover (this is the
+/// default, before any song plays).
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
-    /// Behind everything (the page).
+    /// Behind everything.
     pub window: Color32,
-    /// The sidebar and the player bar.
+    /// The glass panels: sidebar, player bar, Up next.
     pub panel: Color32,
-    /// Raised things: search box, buttons, placeholders.
+    /// Raised things: search box, buttons, placeholders, hovered rows.
     pub surface: Color32,
     pub surface_hover: Color32,
     pub outline: Color32,
     pub text: Color32,
     pub secondary: Color32,
     pub dim: Color32,
-    /// YouTube red: the progress bar, the active item.
+    /// Used before a song gives one.
     pub accent: Color32,
     pub danger: Color32,
 }
 
+/// White at `alpha` (0 to 255), premultiplied as egui wants.
+const fn white(alpha: u8) -> Color32 {
+    Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha)
+}
+
 pub const PALETTE: Palette = Palette {
-    window: Color32::from_rgb(0x03, 0x03, 0x03),
-    panel: Color32::from_rgb(0x0f, 0x0f, 0x0f),
-    surface: Color32::from_rgb(0x21, 0x21, 0x21),
-    surface_hover: Color32::from_rgb(0x2e, 0x2e, 0x2e),
-    outline: Color32::from_rgb(0x2a, 0x2a, 0x2a),
+    window: Color32::from_rgb(0x09, 0x09, 0x0b),
+    panel: Color32::from_rgba_premultiplied(12, 12, 15, 196),
+    surface: white(17),
+    surface_hover: white(30),
+    outline: white(20),
     text: Color32::from_rgb(0xff, 0xff, 0xff),
-    secondary: Color32::from_rgb(0xaa, 0xaa, 0xaa),
-    dim: Color32::from_rgb(0x71, 0x71, 0x71),
-    accent: Color32::from_rgb(0xff, 0x00, 0x33),
+    secondary: white(170),
+    dim: white(110),
+    accent: Color32::from_rgb(0xff, 0x45, 0x6a),
     danger: Color32::from_rgb(0xff, 0x6b, 0x6b),
 };
 
-pub const PLAYER_BAR_HEIGHT: f32 = 72.0;
+/// Corner rounding of the glass panels.
+pub const PANEL_RADIUS: u8 = 14;
+/// The gap around the glass panels.
+pub const GAP: i8 = 8;
+
+pub const PLAYER_BAR_HEIGHT: f32 = 84.0;
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const TOP_BAR_HEIGHT: f32 = 64.0;
 pub const QUEUE_WIDTH: f32 = 340.0;
@@ -76,6 +88,21 @@ fastframe_icons::icons! {
         Loud => lucide "volume-2",
         Refresh => lucide "refresh-cw",
         User => lucide "user",
+        ThumbsUp => "thumbs-up",
+        ThumbsUpFilled => "thumbs-up-filled",
+        ThumbsDown => "thumbs-down",
+        ThumbsDownFilled => "thumbs-down-filled",
+        Collapse => lucide "chevron-down",
+        Expand => lucide "chevron-up",
+        More => lucide "ellipsis",
+        Plus => lucide "plus",
+        Trash => lucide "trash-2",
+        Pencil => lucide "pencil",
+        Settings => lucide "settings",
+        Lyrics => lucide "mic",
+        History => lucide "clock",
+        Copy => lucide "copy",
+        Check => lucide "check",
     }
 }
 

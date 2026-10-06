@@ -484,6 +484,47 @@ pub fn cover(url: &str) -> egui::ColorImage {
     egui::ColorImage::new([SIDE, SIDE], pixels)
 }
 
+/// Made-up, time-synced lyrics.
+pub fn lyrics(video_id: &str) -> crate::lyrics::Lyrics {
+    const VERSES: [&str; 12] = [
+        "Streetlights hum a song we used to know",
+        "Every window glowing soft and slow",
+        "We ran the harbour roads till morning came",
+        "And every echo seemed to call your name",
+        "Hold on, hold on, the night is young",
+        "A thousand lights and only one",
+        "We keep the radio low, we keep it near",
+        "The city sings the things we never hear",
+        "Paper planes above the sleeping town",
+        "We never learned the way to settle down",
+        "So turn it up, the chorus coming through",
+        "Every road I take comes back to you",
+    ];
+    let seed = seed(video_id) as usize;
+    let length = length(video_id);
+    let mut lines = Vec::new();
+    let mut at = 6.0;
+    let mut i = 0;
+    while at < length - 8.0 {
+        let text = if i % 9 == 8 {
+            "♪".to_string()
+        } else {
+            VERSES[(seed + i) % VERSES.len()].to_string()
+        };
+        lines.push(crate::lyrics::Line {
+            start: Some(at),
+            text,
+        });
+        at += 3.5 + ((seed + i * 7) % 5) as f64 * 0.6;
+        i += 1;
+    }
+    crate::lyrics::Lyrics {
+        lines,
+        synced: true,
+        source: "Demo".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,6 +15,14 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .frame(
             Frame::new()
                 .fill(PALETTE.panel)
+                .stroke(egui::Stroke::new(1.0, PALETTE.outline))
+                .corner_radius(egui::CornerRadius::same(theme::PANEL_RADIUS))
+                .outer_margin(Margin {
+                    left: theme::GAP,
+                    right: theme::GAP,
+                    top: theme::GAP,
+                    bottom: theme::GAP,
+                })
                 .inner_margin(Margin::symmetric(16, 0)),
         )
         .show(ui, |ui| {
@@ -24,8 +32,8 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 app,
                 ui,
                 Rect::from_min_max(
-                    rect.min - vec2(16.0, 0.0),
-                    pos2(rect.right() + 16.0, rect.top() + 4.0),
+                    rect.min + vec2(-2.0, 1.0),
+                    pos2(rect.right() + 2.0, rect.top() + 5.0),
                 ),
             );
 
@@ -68,10 +76,10 @@ fn progress_line(app: &App, ui: &mut egui::Ui, rect: Rect) {
         bar.min,
         pos2(bar.left() + bar.width() * fraction, bar.bottom()),
     );
-    ui.painter().rect_filled(filled, 0.0, PALETTE.accent);
+    ui.painter().rect_filled(filled, 0.0, app.accent());
     if hovered && length > 0.0 {
         ui.painter()
-            .circle_filled(pos2(filled.right(), bar.center().y), 6.0, PALETTE.accent);
+            .circle_filled(pos2(filled.right(), bar.center().y), 6.0, app.accent());
     }
     if length > 0.0
         && (response.clicked() || response.drag_stopped())
@@ -86,13 +94,31 @@ fn now_playing(app: &App, ui: &mut egui::Ui, band: Rect) {
     let Some(entry) = &app.playback.entry else {
         return;
     };
-    let art = Rect::from_min_size(pos2(band.left(), band.center().y - 24.0), Vec2::splat(48.0));
+    let art = Rect::from_min_size(pos2(band.left(), band.center().y - 26.0), Vec2::splat(52.0));
+    // The cover and title open the player page.
+    let opener = Rect::from_min_max(art.min, pos2(band.right() - 92.0, art.bottom()));
+    let open = ui.interact(opener, ui.id().with("open-player"), Sense::click());
+    if open.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if open.clicked() {
+        app.act(Action::ToggleNowPlaying);
+    }
     widgets::cover(app, ui, art, entry.track.thumbnail.as_ref(), false);
+    let mut likes = ui.new_child(
+        UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                pos2(band.right() - 88.0, band.top()),
+                band.max,
+            ))
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    widgets::like_buttons(app, &mut likes, &entry.track);
     let mut text = ui.new_child(
         UiBuilder::new()
             .max_rect(Rect::from_min_max(
                 pos2(art.right() + 12.0, band.center().y - 20.0),
-                pos2(band.right() - 8.0, band.bottom()),
+                pos2(band.right() - 96.0, band.bottom()),
             ))
             .layout(Layout::top_down(Align::Min)),
     );
@@ -186,7 +212,17 @@ fn extras(app: &App, ui: &mut egui::Ui, band: Rect) {
     } else {
         PALETTE.secondary
     };
-    if theme::icon_button(&mut ui, Icon::ListMusic, 20.0, queue_color, "Up next").clicked() {
+    let (icon, tip) = if app.now_playing {
+        (Icon::Collapse, "Close the player")
+    } else {
+        (Icon::Expand, "Open the player")
+    };
+    if theme::icon_button(&mut ui, icon, 20.0, PALETTE.text, tip).clicked() {
+        app.act(Action::ToggleNowPlaying);
+    }
+    if !app.now_playing
+        && theme::icon_button(&mut ui, Icon::ListMusic, 20.0, queue_color, "Up next").clicked()
+    {
         app.act(Action::ToggleQueue);
     }
     let has_queue = app.queue.remaining() > 1;

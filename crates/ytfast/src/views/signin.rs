@@ -14,7 +14,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
         theme::paint_logo(ui, rect);
         ui.add_space(10.0);
-        theme::label(ui, "YtFast", theme::bold(36.0), PALETTE.text);
+        theme::label(ui, "YTFast", theme::bold(36.0), PALETTE.text);
         theme::label(
             ui,
             "YouTube Music, native and fast.",
@@ -39,7 +39,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 fn card(app: &App, ui: &mut egui::Ui) {
     theme::label(ui, "Sign in", theme::bold(20.0), PALETTE.text);
     ui.add_space(6.0);
-    let explain = "YtFast uses the YouTube Music sign-in from your web browser. \
+    let explain = "YTFast uses the YouTube Music sign-in from your web browser. \
                    Choose the browser you use music.youtube.com in:";
     ui.label(
         egui::RichText::new(explain)

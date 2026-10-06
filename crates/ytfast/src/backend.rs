@@ -19,7 +19,7 @@ use ytfast_core::solver::{self, Solver};
 use ytfast_core::stream::SongData;
 use ytfast_core::ytdlp::{Browser, YtDlp};
 
-use crate::demo;
+use crate::{colors, demo};
 
 /// A page the window can show.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -73,10 +73,40 @@ pub enum Request {
     /// Find a song's audio ahead of time (it was pointed at, or is the
     /// top search result), so it starts at once if played.
     Warm(String),
+    /// A song's lyrics (time-synced when they can be found).
+    Lyrics {
+        video_id: String,
+        title: String,
+        artist: String,
+        album: Option<String>,
+        duration: Option<f64>,
+    },
+    /// Songs and artists related to a song.
+    Related(String),
+    /// Like, dislike, or neither.
+    Rate {
+        video_id: String,
+        like: crate::app::LikeState,
+    },
     /// A History report (see `playreport`).
     Report(String),
     /// A picture, by address.
     Image(String),
+}
+
+/// A cover, decoded, with the colours the look takes from it.
+pub struct Picture {
+    pub image: egui::ColorImage,
+    pub summary: colors::Summary,
+}
+
+impl Picture {
+    fn new(image: egui::ColorImage) -> Self {
+        Self {
+            summary: colors::summarize(&image),
+            image,
+        }
+    }
 }
 
 /// A song ready to play.
@@ -132,7 +162,14 @@ pub enum Event {
         route: Route,
         tracks: Vec<Track>,
     },
-    Image(String, Option<egui::ColorImage>),
+    Image(String, Option<Picture>),
+    Lyrics(String, Option<crate::lyrics::Lyrics>),
+    Related(String, Result<Page, String>),
+    /// What the account thinks of a song, as YouTube says.
+    #[allow(dead_code)] // Sent once song details are read from YouTube.
+    Liked(String, crate::app::LikeState),
+    #[allow(dead_code)]
+    RateFailed(String, String),
 }
 
 /// The window's end of the backend.
@@ -333,6 +370,15 @@ async fn serve(
                         preparer.warm(&video_id).await;
                     }
                 }
+                Request::Lyrics {
+                    video_id,
+                    title,
+                    artist,
+                    album,
+                    duration,
+                } => lyrics(&shared, video_id, title, artist, album, duration).await,
+                Request::Related(video_id) => related(&shared, video_id).await,
+                Request::Rate { video_id, like } => rate(&shared, video_id, like).await,
                 Request::Report(url) => report(&shared, url).await,
                 Request::Image(url) => image(&shared, url).await,
             }
@@ -695,12 +741,49 @@ async fn report(shared: &Shared, url: String) {
 }
 
 /// The largest side a picture is kept at. Covers are drawn at most this
-/// big; larger pictures only cost memory.
-const IMAGE_SIDE: u32 = 360;
+/// big (the player page's); larger pictures only cost memory.
+const IMAGE_SIDE: u32 = 544;
+
+async fn lyrics(
+    shared: &Shared,
+    video_id: String,
+    _title: String,
+    _artist: String,
+    _album: Option<String>,
+    _duration: Option<f64>,
+) {
+    let found = if shared.demo {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        Some(demo::lyrics(&video_id))
+    } else {
+        None
+    };
+    shared.send(Event::Lyrics(video_id, found));
+}
+
+async fn related(shared: &Shared, video_id: String) {
+    let result = if shared.demo {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        Ok(demo::page(&Route::Explore))
+    } else {
+        Err("Related songs are not available yet.".to_string())
+    };
+    shared.send(Event::Related(video_id, result));
+}
+
+async fn rate(shared: &Shared, video_id: String, like: crate::app::LikeState) {
+    if shared.demo {
+        return;
+    }
+    let _ = (video_id, like);
+}
 
 async fn image(shared: &Shared, url: String) {
     if shared.demo {
-        shared.send(Event::Image(url.clone(), Some(demo::cover(&url))));
+        shared.send(Event::Image(
+            url.clone(),
+            Some(Picture::new(demo::cover(&url))),
+        ));
         return;
     }
     let Ok(_permit) = shared.images.acquire().await else {
@@ -717,10 +800,12 @@ async fn image(shared: &Shared, url: String) {
         Err(_) => None,
     };
     let picture = match bytes {
-        Some(bytes) => tokio::task::spawn_blocking(move || decode_picture(&bytes))
-            .await
-            .ok()
-            .flatten(),
+        Some(bytes) => {
+            tokio::task::spawn_blocking(move || decode_picture(&bytes).map(Picture::new))
+                .await
+                .ok()
+                .flatten()
+        }
         None => None,
     };
     shared.send(Event::Image(url, picture));

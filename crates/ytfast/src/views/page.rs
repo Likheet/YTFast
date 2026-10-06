@@ -87,10 +87,15 @@ fn content(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
             PALETTE.secondary,
         );
     }
+    sections(app, ui, route, page);
+    ui.add_space(32.0);
+}
+
+/// A page's sections, without its header.
+pub fn sections(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
     for (index, section) in page.sections.iter().enumerate() {
         section_block(app, ui, route, section, index);
     }
-    ui.add_space(32.0);
 }
 
 fn title(ui: &mut egui::Ui, text: &str) {
@@ -181,7 +186,7 @@ fn section_block(app: &App, ui: &mut egui::Ui, route: &Route, section: &Section,
                             .font(theme::medium(13.0))
                             .color(PALETTE.text),
                     )
-                    .fill(PALETTE.window)
+                    .fill(egui::Color32::TRANSPARENT)
                     .stroke(egui::Stroke::new(1.0, PALETTE.outline))
                     .corner_radius(egui::CornerRadius::same(14));
                     if ui.add(more_button).clicked() {

@@ -99,6 +99,22 @@ impl Default for Playback {
     }
 }
 
+/// The player page's tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NpTab {
+    UpNext,
+    Lyrics,
+    Related,
+}
+
+/// What the account thinks of a song.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LikeState {
+    Liked,
+    Disliked,
+    Neutral,
+}
+
 /// Everything a view can ask for.
 pub enum Action {
     Navigate(Route),
@@ -132,6 +148,12 @@ pub enum Action {
     /// Put a song at the end of the queue.
     AddToQueue(Track),
     ToggleQueue,
+    /// Open or close the player page.
+    ToggleNowPlaying,
+    CloseNowPlaying,
+    NowPlayingTab(NpTab),
+    /// Like, dislike, or neither.
+    Rate(String, LikeState),
     /// Put the songs after the current one in a random order.
     ShuffleQueue,
     /// Repeat off, the queue, this song.
@@ -166,6 +188,24 @@ pub struct App {
     pub actions: RefCell<Vec<Action>>,
     /// Songs already asked for ahead of time.
     warmed: RefCell<std::collections::HashSet<String>>,
+    /// The playing song's cover colours (backdrop, accent).
+    pub colors: Option<crate::colors::Summary>,
+    pub backdrop: RefCell<Backdrop>,
+    /// The player page is open, and on which tab.
+    pub now_playing: bool,
+    pub np_tab: NpTab,
+    /// Lyrics and related pages, by song.
+    pub lyrics: HashMap<String, crate::lyrics::State>,
+    pub related: HashMap<String, Loadable>,
+    /// What the account thinks of songs, as known.
+    pub likes: HashMap<String, LikeState>,
+}
+
+/// The backdrop's textures: the current song's, and the one fading out.
+#[derive(Default)]
+pub struct Backdrop {
+    pub current: Option<(String, egui::TextureHandle)>,
+    pub previous: Option<(String, egui::TextureHandle)>,
 }
 
 fn default_browser() -> Browser {
@@ -190,7 +230,7 @@ impl App {
         let audio = Audio::start(wake.clone(), demo);
         audio.send(Command::Volume(settings.volume));
 
-        let mut info = now_playing::App::new("ytfast", "YtFast");
+        let mut info = now_playing::App::new("ytfast", "YTFast");
         info.can_raise = true;
         let controls = Some(now_playing::NowPlaying::start(info, wake));
 
@@ -236,12 +276,90 @@ impl App {
             notice: None,
             actions: RefCell::new(Vec::new()),
             warmed: RefCell::new(std::collections::HashSet::new()),
+            colors: None,
+            backdrop: RefCell::new(Backdrop::default()),
+            now_playing: false,
+            np_tab: NpTab::Lyrics,
+            lyrics: HashMap::new(),
+            related: HashMap::new(),
+            likes: HashMap::new(),
         }
     }
 
     /// Queues an action for after this frame.
     pub fn act(&self, action: Action) {
         self.actions.borrow_mut().push(action);
+    }
+
+    /// The accent colour: from the playing song's cover, or the default.
+    pub fn accent(&self) -> egui::Color32 {
+        self.colors
+            .as_ref()
+            .map_or(crate::theme::PALETTE.accent, |c| c.accent)
+    }
+
+    /// Asks for what the player page shows of the playing song (lyrics,
+    /// related), once per song, when the page is open.
+    fn want_song_extras(&mut self) {
+        if !self.now_playing {
+            return;
+        }
+        let Some(entry) = &self.playback.entry else {
+            return;
+        };
+        let track = &entry.track;
+        match self.np_tab {
+            NpTab::Lyrics if !self.lyrics.contains_key(&track.video_id) => {
+                if self.lyrics.len() > 30 {
+                    self.lyrics.clear();
+                }
+                self.lyrics
+                    .insert(track.video_id.clone(), crate::lyrics::State::Loading);
+                self.backend.send(Request::Lyrics {
+                    video_id: track.video_id.clone(),
+                    title: track.title.clone(),
+                    artist: track.artists.clone(),
+                    album: track.album.clone(),
+                    duration: (self.audio_status.length > 0.0)
+                        .then_some(self.audio_status.length)
+                        .or(track.duration_seconds.map(f64::from)),
+                });
+            }
+            NpTab::Related if !self.related.contains_key(&track.video_id) => {
+                if self.related.len() > 10 {
+                    self.related.clear();
+                }
+                self.related
+                    .insert(track.video_id.clone(), Loadable::Loading);
+                self.backend.send(Request::Related(track.video_id.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    /// Reads the playing song's cover colours, and makes its backdrop.
+    fn update_colors(&mut self, ctx: &egui::Context) {
+        let cover = self
+            .playback
+            .entry
+            .as_ref()
+            .and_then(|e| e.track.thumbnail.as_ref())
+            .map(|t| t.sized(120));
+        let Some(cover) = cover else { return };
+        let Some(colors) = self.images.get_mut().summary(&cover, &self.backend) else {
+            return;
+        };
+        let backdrop = self.backdrop.get_mut();
+        if backdrop.current.as_ref().map(|c| &c.0) != Some(&cover) {
+            let texture = ctx.load_texture(
+                format!("backdrop {cover}"),
+                colors.tiny.clone(),
+                egui::TextureOptions::LINEAR,
+            );
+            backdrop.previous = backdrop.current.take();
+            backdrop.current = Some((cover, texture));
+        }
+        self.colors = Some(colors);
     }
 
     /// Finds a song's audio ahead of time, so it starts at once if played
@@ -337,6 +455,29 @@ impl App {
                     Ok(_) => self.notify("That playlist has no songs that can play."),
                     Err(e) => self.notify(format!("Could not play that: {e}")),
                 },
+                Event::Lyrics(video_id, lyrics) => {
+                    let state = match lyrics {
+                        Some(lyrics) if !lyrics.lines.is_empty() => {
+                            crate::lyrics::State::Ready(lyrics)
+                        }
+                        _ => crate::lyrics::State::Missing,
+                    };
+                    self.lyrics.insert(video_id, state);
+                }
+                Event::Related(video_id, result) => {
+                    let loaded = match result {
+                        Ok(page) => Loadable::Ready(page),
+                        Err(message) => Loadable::Failed(message),
+                    };
+                    self.related.insert(video_id, loaded);
+                }
+                Event::Liked(video_id, like) => {
+                    self.likes.insert(video_id, like);
+                }
+                Event::RateFailed(video_id, message) => {
+                    self.likes.remove(&video_id);
+                    self.notify(format!("Could not save that: {message}"));
+                }
                 Event::MoreRows { route, tracks } => {
                     if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
                         add_rows(page, tracks);
@@ -743,6 +884,17 @@ impl App {
                 self.queue_grew();
             }
             Action::ToggleQueue => self.show_queue = !self.show_queue,
+            Action::ToggleNowPlaying => self.now_playing = !self.now_playing,
+            Action::CloseNowPlaying => self.now_playing = false,
+            Action::NowPlayingTab(tab) => self.np_tab = tab,
+            Action::Rate(video_id, like) => {
+                // Shown at once; YouTube is told in the background.
+                self.likes.insert(video_id.clone(), like);
+                self.backend.send(Request::Rate { video_id, like });
+                if like == LikeState::Liked {
+                    self.notify("Added to Liked Music");
+                }
+            }
             Action::ShuffleQueue => {
                 self.queue.shuffle_upcoming();
                 self.prepare_next();
@@ -799,6 +951,11 @@ impl App {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();
+        if self.now_playing
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.act(Action::CloseNowPlaying);
+        }
         let (play, search) = ctx.input_mut(|i| {
             let play = !typing && i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
             let search = i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)
@@ -902,6 +1059,8 @@ impl eframe::App for App {
         self.handle_events(&ctx);
         self.media_controls();
         self.shortcuts(&ctx);
+        self.update_colors(&ctx);
+        self.want_song_extras();
 
         views::show(self, ui);
 

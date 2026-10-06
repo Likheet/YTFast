@@ -1,5 +1,7 @@
 //! What the window draws. Each view reads [`App`] and pushes actions.
 
+mod backdrop;
+mod now_playing;
 mod page;
 mod player_bar;
 mod queue_panel;
@@ -17,26 +19,30 @@ use crate::theme::{self, PALETTE};
 pub const SEARCH_BOX: &str = "ytfast-search-box";
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
+    backdrop::paint(app, ui, ui.max_rect());
     if !matches!(app.auth, Auth::SignedIn { .. }) {
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(PALETTE.window))
+            .frame(Frame::new())
             .show(ui, |ui| signin::show(app, ui));
         return;
     }
     // Panels first, in the order they take their space; the page fills
     // what is left.
     player_bar::show(app, ui);
+    if app.now_playing {
+        egui::CentralPanel::default()
+            .frame(Frame::new().inner_margin(Margin::symmetric(24, 8)))
+            .show(ui, |ui| now_playing::show(app, ui));
+        notice(app, ui);
+        return;
+    }
     sidebar::show(app, ui);
     if app.show_queue {
         queue_panel::show(app, ui);
     }
     topbar::show(app, ui);
     egui::CentralPanel::default()
-        .frame(
-            Frame::new()
-                .fill(PALETTE.window)
-                .inner_margin(Margin::symmetric(32, 0)),
-        )
+        .frame(Frame::new().inner_margin(Margin::symmetric(28, 0)))
         .show(ui, |ui| page::show(app, ui));
     notice(app, ui);
 }
@@ -53,8 +59,9 @@ fn notice(app: &App, ui: &egui::Ui) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             Frame::new()
-                .fill(PALETTE.surface_hover)
-                .corner_radius(egui::CornerRadius::same(8))
+                .fill(egui::Color32::from_rgba_premultiplied(30, 30, 34, 235))
+                .stroke(egui::Stroke::new(1.0, PALETTE.outline))
+                .corner_radius(egui::CornerRadius::same(10))
                 .inner_margin(Margin::symmetric(16, 10))
                 .show(ui, |ui| {
                     ui.label(
