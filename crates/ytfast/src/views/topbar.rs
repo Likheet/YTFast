@@ -1,5 +1,7 @@
 //! The bar above the page: back and forward, and the search box.
 
+use std::time::Duration;
+
 use egui::{Align, CornerRadius, Frame, Layout, Margin, Sense, Vec2, vec2};
 
 use crate::app::{Action, App};
@@ -58,6 +60,9 @@ fn search_box(app: &App, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(id, text));
 }
 
+/// How long typing pauses before suggestions are asked for, in seconds.
+const TYPING_PAUSE: f64 = 0.25;
+
 /// What YouTube Music suggests for the words typed so far, under the box.
 fn suggestions(
     app: &App,
@@ -70,24 +75,27 @@ fn suggestions(
     let now = ui.input(|i| i.time);
     let typed = text.trim().to_string();
     // Asked for once typing pauses for a moment.
-    let (asked, changed): (String, f64) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let asked: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     if typed != asked {
         let (pending, since): (String, f64) = ui
             .data(|d| d.get_temp(id.with("pending")))
             .unwrap_or_default();
-        if pending != typed {
+        let waited = now - since;
+        if typed.is_empty() {
+            // Nothing to ask about.
+            ui.data_mut(|d| d.insert_temp(id, typed.clone()));
+        } else if pending != typed {
             ui.data_mut(|d| d.insert_temp(id.with("pending"), (typed.clone(), now)));
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(260));
-        } else if now - since > 0.25 && !typed.is_empty() {
+                .request_repaint_after(Duration::from_secs_f64(TYPING_PAUSE + 0.01));
+        } else if waited >= TYPING_PAUSE {
             app.act(Action::Suggest(typed.clone()));
-            ui.data_mut(|d| d.insert_temp(id, (typed.clone(), now)));
+            ui.data_mut(|d| d.insert_temp(id, typed.clone()));
         } else {
             ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
+                .request_repaint_after(Duration::from_secs_f64(TYPING_PAUSE - waited + 0.01));
         }
     }
-    let _ = changed;
     let (for_text, found) = &app.suggestions;
     let popup_rect: Option<egui::Rect> = ui.data(|d| d.get_temp(id.with("rect")));
     let over_popup = popup_rect.is_some_and(|r| ui.rect_contains_pointer(r));
