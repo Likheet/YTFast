@@ -431,7 +431,13 @@ async fn serve(
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                if let Some(direct) = shared.preparer().await.and_then(|p| p.direct) {
+                let direct = shared
+                    .signed_in
+                    .read()
+                    .await
+                    .as_ref()
+                    .and_then(|p| p.direct.clone());
+                if let Some(direct) = direct {
                     direct.rest_if_idle(SOLVER_IDLE).await;
                 }
             }
