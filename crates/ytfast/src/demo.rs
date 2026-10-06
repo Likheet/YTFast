@@ -70,6 +70,7 @@ fn song(i: usize) -> Track {
         album: Some(album.into()),
         kind: TrackKind::Song,
         thumbnail: thumb(album),
+        ..Track::default()
     }
 }
 
@@ -186,6 +187,7 @@ pub fn page(route: &Route) -> Page {
                     owner: "Demo listener".into(),
                     thumbnail: thumb("Liked Music"),
                     round: false,
+                    ..Header::default()
                 }),
                 sections: vec![section("", liked)],
             }
@@ -292,6 +294,7 @@ fn browse(id: &str) -> Page {
                     owner: artist.into(),
                     thumbnail: thumb(name),
                     round: false,
+                    ..Header::default()
                 }),
                 sections: vec![
                     section("", tracks),
@@ -322,6 +325,7 @@ fn browse(id: &str) -> Page {
                     owner: String::new(),
                     thumbnail: thumb(name),
                     round: true,
+                    ..Header::default()
                 }),
                 sections: vec![
                     section("Top songs", songs_of(name)),
@@ -373,6 +377,7 @@ fn browse(id: &str) -> Page {
                     .into(),
                     thumbnail: thumb(name),
                     round: false,
+                    ..Header::default()
                 }),
                 sections: vec![section("", tracks)],
             }

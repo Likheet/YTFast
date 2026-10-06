@@ -165,6 +165,7 @@ mod tests {
             duration_seconds: Some(180),
             kind: TrackKind::Song,
             thumbnail: None,
+            ..Track::default()
         }
     }
 
