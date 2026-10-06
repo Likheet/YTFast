@@ -672,6 +672,11 @@ impl App {
                     Edit::AddToPlaylist { playlist_id, .. } => {
                         self.reload_playlist(&playlist_id);
                     }
+                    // Liked Music shows the change the next time it opens
+                    // (not under the user while they look at it).
+                    Edit::Rate { .. } if self.route != Route::Liked => {
+                        self.pages.remove(&Route::Liked);
+                    }
                     _ => {}
                 },
                 Event::MoreRows { route, tracks } => {
