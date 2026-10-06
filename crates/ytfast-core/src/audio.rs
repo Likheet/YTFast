@@ -372,6 +372,8 @@ pub struct Player {
     /// Where the current sink started in the song.
     offset: Duration,
     paused: bool,
+    /// The listener's volume, 0 to 1, on top of the song's loudness gain.
+    volume: f32,
 }
 
 impl Player {
@@ -407,6 +409,7 @@ impl Player {
             song: None,
             offset: Duration::ZERO,
             paused: false,
+            volume: 1.0,
         })
     }
 
@@ -434,7 +437,7 @@ impl Player {
         // A fresh sink; dropping the old one stops it on the audio thread
         // without waiting.
         let sink = rodio::Sink::connect_new(&self.mixer);
-        sink.set_volume(song.gain);
+        sink.set_volume(song.gain * self.volume);
         if self.paused {
             sink.pause();
         }
@@ -465,6 +468,13 @@ impl Player {
 
     pub fn is_paused(&self) -> bool {
         self.paused
+    }
+
+    /// The listener's volume, 0 (silent) to 1 (full).
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 1.0);
+        let gain = self.song.as_ref().map_or(1.0, |s| s.gain);
+        self.sink.set_volume(gain * self.volume);
     }
 
     /// Jumps to `to` in the current song.

@@ -205,6 +205,7 @@ impl YtDlp {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        no_console_window(&mut command);
         command
     }
 
@@ -232,6 +233,7 @@ impl YtDlp {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        no_console_window(&mut command);
         let output = self.run(command, Duration::from_secs(60)).await?;
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if output.status.success() && !text.is_empty() {
@@ -315,6 +317,18 @@ impl YtDlp {
         resolved.took = started.elapsed();
         Ok(resolved)
     }
+}
+
+/// On Windows, a program started from a windowed app opens a console
+/// window of its own unless told not to.
+fn no_console_window(command: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
 }
 
 /// YouTube video IDs are 11 characters of `A-Z a-z 0-9 - _`. Checking keeps
@@ -422,7 +436,7 @@ fn failure(default: &str, stderr: &[u8]) -> YtDlpError {
     } else if lower.contains("could not find") && lower.contains("cookies database") {
         "That browser's sign-in data was not found. Is it installed, and have you opened music.youtube.com in it?"
     } else if lower.contains("operation not permitted") || lower.contains("permission denied") {
-        "This computer did not allow reading that browser's data (on a Mac, Safari needs Full Disk Access for the Terminal)"
+        "This computer did not allow reading that browser's data. On a Mac, reading Safari's needs Full Disk Access: in System Settings, Privacy & Security, Full Disk Access, turn on YtFast (or Terminal, for the check). Or choose another browser"
     } else if lower.contains("keyring") || lower.contains("keychain") || lower.contains("decrypt") {
         "The browser's sign-in data could not be unlocked. On a Mac, click Allow (or Always Allow) when asked about Chrome Safe Storage"
     } else if lower.contains("javascript runtime") {

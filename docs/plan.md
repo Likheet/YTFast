@@ -22,7 +22,7 @@ a few hundred MB of memory at most, measured on the finished app.
 
 Each phase ends with something you can run and check.
 
-### Step 0: prove it works (now)
+### Step 0: prove it works (passed on Windows; the Mac run is still to do)
 
 `ytfast-check` (see [run-the-check.md](run-the-check.md)) proves, on both
 laptops: reading the sign-in, the right account and Premium, Liked songs,
@@ -33,21 +33,30 @@ long pause or a closed lid, and plays reaching History.
 something fundamental (sign-in or playback), we rethink before building any
 screens.
 
-### Phase 1: the app shell and playback
+### Phase 1: the app shell and playback (built; to be tried on the laptops)
 
 A window with your Library (playlists, Liked songs), a queue, a player bar,
-media keys and the tray, playing through the same engine the check uses.
-Read-only: nothing in your account changes except History.
+media keys, playing through the same engine the check uses. Read-only:
+nothing in your account changes except History.
 
-Also decided here: how YtFast signs in for everyday use. Today the check
-borrows the browser's sign-in, which is simple and keeps working as long as
-you stay signed in there. The alternative is a one-time sign-in window.
+Built so far, with much of phase 2 too: the sidebar (Home, Explore,
+Library, Liked Music, your playlists), search, album, artist, playlist and
+mood pages, long playlists loading in full, the player bar (repeat, shuffle,
+volume, seeking), Up next with Play next, Add to queue and Start radio, the
+system media controls, keyboard shortcuts, and a Mac app and a Windows
+program with their own icon. A demo mode (`--demo`) shows it all with
+made-up music.
+
+Sign-in for everyday use borrows the browser's sign-in, as the check does:
+simple, and it keeps working as long as you stay signed in there.
+
+Still to do in phase 1: the first run on both laptops, a shorter wait before
+the first song plays (about 10 seconds in the check), and the tray.
 
 ### Phase 2: the rest of YouTube Music, read-only
 
-Home (Quick picks, Listen again, mixes), Explore (new releases, charts,
-moods), search with suggestions, artist and album pages, Up Next, Start
-radio, podcasts, History.
+Search suggestions, History, "Go to album" and "Go to artist" from a song,
+charts. Podcasts only if wanted.
 
 ### Phase 3: lyrics and the look
 
@@ -97,7 +106,7 @@ including the helper programs).
 7. **Loudness.** YouTube turns loud songs down; YtFast applies the same
    figure YouTube sends.
 8. **YouTube's data format changes.** All reading of YouTube's replies lives
-   in one file (`crates/ytfast-core/src/read.rs`), tested against saved real
+   in one place (`crates/ytfast-core/src/read/`), tested against saved real
    replies, and it tolerates missing pieces instead of failing.
 9. **Seeking.** Rust's usual audio decoder cannot seek in YouTube's file
    layout, and its seek freezes while the sound device is paused. YtFast

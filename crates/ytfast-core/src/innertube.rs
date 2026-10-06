@@ -11,7 +11,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 
 use crate::cookies::CookieJar;
-use crate::read::{self, Account, AccountFlags, Page, PlayerInfo, Track};
+use crate::read::{self, Account, AccountFlags, Continuation, Page, PlayerInfo, Track};
 use crate::ytcfg::WebConfig;
 use crate::{auth, redact};
 
@@ -165,7 +165,17 @@ impl Session {
     }
 
     /// Calls one endpoint (`browse`, `player`, `account/account_menu`...).
-    pub async fn call(&self, endpoint: &str, mut body: Value) -> Result<Value, ApiError> {
+    pub async fn call(&self, endpoint: &str, body: Value) -> Result<Value, ApiError> {
+        self.call_with(endpoint, &[], body).await
+    }
+
+    /// [`Session::call`], with more in the address.
+    async fn call_with(
+        &self,
+        endpoint: &str,
+        query: &[(&str, &str)],
+        mut body: Value,
+    ) -> Result<Value, ApiError> {
         if !body.is_object() {
             body = json!({});
         }
@@ -178,6 +188,7 @@ impl Session {
         let response = self
             .http
             .post(url)
+            .query(query)
             .headers(self.headers())
             .json(&body)
             .send()
@@ -240,11 +251,52 @@ impl Session {
     /// (`MPREb_...`), a playlist (`VL...`), an artist (`UC...`), a mood
     /// (with its `params`).
     pub async fn page(&self, browse_id: &str, params: Option<&str>) -> Result<Page, ApiError> {
+        Ok(self.long_page(browse_id, params).await?.0)
+    }
+
+    /// A page, and where the rest of its songs come from when it is a long
+    /// list (a playlist, Liked Music); see [`Session::more_tracks`].
+    pub async fn long_page(
+        &self,
+        browse_id: &str,
+        params: Option<&str>,
+    ) -> Result<(Page, Option<Continuation>), ApiError> {
         let mut body = json!({ "browseId": browse_id });
         if let Some(params) = params {
             body["params"] = json!(params);
         }
-        Ok(read::page(&self.call("browse", body).await?))
+        let reply = self.call("browse", body).await?;
+        let mut page = read::page(&reply);
+        if browse_id.starts_with("MPRE") {
+            page.fill_album_songs();
+        }
+        // Only lists of songs go on; other pages' tokens load more shelves.
+        let more = if browse_id.starts_with("VL") {
+            read::track_continuation(&reply)
+        } else {
+            None
+        };
+        Ok((page, more))
+    }
+
+    /// The next songs of a long list, and where the ones after them come
+    /// from (`None` at the end).
+    pub async fn more_tracks(
+        &self,
+        from: &Continuation,
+    ) -> Result<(Vec<Track>, Option<Continuation>), ApiError> {
+        let reply = match from {
+            Continuation::Body(token) => {
+                self.call("browse", json!({ "continuation": token }))
+                    .await?
+            }
+            Continuation::Address(token) => {
+                // As ytmusicapi sends it.
+                let query = [("ctoken", token.as_str()), ("continuation", token)];
+                self.call_with("browse", &query, json!({})).await?
+            }
+        };
+        Ok((read::tracks(&reply), read::track_continuation(&reply)))
     }
 
     pub async fn home(&self) -> Result<Page, ApiError> {

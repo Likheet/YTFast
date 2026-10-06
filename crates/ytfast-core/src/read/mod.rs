@@ -172,9 +172,10 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         .and_then(parse_duration)
         .or(byline.duration_seconds)
         .or_else(|| columns.iter().skip(1).find_map(|c| parse_duration(c)));
+    // On an album's page the third column is the play count.
     let album = columns
         .get(2)
-        .filter(|c| !c.is_empty() && parse_duration(c).is_none())
+        .filter(|c| !c.is_empty() && parse_duration(c).is_none() && !is_count_or_year(c))
         .cloned()
         .or(byline.album);
     let kind = TrackKind::from_music_video_type(
@@ -243,34 +244,46 @@ fn is_count_or_year(part: &str) -> bool {
         || lower.ends_with(" view")
 }
 
-/// The token for the next page of a list's rows, when there are more.
-pub fn track_continuation(reply: &Value) -> Option<String> {
-    fn search(node: &Value) -> Option<String> {
+/// Where the next rows of a long list (a playlist, Liked Music) come from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Continuation {
+    /// Newer replies: the token goes in the request's body.
+    Body(String),
+    /// Older replies: the token goes in the address (`ctoken`).
+    Address(String),
+}
+
+/// Where the next rows of a list come from, when there are more. Works on
+/// a page's reply and on a reply with more rows.
+pub fn track_continuation(reply: &Value) -> Option<Continuation> {
+    fn search(node: &Value) -> Option<Continuation> {
         match node {
             Value::Object(map) => {
-                let has_rows = map
-                    .get("contents")
-                    .and_then(Value::as_array)
-                    .is_some_and(|rows| {
+                // Rows are in `contents`, or in `continuationItems` in a
+                // reply with more rows.
+                let rows = ["contents", "continuationItems"]
+                    .iter()
+                    .find_map(|key| map.get(*key).and_then(Value::as_array))
+                    .filter(|rows| {
                         rows.iter()
                             .any(|r| r.get("musicResponsiveListItemRenderer").is_some())
                     });
-                if has_rows {
+                if let Some(rows) = rows {
                     // Older replies: a `continuations` list next to the rows.
                     let old = map
                         .get("continuations")
                         .and_then(|c| find_key(c, "continuation"))
-                        .and_then(Value::as_str);
+                        .and_then(Value::as_str)
+                        .map(|t| Continuation::Address(t.to_string()));
                     // Newer replies: a final row that holds the token.
-                    let new = map
-                        .get("contents")
-                        .and_then(Value::as_array)
-                        .and_then(|rows| rows.last())
+                    let new = rows
+                        .last()
                         .and_then(|last| last.get("continuationItemRenderer"))
                         .and_then(|c| find_key(c, "token"))
-                        .and_then(Value::as_str);
-                    if let Some(token) = old.or(new) {
-                        return Some(token.to_string());
+                        .and_then(Value::as_str)
+                        .map(|t| Continuation::Body(t.to_string()));
+                    if let Some(next) = old.or(new) {
+                        return Some(next);
                     }
                 }
                 map.values().find_map(search)
@@ -430,7 +443,43 @@ mod tests {
         assert_eq!(rows[0].album.as_deref(), Some("The Food Villain"));
         assert_eq!(rows[0].duration_seconds, Some(83));
         assert_eq!(rows[0].kind, TrackKind::Song);
-        assert!(track_continuation(&reply).is_some());
+        // An older reply: the token goes in the address.
+        assert!(matches!(
+            track_continuation(&reply),
+            Some(Continuation::Address(_))
+        ));
+    }
+
+    #[test]
+    fn rows_after_the_first() {
+        // A newer reply with more rows: the rows, then where the next
+        // ones come from.
+        let reply = serde_json::json!({
+            "onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+                {"musicResponsiveListItemRenderer": {
+                    "playlistItemData": {"videoId": "abcdefghijk"},
+                    "flexColumns": [
+                        {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "A song"}]}}},
+                        {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "A singer"}]}}}
+                    ]
+                }},
+                {"continuationItemRenderer": {"continuationEndpoint": {"continuationCommand": {"token": "NEXT"}}}}
+            ]}}]
+        });
+        let rows = tracks(&reply);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "A song");
+        assert_eq!(
+            track_continuation(&reply),
+            Some(Continuation::Body("NEXT".into()))
+        );
+        // The last rows: nothing after them.
+        let last = serde_json::json!({
+            "onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+                {"musicResponsiveListItemRenderer": {"playlistItemData": {"videoId": "abcdefghijk"}}}
+            ]}}]
+        });
+        assert_eq!(track_continuation(&last), None);
     }
 
     #[test]
