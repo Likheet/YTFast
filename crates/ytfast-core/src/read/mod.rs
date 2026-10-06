@@ -96,7 +96,7 @@ impl TrackKind {
 }
 
 /// A playable row from a list (a playlist, Liked songs, History, search).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Track {
     pub video_id: String,
     /// This row's own ID within a playlist. Two copies of a song in one
@@ -108,6 +108,10 @@ pub struct Track {
     pub duration_seconds: Option<u32>,
     pub kind: TrackKind,
     pub thumbnail: Option<Thumb>,
+    /// The first artist's page (`UC...`), for "Go to artist".
+    pub artist_id: Option<String>,
+    /// The album's page (`MPREb_...`), for "Go to album".
+    pub album_id: Option<String>,
 }
 
 /// Every playable row in a reply, in YouTube's order. Rows without a video
@@ -194,6 +198,7 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         duration_seconds,
         kind,
         thumbnail: row.get("thumbnail").and_then(Thumb::best),
+        ..Track::default()
     })
 }
 

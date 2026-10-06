@@ -194,6 +194,18 @@ pub struct Header {
     pub thumbnail: Option<Thumb>,
     /// Artists are drawn round.
     pub round: bool,
+    /// An artist's channel (`UC...`), for Subscribe.
+    pub channel_id: Option<String>,
+    /// Whether the account is subscribed to this artist.
+    pub subscribed: Option<bool>,
+    /// The playlist to save to (or remove from) the library: an album's
+    /// own playlist (`OLAK5uy_...`), or the playlist itself.
+    pub library_id: Option<String>,
+    /// Whether it is in the library.
+    pub saved: Option<bool>,
+    /// The account's own playlist: it can be renamed and deleted, and
+    /// songs removed from it.
+    pub editable: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -445,6 +457,7 @@ fn top_result(shelf: &Value) -> Option<Item> {
             duration_seconds: byline.duration_seconds,
             kind: TrackKind::Unknown,
             thumbnail,
+            ..Track::default()
         }));
     }
     Some(Item::Card(Card {
@@ -471,6 +484,7 @@ fn header(key: &str, h: &Value) -> Header {
         owner: t("straplineTextOne"),
         thumbnail: h.get("thumbnail").and_then(Thumb::best),
         round: key == "musicImmersiveHeaderRenderer",
+        ..Header::default()
     }
 }
 
@@ -519,6 +533,7 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
                     .and_then(Value::as_str),
             ),
             thumbnail: video.get("thumbnail").and_then(Thumb::best),
+            ..Track::default()
         })
     })
     .collect()

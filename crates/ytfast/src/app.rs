@@ -648,6 +648,7 @@ impl App {
                     duration_seconds: None,
                     kind: TrackKind::Unknown,
                     thumbnail: None,
+                    ..Track::default()
                 });
                 self.play_tracks(vec![track], 0, playlist_id);
                 self.ask_for_more();
