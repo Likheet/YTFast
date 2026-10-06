@@ -6,7 +6,7 @@ your Mac and on your Windows laptop.
 
 It will:
 
-1. Download two helper programs (about 200 MB, only the first time).
+1. Download two helper programs (about 250 MB on disk, only the first time).
 2. Read your YouTube sign-in from your web browser.
 3. Check your YouTube Music account and Premium.
 4. Read your Liked songs.

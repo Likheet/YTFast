@@ -2,8 +2,8 @@
 
 YtFast is a fast, light YouTube Music app for the desktop, in the spirit of
 [Spotifast](https://github.com/crmne/spotifast): its own native screens
-instead of a web page, starting in under a second and using a few hundred MB
-of memory at most.
+instead of a web page. The targets are opening in under a second and using
+a few hundred MB of memory at most, measured on the finished app.
 
 ## Decisions made
 
