@@ -35,9 +35,21 @@ pub enum Route {
         params: Option<String>,
     },
     Search(String),
+    /// The library's other tabs.
+    LibrarySongs,
+    LibraryAlbums,
+    LibraryArtists,
+    History,
+    /// YTFast's own settings (not loaded from YouTube).
+    Settings,
 }
 
 impl Route {
+    /// Pages that are not loaded from YouTube.
+    pub fn is_local(&self) -> bool {
+        matches!(self, Self::Settings)
+    }
+
     /// The route for a page ID. Liked Music has a route of its own, so it
     /// is one page however it is reached.
     pub fn browse(id: String, params: Option<String>) -> Self {
@@ -83,11 +95,10 @@ pub enum Request {
     },
     /// Songs and artists related to a song.
     Related(String),
-    /// Like, dislike, or neither.
-    Rate {
-        video_id: String,
-        like: crate::app::LikeState,
-    },
+    /// A change to the account: likes, playlists, the library.
+    Edit(Edit),
+    /// Whether to start songs the website's way (else always yt-dlp).
+    FastWay(bool),
     /// A History report (see `playreport`).
     Report(String),
     /// A picture, by address.
@@ -107,6 +118,44 @@ impl Picture {
             image,
         }
     }
+}
+
+/// A change to the account.
+#[derive(Clone, Debug)]
+pub enum Edit {
+    Rate {
+        video_id: String,
+        like: crate::app::LikeState,
+    },
+    AddToPlaylist {
+        playlist_id: String,
+        video_id: String,
+    },
+    RemoveFromPlaylist {
+        playlist_id: String,
+        video_id: String,
+        set_video_id: String,
+    },
+    CreatePlaylist {
+        title: String,
+        video_ids: Vec<String>,
+    },
+    RenamePlaylist {
+        playlist_id: String,
+        name: String,
+    },
+    DeletePlaylist {
+        playlist_id: String,
+    },
+    /// Save an album or playlist to the library, or remove it.
+    Save {
+        playlist_id: String,
+        save: bool,
+    },
+    Subscribe {
+        channel_id: String,
+        subscribe: bool,
+    },
 }
 
 /// A song ready to play.
@@ -168,8 +217,12 @@ pub enum Event {
     /// What the account thinks of a song, as YouTube says.
     #[allow(dead_code)] // Sent once song details are read from YouTube.
     Liked(String, crate::app::LikeState),
-    #[allow(dead_code)]
-    RateFailed(String, String),
+    /// A change to the account failed; the app undoes what it showed.
+    EditFailed(Edit, String),
+    /// A change to the account went through.
+    Edited(Edit),
+    /// A playlist was made (its ID), for "New playlist".
+    PlaylistMade(String, String),
 }
 
 /// The window's end of the backend.
@@ -295,6 +348,8 @@ struct Shared {
     prepared: Mutex<(HashMap<String, PreparedCell>, VecDeque<String>)>,
     images: Semaphore,
     download: reqwest::Client,
+    /// Start songs the website's way (see [`Request::FastWay`]).
+    fast_way: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -304,7 +359,11 @@ impl Shared {
     }
 
     async fn preparer(&self) -> Option<Preparer> {
-        self.signed_in.read().await.clone()
+        let mut preparer = self.signed_in.read().await.clone()?;
+        if !self.fast_way.load(std::sync::atomic::Ordering::Relaxed) {
+            preparer.direct = None;
+        }
+        Some(preparer)
     }
 }
 
@@ -324,6 +383,7 @@ async fn serve(
         prepared: Mutex::new((HashMap::new(), VecDeque::new())),
         images: Semaphore::new(6),
         download: net::download_client(),
+        fast_way: std::sync::atomic::AtomicBool::new(true),
     });
     // Rest the solver when YtFast is not being used.
     {
@@ -378,7 +438,10 @@ async fn serve(
                     duration,
                 } => lyrics(&shared, video_id, title, artist, album, duration).await,
                 Request::Related(video_id) => related(&shared, video_id).await,
-                Request::Rate { video_id, like } => rate(&shared, video_id, like).await,
+                Request::Edit(change) => edit(&shared, change).await,
+                Request::FastWay(on) => shared
+                    .fast_way
+                    .store(on, std::sync::atomic::Ordering::Relaxed),
                 Request::Report(url) => report(&shared, url).await,
                 Request::Image(url) => image(&shared, url).await,
             }
@@ -541,6 +604,20 @@ async fn page(shared: &Shared, route: Route) {
         Route::Liked => session.long_page("VLLM", None).await,
         Route::Browse { id, params } => session.long_page(id, params.as_deref()).await,
         Route::Search(query) => session.search(query).await.map(|p| (p, None)),
+        Route::LibrarySongs => session.long_page("FEmusic_liked_videos", None).await,
+        Route::LibraryAlbums => session
+            .page("FEmusic_liked_albums", None)
+            .await
+            .map(|p| (p, None)),
+        Route::LibraryArtists => session
+            .page("FEmusic_library_corpus_track_artists", None)
+            .await
+            .map(|p| (p, None)),
+        Route::History => session
+            .page("FEmusic_history", None)
+            .await
+            .map(|p| (p, None)),
+        Route::Settings => return,
     };
     let more = match result {
         Ok((page, more)) => {
@@ -771,11 +848,20 @@ async fn related(shared: &Shared, video_id: String) {
     shared.send(Event::Related(video_id, result));
 }
 
-async fn rate(shared: &Shared, video_id: String, like: crate::app::LikeState) {
+async fn edit(shared: &Shared, change: Edit) {
     if shared.demo {
+        if let Edit::CreatePlaylist { title, .. } = &change {
+            shared.send(Event::PlaylistMade(
+                format!("demo-playlist-{title}"),
+                title.clone(),
+            ));
+        }
         return;
     }
-    let _ = (video_id, like);
+    let result: Result<(), String> = Err("This is not available yet.".into());
+    if let Err(message) = result {
+        shared.send(Event::EditFailed(change, message));
+    }
 }
 
 async fn image(shared: &Shared, url: String) {

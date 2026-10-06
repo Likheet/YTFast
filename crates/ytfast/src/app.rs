@@ -13,7 +13,7 @@ use ytfast_core::read::{Item, Page, PlayerInfo, Section, Target, Track, TrackKin
 use ytfast_core::ytdlp::Browser;
 
 use crate::audio_thread::{Audio, Command, Status};
-use crate::backend::{Backend, Event, Request, Route};
+use crate::backend::{Backend, Edit, Event, Request, Route};
 use crate::images::Images;
 use crate::queue::{Entry, Queue};
 use crate::views;
@@ -26,6 +26,12 @@ pub struct Settings {
     pub browser: Option<String>,
     pub volume: f32,
     pub repeat: Repeat,
+    /// Start songs the website's way (off: always through yt-dlp).
+    pub fast_way: bool,
+    /// When the queue ends, carry on with songs like the last one.
+    pub autoplay: bool,
+    /// Turn loud songs down, as YouTube Music does.
+    pub even_loudness: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +40,9 @@ impl Default for Settings {
             browser: None,
             volume: 0.8,
             repeat: Repeat::Off,
+            fast_way: true,
+            autoplay: true,
+            even_loudness: true,
         }
     }
 }
@@ -99,6 +108,32 @@ impl Default for Playback {
     }
 }
 
+/// A switch on the Settings page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    FastWay,
+    Autoplay,
+    EvenLoudness,
+}
+
+/// A small window asking one thing.
+#[derive(Clone, Debug)]
+pub enum Dialog {
+    /// A new playlist's name; `song` is added to it when made.
+    NewPlaylist {
+        name: String,
+        song: Option<String>,
+    },
+    Rename {
+        playlist_id: String,
+        name: String,
+    },
+    Delete {
+        playlist_id: String,
+        title: String,
+    },
+}
+
 /// The player page's tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NpTab {
@@ -147,6 +182,37 @@ pub enum Action {
     PlayNext(Track),
     /// Put a song at the end of the queue.
     AddToQueue(Track),
+    /// A short message above the player bar.
+    Notify(String),
+    /// Add a song to one of the account's playlists.
+    AddToPlaylist {
+        playlist_id: String,
+        title: String,
+        video_id: String,
+    },
+    /// Any other change to the account.
+    Edit(Edit),
+    Toggle(Setting),
+    OpenDialog(Dialog),
+    RenamePlaylist {
+        playlist_id: String,
+        name: String,
+    },
+    DeletePlaylist(String),
+    /// Save an album or playlist to the library, or take it out.
+    ToggleSave {
+        playlist_id: String,
+        save: bool,
+    },
+    ToggleSubscribe {
+        channel_id: String,
+        subscribe: bool,
+    },
+    OpenLogFolder,
+    /// Queue edits, by entry.
+    RemoveFromQueue(u64),
+    ShiftInQueue(u64, bool),
+    MoveNextInQueue(u64),
     ToggleQueue,
     /// Open or close the player page.
     ToggleNowPlaying,
@@ -199,6 +265,10 @@ pub struct App {
     pub related: HashMap<String, Loadable>,
     /// What the account thinks of songs, as known.
     pub likes: HashMap<String, LikeState>,
+    /// Library saves and subscriptions changed in this run.
+    pub saved: HashMap<String, bool>,
+    pub subscribed: HashMap<String, bool>,
+    pub dialog: RefCell<Option<Dialog>>,
 }
 
 /// The backdrop's textures: the current song's, and the one fading out.
@@ -229,6 +299,7 @@ impl App {
         let backend = Backend::start(wake.clone(), demo).expect("YtFast's folders can be made");
         let audio = Audio::start(wake.clone(), demo);
         audio.send(Command::Volume(settings.volume));
+        backend.send(Request::FastWay(settings.fast_way));
 
         let mut info = now_playing::App::new("ytfast", "YTFast");
         info.can_raise = true;
@@ -283,12 +354,38 @@ impl App {
             lyrics: HashMap::new(),
             related: HashMap::new(),
             likes: HashMap::new(),
+            saved: HashMap::new(),
+            subscribed: HashMap::new(),
+            dialog: RefCell::new(None),
         }
     }
 
     /// Queues an action for after this frame.
     pub fn act(&self, action: Action) {
         self.actions.borrow_mut().push(action);
+    }
+
+    /// The account's playlists (ID without `VL`, title), from the
+    /// Library, for "Add to playlist".
+    pub fn own_playlists(&self) -> Vec<(String, String)> {
+        let Some(Loadable::Ready(page)) = self.pages.get(&Route::Library) else {
+            return Vec::new();
+        };
+        page.sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter_map(|item| match item {
+                ytfast_core::read::Item::Card(card) => match &card.open {
+                    Some(Target::Browse { id, .. }) => {
+                        let id = id.strip_prefix("VL")?;
+                        // Liked Music and Episodes are not edited this way.
+                        (id != "LM" && id != "SE").then(|| (id.to_string(), card.title.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
     }
 
     /// The accent colour: from the playing song's cover, or the default.
@@ -474,9 +571,40 @@ impl App {
                 Event::Liked(video_id, like) => {
                     self.likes.insert(video_id, like);
                 }
-                Event::RateFailed(video_id, message) => {
-                    self.likes.remove(&video_id);
-                    self.notify(format!("Could not save that: {message}"));
+                Event::EditFailed(change, message) => {
+                    match &change {
+                        Edit::Rate { video_id, .. } => {
+                            self.likes.remove(video_id);
+                        }
+                        Edit::Save { playlist_id, .. } => {
+                            self.saved.remove(playlist_id);
+                        }
+                        Edit::Subscribe { channel_id, .. } => {
+                            self.subscribed.remove(channel_id);
+                        }
+                        _ => {}
+                    }
+                    self.notify(format!("That did not work: {message}"));
+                }
+                Event::Edited(change) => match change {
+                    // The library and the changed playlist show the change.
+                    Edit::RenamePlaylist { .. }
+                    | Edit::DeletePlaylist { .. }
+                    | Edit::Save { .. }
+                    | Edit::CreatePlaylist { .. } => self.load(Route::Library),
+                    Edit::AddToPlaylist { playlist_id, .. }
+                    | Edit::RemoveFromPlaylist { playlist_id, .. } => {
+                        let route = Route::browse(format!("VL{playlist_id}"), None);
+                        self.pages.remove(&route);
+                        if self.route == route {
+                            self.show_current();
+                        }
+                    }
+                    _ => {}
+                },
+                Event::PlaylistMade(_, title) => {
+                    self.notify(format!("Made the playlist {title}"));
+                    self.load(Route::Library);
                 }
                 Event::MoreRows { route, tracks } => {
                     if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
@@ -514,10 +642,15 @@ impl App {
                     .length
                     .or(current.track.duration_seconds.map(f64::from))
                     .unwrap_or(0.0);
+                let gain = if self.settings.even_loudness {
+                    ready.gain
+                } else {
+                    1.0
+                };
                 self.audio.send(Command::Play {
                     entry,
                     data: ready.data,
-                    gain: ready.gain,
+                    gain,
                     length,
                 });
                 let report = PlayReport::new(&ready.info);
@@ -665,7 +798,11 @@ impl App {
     }
 
     /// Asks for what plays after the last song in the queue, once per song.
+    /// Without autoplay, only a playlist's or album's own songs follow.
     fn ask_for_more(&mut self) {
+        if !self.settings.autoplay && self.queue.source.is_none() {
+            return;
+        }
         let Some(last) = self.queue.entries().last() else {
             return;
         };
@@ -742,6 +879,9 @@ impl App {
     /// here (never loaded, let go, or failed).
     fn show_current(&mut self) {
         let route = self.route.clone();
+        if route.is_local() {
+            return;
+        }
         match self.pages.get(&route) {
             None | Some(Loadable::Failed(_)) => self.load(route),
             Some(_) => self.touch(&route),
@@ -883,6 +1023,19 @@ impl App {
                 self.queue.add_to_end(track);
                 self.queue_grew();
             }
+            Action::Notify(text) => self.notify(text),
+            Action::RemoveFromQueue(id) => {
+                self.queue.remove(id);
+                self.prepare_next();
+            }
+            Action::ShiftInQueue(id, up) => {
+                self.queue.shift(id, up);
+                self.prepare_next();
+            }
+            Action::MoveNextInQueue(id) => {
+                self.queue.move_next(id);
+                self.prepare_next();
+            }
             Action::ToggleQueue => self.show_queue = !self.show_queue,
             Action::ToggleNowPlaying => self.now_playing = !self.now_playing,
             Action::CloseNowPlaying => self.now_playing = false,
@@ -890,9 +1043,75 @@ impl App {
             Action::Rate(video_id, like) => {
                 // Shown at once; YouTube is told in the background.
                 self.likes.insert(video_id.clone(), like);
-                self.backend.send(Request::Rate { video_id, like });
+                self.backend
+                    .send(Request::Edit(Edit::Rate { video_id, like }));
                 if like == LikeState::Liked {
                     self.notify("Added to Liked Music");
+                }
+            }
+            Action::AddToPlaylist {
+                playlist_id,
+                title,
+                video_id,
+            } => {
+                self.notify(format!("Added to {title}"));
+                self.backend.send(Request::Edit(Edit::AddToPlaylist {
+                    playlist_id,
+                    video_id,
+                }));
+            }
+            Action::Edit(change) => self.backend.send(Request::Edit(change)),
+            Action::Toggle(which) => {
+                let s = &mut self.settings;
+                match which {
+                    Setting::FastWay => {
+                        s.fast_way = !s.fast_way;
+                        self.backend.send(Request::FastWay(s.fast_way));
+                    }
+                    Setting::Autoplay => s.autoplay = !s.autoplay,
+                    Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
+                }
+            }
+            Action::OpenDialog(dialog) => *self.dialog.get_mut() = Some(dialog),
+            Action::RenamePlaylist { playlist_id, name } => {
+                self.notify(format!("Renamed to {name}"));
+                self.backend
+                    .send(Request::Edit(Edit::RenamePlaylist { playlist_id, name }));
+            }
+            Action::DeletePlaylist(playlist_id) => {
+                self.notify("Deleted the playlist");
+                // Away from its page.
+                if matches!(&self.route, Route::Browse { id, .. } if id.trim_start_matches("VL") == playlist_id)
+                {
+                    self.route = Route::Library;
+                    self.show_current();
+                }
+                self.backend
+                    .send(Request::Edit(Edit::DeletePlaylist { playlist_id }));
+            }
+            Action::ToggleSave { playlist_id, save } => {
+                self.saved.insert(playlist_id.clone(), save);
+                self.notify(if save {
+                    "Saved to your library"
+                } else {
+                    "Removed from your library"
+                });
+                self.backend
+                    .send(Request::Edit(Edit::Save { playlist_id, save }));
+            }
+            Action::ToggleSubscribe {
+                channel_id,
+                subscribe,
+            } => {
+                self.subscribed.insert(channel_id.clone(), subscribe);
+                self.backend.send(Request::Edit(Edit::Subscribe {
+                    channel_id,
+                    subscribe,
+                }));
+            }
+            Action::OpenLogFolder => {
+                if let Some(dirs) = directories::ProjectDirs::from("", "", "YtFast") {
+                    open_folder(dirs.cache_dir());
                 }
             }
             Action::ShuffleQueue => {
@@ -964,6 +1183,45 @@ impl App {
         });
         if play {
             self.act(Action::TogglePause);
+        }
+        if !typing {
+            use egui::{Key, Modifiers};
+            let pressed = |key, modifiers| ctx.input_mut(|i| i.consume_key(modifiers, key));
+            let position = self.audio_status.position;
+            let volume = self.settings.volume;
+            if pressed(Key::ArrowLeft, Modifiers::NONE) {
+                self.act(Action::Seek((position - 10.0).max(0.0)));
+            }
+            if pressed(Key::ArrowRight, Modifiers::NONE) {
+                self.act(Action::Seek(position + 10.0));
+            }
+            if pressed(Key::ArrowUp, Modifiers::NONE) {
+                self.act(Action::SetVolume((volume + 0.1).min(1.0)));
+            }
+            if pressed(Key::ArrowDown, Modifiers::NONE) {
+                self.act(Action::SetVolume((volume - 0.1).max(0.0)));
+            }
+            if pressed(Key::N, Modifiers::SHIFT) {
+                self.act(Action::Next);
+            }
+            if pressed(Key::P, Modifiers::SHIFT) {
+                self.act(Action::Previous);
+            }
+            if pressed(Key::M, Modifiers::NONE) {
+                self.act(Action::SetVolume(if volume > 0.0 { 0.0 } else { 0.8 }));
+            }
+            if pressed(Key::L, Modifiers::NONE)
+                && let Some(entry) = &self.playback.entry
+            {
+                let id = entry.track.video_id.clone();
+                let liked = self.likes.get(&id) == Some(&LikeState::Liked);
+                let next = if liked {
+                    LikeState::Neutral
+                } else {
+                    LikeState::Liked
+                };
+                self.act(Action::Rate(id, next));
+            }
         }
         if search {
             ctx.memory_mut(|m| m.request_focus(views::SEARCH_BOX.into()));
@@ -1090,5 +1348,20 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.finish_report();
         self.backend.forget_sign_in();
+    }
+}
+
+/// Opens a folder in the system's file browser.
+fn open_folder(path: &std::path::Path) {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::fs::create_dir_all(path);
+    if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
+        log::warn!("could not open the folder: {e}");
     }
 }

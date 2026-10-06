@@ -194,6 +194,39 @@ pub fn page(route: &Route) -> Page {
         }
         Route::Browse { id, .. } => browse(id),
         Route::Search(query) => search(query),
+        Route::LibrarySongs | Route::History => Page {
+            header: None,
+            sections: vec![section("", songs(3, 16))],
+        },
+        Route::LibraryAlbums => Page {
+            header: None,
+            sections: vec![shaped(
+                "",
+                [
+                    "Night Ferries",
+                    "Postcards",
+                    "Glass Hearts",
+                    "Signals",
+                    "Harvest",
+                ]
+                .into_iter()
+                .map(album_card)
+                .collect(),
+                Shape::Grid,
+            )],
+        },
+        Route::LibraryArtists => Page {
+            header: None,
+            sections: vec![shaped(
+                "",
+                ["Mara Sol", "Ivy Lane", "Echo Room", "Coastal Drive"]
+                    .into_iter()
+                    .map(|a| card(a, "Artist", PageKind::Artist))
+                    .collect(),
+                Shape::Grid,
+            )],
+        },
+        Route::Settings => Page::default(),
     }
 }
 

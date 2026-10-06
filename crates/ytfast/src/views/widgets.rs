@@ -48,6 +48,20 @@ pub fn track_row(
     playing: bool,
     on_click: impl FnOnce() -> Action,
 ) {
+    track_row_in(app, ui, track, number, playing, None, on_click);
+}
+
+/// A song row in Up next (`queued` is its entry), whose menu edits the
+/// queue.
+pub fn track_row_in(
+    app: &App,
+    ui: &mut egui::Ui,
+    track: &Track,
+    number: Option<usize>,
+    playing: bool,
+    queued: Option<u64>,
+    on_click: impl FnOnce() -> Action,
+) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, theme::ROW_HEIGHT), Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -174,20 +188,70 @@ pub fn track_row(
     if response.clicked() {
         app.act(on_click());
     }
-    response.context_menu(|ui| song_menu(app, ui, track));
+    response.context_menu(|ui| song_menu(app, ui, track, queued.filter(|_| !playing)));
 }
 
 /// What a right-click on a song offers.
-pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track) {
-    ui.set_min_width(180.0);
-    if ui.button("Play next").clicked() {
-        app.act(Action::PlayNext(track.clone()));
+pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, queued: Option<u64>) {
+    ui.set_min_width(200.0);
+    let item = |ui: &mut egui::Ui, text: &str, action: Action| {
+        if ui.button(text).clicked() {
+            app.act(action);
+            ui.close();
+        }
+    };
+    match queued {
+        // A song in Up next.
+        Some(id) => {
+            item(ui, "Play next", Action::MoveNextInQueue(id));
+            item(ui, "Move up", Action::ShiftInQueue(id, true));
+            item(ui, "Move down", Action::ShiftInQueue(id, false));
+            item(ui, "Remove from queue", Action::RemoveFromQueue(id));
+        }
+        None => {
+            item(ui, "Play next", Action::PlayNext(track.clone()));
+            item(ui, "Add to queue", Action::AddToQueue(track.clone()));
+        }
+    }
+    ui.separator();
+    let liked = app.likes.get(&track.video_id) == Some(&crate::app::LikeState::Liked);
+    if liked {
+        item(
+            ui,
+            "Remove from Liked Music",
+            Action::Rate(track.video_id.clone(), crate::app::LikeState::Neutral),
+        );
+    } else {
+        item(
+            ui,
+            "Add to Liked Music",
+            Action::Rate(track.video_id.clone(), crate::app::LikeState::Liked),
+        );
+    }
+    crate::views::playlists_menu(app, ui, track);
+    if let Some(album) = &track.album_id {
+        item(
+            ui,
+            "Go to album",
+            Action::Navigate(crate::backend::Route::browse(album.clone(), None)),
+        );
+    }
+    if let Some(artist) = &track.artist_id {
+        item(
+            ui,
+            "Go to artist",
+            Action::Navigate(crate::backend::Route::browse(artist.clone(), None)),
+        );
+    }
+    if ui.button("Copy link").clicked() {
+        ui.ctx().copy_text(format!(
+            "https://music.youtube.com/watch?v={}",
+            track.video_id
+        ));
+        app.act(Action::Notify("Link copied".into()));
         ui.close();
     }
-    if ui.button("Add to queue").clicked() {
-        app.act(Action::AddToQueue(track.clone()));
-        ui.close();
-    }
+    ui.separator();
     if ui.button("Start radio").clicked() {
         let radio = Target::Watch {
             video_id: Some(track.video_id.clone()),

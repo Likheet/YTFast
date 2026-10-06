@@ -143,6 +143,50 @@ impl Queue {
         }
     }
 
+    /// Takes a coming song out of the queue (not the one playing).
+    pub fn remove(&mut self, id: u64) {
+        let Some(i) = self.entries.iter().position(|e| e.id == id) else {
+            return;
+        };
+        match self.current {
+            Some(c) if c == i => {}
+            Some(c) if i < c => {
+                self.entries.remove(i);
+                self.current = Some(c - 1);
+            }
+            _ => {
+                self.entries.remove(i);
+            }
+        }
+    }
+
+    /// Moves a coming song one place earlier (`up`) or later, never past
+    /// the song playing.
+    pub fn shift(&mut self, id: u64, up: bool) {
+        let first = self.current.map_or(0, |c| c + 1);
+        let Some(i) = self.entries.iter().position(|e| e.id == id) else {
+            return;
+        };
+        if i < first {
+            return;
+        }
+        let j = if up { i.checked_sub(1) } else { Some(i + 1) };
+        if let Some(j) = j.filter(|j| *j >= first && *j < self.entries.len()) {
+            self.entries.swap(i, j);
+        }
+    }
+
+    /// Moves a coming song to play right after the current one.
+    pub fn move_next(&mut self, id: u64) {
+        let first = self.current.map_or(0, |c| c + 1);
+        if let Some(i) = self.entries.iter().position(|e| e.id == id)
+            && i > first
+        {
+            let entry = self.entries.remove(i);
+            self.entries.insert(first, entry);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.current = None;
@@ -250,5 +294,35 @@ mod tests {
         let mut expected: Vec<String> = (5..30).map(|i| format!("s{i}")).collect();
         expected.sort();
         assert_eq!(after, expected);
+    }
+
+    #[test]
+    fn editing_the_coming_songs() {
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("b"), song("c"), song("d")], 1, None);
+        let id = |q: &Queue, v: &str| {
+            q.entries()
+                .iter()
+                .find(|e| e.track.video_id == v)
+                .unwrap()
+                .id
+        };
+        // The playing song cannot be removed or moved.
+        let b = id(&q, "b");
+        q.remove(b);
+        q.shift(b, false);
+        assert_eq!(ids(&q), ["a", "b", "c", "d"]);
+        q.shift(id(&q, "d"), true);
+        assert_eq!(ids(&q), ["a", "b", "d", "c"]);
+        // Not past the song playing.
+        q.shift(id(&q, "d"), true);
+        assert_eq!(ids(&q), ["a", "b", "d", "c"]);
+        q.move_next(id(&q, "c"));
+        assert_eq!(ids(&q), ["a", "b", "c", "d"]);
+        q.remove(id(&q, "a"));
+        assert_eq!(ids(&q), ["b", "c", "d"]);
+        assert_eq!(q.current().unwrap().track.video_id, "b");
+        q.remove(id(&q, "d"));
+        assert_eq!(ids(&q), ["b", "c"]);
     }
 }

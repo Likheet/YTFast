@@ -6,11 +6,15 @@ use ytfast_core::read::{Card, Header, Item, Page, Section, Shape, Track};
 
 use crate::app::{Action, App, Loadable};
 use crate::backend::Route;
-use crate::theme::{self, PALETTE};
+use crate::theme::{self, Icon, PALETTE};
 use crate::views::widgets;
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     let route = app.route.clone();
+    if route == Route::Settings {
+        crate::views::settings::show(app, ui);
+        return;
+    }
     match app.pages.get(&route) {
         None | Some(Loadable::Loading) => {
             ui.add_space(80.0);
@@ -74,7 +78,14 @@ fn content(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
     match (&page.header, route) {
         (Some(header), _) => header_block(app, ui, route, page, header),
         (None, Route::Search(query)) => title(ui, &format!("Results for \u{201c}{query}\u{201d}")),
-        (None, Route::Library) => title(ui, "Library"),
+        (
+            None,
+            Route::Library | Route::LibrarySongs | Route::LibraryAlbums | Route::LibraryArtists,
+        ) => {
+            title(ui, "Library");
+            library_tabs(app, ui, route);
+        }
+        (None, Route::History) => title(ui, "History"),
         (None, Route::Explore) => title(ui, "Explore"),
         _ => {}
     }
@@ -96,6 +107,49 @@ pub fn sections(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
     for (index, section) in page.sections.iter().enumerate() {
         section_block(app, ui, route, section, index);
     }
+}
+
+/// Playlists, Songs, Albums, Artists.
+fn library_tabs(app: &App, ui: &mut egui::Ui, route: &Route) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (tab, name) in [
+            (Route::Library, "Playlists"),
+            (Route::LibrarySongs, "Songs"),
+            (Route::LibraryAlbums, "Albums"),
+            (Route::LibraryArtists, "Artists"),
+        ] {
+            let chosen = *route == tab;
+            let text = egui::RichText::new(name)
+                .font(theme::medium(14.0))
+                .color(if chosen {
+                    egui::Color32::BLACK
+                } else {
+                    PALETTE.text
+                });
+            let button = egui::Button::new(text)
+                .fill(if chosen {
+                    PALETTE.text
+                } else {
+                    PALETTE.surface
+                })
+                .corner_radius(egui::CornerRadius::same(16))
+                .min_size(vec2(72.0, 32.0));
+            if ui.add(button).clicked() {
+                app.act(Action::Navigate(tab));
+            }
+        }
+        if *route == Route::Library {
+            ui.add_space(8.0);
+            if theme::pill_button(ui, "+ New playlist", false).clicked() {
+                app.act(Action::OpenDialog(crate::app::Dialog::NewPlaylist {
+                    name: String::new(),
+                    song: None,
+                }));
+            }
+        }
+    });
+    ui.add_space(14.0);
 }
 
 fn title(ui: &mut egui::Ui, text: &str) {
@@ -120,25 +174,24 @@ fn header_block(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header
         for line in &lines {
             theme::label(ui, line, theme::regular(15.0), PALETTE.secondary);
         }
-        if count > 0 {
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                if theme::pill_button(ui, "Play", true).clicked() {
-                    app.act(Action::PlayTracks {
-                        tracks: page.tracks(),
-                        start: 0,
-                        source: source(route),
-                    });
-                }
-                if count > 1 && theme::pill_button(ui, "Shuffle", false).clicked() {
-                    app.act(Action::Shuffle {
-                        tracks: page.tracks(),
-                        source: source(route),
-                    });
-                }
-            });
-        }
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            if count > 0 && theme::pill_button(ui, "Play", true).clicked() {
+                app.act(Action::PlayTracks {
+                    tracks: page.tracks(),
+                    start: 0,
+                    source: source(route),
+                });
+            }
+            if count > 1 && theme::pill_button(ui, "Shuffle", false).clicked() {
+                app.act(Action::Shuffle {
+                    tracks: page.tracks(),
+                    source: source(route),
+                });
+            }
+            header_actions(app, ui, route, header);
+        });
     };
     if header.thumbnail.is_none() {
         // A mood or genre: only words.
@@ -148,7 +201,7 @@ fn header_block(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header
     }
     let side = 200.0;
     // The text's height, to center it beside the cover.
-    let height = 44.0 + 22.0 * lines.len() as f32 + if count > 0 { 50.0 } else { 0.0 };
+    let height = 44.0 + 22.0 * lines.len() as f32 + 50.0;
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
         widgets::cover(app, ui, rect, header.thumbnail.as_ref(), header.round);
@@ -300,3 +353,61 @@ fn section_block(app: &App, ui: &mut egui::Ui, route: &Route, section: &Section,
 
 /// Songs per column in a sideways shelf (Quick picks).
 const GRID_ROWS: usize = 4;
+
+/// Save to library, Subscribe, and Rename and Delete for the account's own
+/// playlists.
+fn header_actions(app: &App, ui: &mut egui::Ui, route: &Route, header: &Header) {
+    if let Some(id) = header.library_id.as_ref().filter(|_| !header.editable) {
+        let saved = app.saved.get(id).copied().or(header.saved).unwrap_or(false);
+        let label = if saved {
+            "In your library"
+        } else {
+            "Save to library"
+        };
+        if theme::pill_button(ui, label, false).clicked() {
+            app.act(Action::ToggleSave {
+                playlist_id: id.clone(),
+                save: !saved,
+            });
+        }
+    }
+    if let Some(channel) = &header.channel_id {
+        let subscribed = app
+            .subscribed
+            .get(channel)
+            .copied()
+            .or(header.subscribed)
+            .unwrap_or(false);
+        let label = if subscribed {
+            "Subscribed"
+        } else {
+            "Subscribe"
+        };
+        if theme::pill_button(ui, label, !subscribed).clicked() {
+            app.act(Action::ToggleSubscribe {
+                channel_id: channel.clone(),
+                subscribe: !subscribed,
+            });
+        }
+    }
+    let own = match route {
+        Route::Browse { id, .. } if header.editable => {
+            Some(id.strip_prefix("VL").unwrap_or(id).to_string())
+        }
+        _ => None,
+    };
+    if let Some(playlist_id) = own {
+        if theme::icon_button(ui, Icon::Pencil, 18.0, PALETTE.secondary, "Rename").clicked() {
+            app.act(Action::OpenDialog(crate::app::Dialog::Rename {
+                playlist_id: playlist_id.clone(),
+                name: header.title.clone(),
+            }));
+        }
+        if theme::icon_button(ui, Icon::Trash, 18.0, PALETTE.secondary, "Delete").clicked() {
+            app.act(Action::OpenDialog(crate::app::Dialog::Delete {
+                playlist_id,
+                title: header.title.clone(),
+            }));
+        }
+    }
+}
