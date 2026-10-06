@@ -34,6 +34,26 @@
         "contents": [
          {
           "musicResponsiveListItemRenderer": {
+           "thumbnail": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://lh3.googleusercontent.com/eC9DfRcYSk4FE-fvDCJSu_4xsKdVMKxwmFTYFZwP8OqB7R4TKxAjKoR-Kp1lXeRi2WddPFYulSte4eW-=w60-h60-l90-rj",
+                "width": 60,
+                "height": 60
+               },
+               {
+                "url": "https://lh3.googleusercontent.com/eC9DfRcYSk4FE-fvDCJSu_4xsKdVMKxwmFTYFZwP8OqB7R4TKxAjKoR-Kp1lXeRi2WddPFYulSte4eW-=w120-h120-l90-rj",
+                "width": 120,
+                "height": 120
+               }
+              ]
+             },
+             "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_UNSPECIFIED",
+             "thumbnailScale": "MUSIC_THUMBNAIL_SCALE_ASPECT_FIT"
+            }
+           },
            "overlay": {
             "musicItemThumbnailOverlayRenderer": {
              "content": {
@@ -199,6 +219,21 @@
          },
          {
           "musicResponsiveListItemRenderer": {
+           "thumbnail": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/sddefault.jpg?sqp=-oaymwEWCJADEOEBIAQqCghqEJQEGHgg6AJIWg&rs=AMzJL3lNNudXg7f4Qf7PiE9tvCAkHTjJ0w",
+                "width": 400,
+                "height": 225
+               }
+              ]
+             },
+             "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_UNSPECIFIED",
+             "thumbnailScale": "MUSIC_THUMBNAIL_SCALE_ASPECT_FIT"
+            }
+           },
            "overlay": {
             "musicItemThumbnailOverlayRenderer": {
              "content": {
@@ -370,6 +405,31 @@
         "contents": [
          {
           "musicResponsiveHeaderRenderer": {
+           "thumbnail": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://yt3.googleusercontent.com/hyYcadQYY3bZBpijoQQkUqM03w-CPmx5wSCRbpJXazDeYYJA2_Rq5H5Yy8i8Uunher5vZvNmXVM=s192",
+                "width": 192,
+                "height": 192
+               },
+               {
+                "url": "https://yt3.googleusercontent.com/hyYcadQYY3bZBpijoQQkUqM03w-CPmx5wSCRbpJXazDeYYJA2_Rq5H5Yy8i8Uunher5vZvNmXVM=s576",
+                "width": 576,
+                "height": 576
+               },
+               {
+                "url": "https://yt3.googleusercontent.com/hyYcadQYY3bZBpijoQQkUqM03w-CPmx5wSCRbpJXazDeYYJA2_Rq5H5Yy8i8Uunher5vZvNmXVM=s1200",
+                "width": 1200,
+                "height": 1200
+               }
+              ]
+             },
+             "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_UNSPECIFIED",
+             "thumbnailScale": "MUSIC_THUMBNAIL_SCALE_UNSPECIFIED"
+            }
+           },
            "buttons": [
             {
              "toggleButtonRenderer": {

@@ -11,7 +11,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 
 use crate::cookies::CookieJar;
-use crate::read::{self, Account, AccountFlags, PlayerInfo, Track};
+use crate::read::{self, Account, AccountFlags, Page, PlayerInfo, Track};
 use crate::ytcfg::WebConfig;
 use crate::{auth, redact};
 
@@ -39,9 +39,10 @@ fn network(error: reqwest::Error) -> ApiError {
     ApiError::Network(redact::urls(&error.to_string()))
 }
 
-/// One page of a list (Liked songs, History).
+/// The first page of a song list (Liked songs, History), with the account
+/// flags the reply carried.
 #[derive(Clone, Debug)]
-pub struct Page {
+pub struct TrackPage {
     pub tracks: Vec<Track>,
     /// More rows than this page holds.
     pub more: bool,
@@ -216,9 +217,9 @@ impl Session {
         self.call("browse", json!({ "browseId": browse_id })).await
     }
 
-    async fn page(&self, browse_id: &str) -> Result<Page, ApiError> {
+    async fn track_page(&self, browse_id: &str) -> Result<TrackPage, ApiError> {
         let reply = self.browse(browse_id).await?;
-        Ok(Page {
+        Ok(TrackPage {
             tracks: read::tracks(&reply),
             more: read::track_continuation(&reply).is_some(),
             flags: read::account_flags(&reply),
@@ -226,13 +227,79 @@ impl Session {
     }
 
     /// The first page of Liked songs (the `LM` playlist).
-    pub async fn liked_songs(&self) -> Result<Page, ApiError> {
-        self.page("VLLM").await
+    pub async fn liked_songs(&self) -> Result<TrackPage, ApiError> {
+        self.track_page("VLLM").await
     }
 
     /// The first page of listening History, newest first.
-    pub async fn history(&self) -> Result<Page, ApiError> {
-        self.page("FEmusic_history").await
+    pub async fn history(&self) -> Result<TrackPage, ApiError> {
+        self.track_page("FEmusic_history").await
+    }
+
+    /// Any page, as the app draws it: Home (`FEmusic_home`), an album
+    /// (`MPREb_...`), a playlist (`VL...`), an artist (`UC...`), a mood
+    /// (with its `params`).
+    pub async fn page(&self, browse_id: &str, params: Option<&str>) -> Result<Page, ApiError> {
+        let mut body = json!({ "browseId": browse_id });
+        if let Some(params) = params {
+            body["params"] = json!(params);
+        }
+        Ok(read::page(&self.call("browse", body).await?))
+    }
+
+    pub async fn home(&self) -> Result<Page, ApiError> {
+        self.page("FEmusic_home", None).await
+    }
+
+    /// The playlists saved in the library.
+    pub async fn library_playlists(&self) -> Result<Page, ApiError> {
+        self.page("FEmusic_liked_playlists", None).await
+    }
+
+    /// Search results, grouped the way YouTube Music groups them (top
+    /// result, songs, albums, artists, playlists...).
+    pub async fn search(&self, query: &str) -> Result<Page, ApiError> {
+        Ok(read::page(
+            &self.call("search", json!({ "query": query })).await?,
+        ))
+    }
+
+    /// What plays after a song: the playlist or album it came from, or a
+    /// radio of similar songs when `playlist_id` is `None` (YouTube
+    /// Music's own "Up next"). The body follows ytmusicapi's
+    /// `get_watch_playlist`.
+    pub async fn up_next(
+        &self,
+        video_id: &str,
+        playlist_id: Option<&str>,
+    ) -> Result<Vec<Track>, ApiError> {
+        let radio = format!("RDAMVM{video_id}");
+        let body = json!({
+            "enablePersistentPlaylistPanel": true,
+            "isAudioOnly": true,
+            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+            "videoId": video_id,
+            "playlistId": playlist_id.unwrap_or(&radio),
+            "watchEndpointMusicSupportedConfigs": {
+                "watchEndpointMusicConfig": {
+                    "hasPersistentPlaylistPanel": true,
+                    "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                }
+            }
+        });
+        Ok(read::up_next(&self.call("next", body).await?))
+    }
+
+    /// The songs of a playlist or album to play, by its playlist ID
+    /// (`OLAK5uy_...`, `PL...`, `RDCLAK...`).
+    pub async fn playlist_queue(&self, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
+        let body = json!({
+            "enablePersistentPlaylistPanel": true,
+            "isAudioOnly": true,
+            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+            "playlistId": playlist_id,
+        });
+        Ok(read::up_next(&self.call("next", body).await?))
     }
 
     /// What YouTube says about one song: whether it plays for this account,

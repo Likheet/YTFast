@@ -10,9 +10,15 @@ Replies from YouTube Music's internal API, used to test `src/read.rs`.
 | `history_synthetic.json` | Written by hand in the History layout ytmusicapi reads (`singleColumnBrowseResultsRenderer` → `musicShelfRenderer`). Not a real reply. |
 | `account_menu_synthetic.json` | Written by hand in the `account/account_menu` layout ytmusicapi reads. Not a real reply. |
 | `player_synthetic.json` | Written by hand from the `player` reply example in ytmusicapi's documentation. Not a real reply. |
+| `explore.json` | Real Explore page (November 2025). Trimmed from ytmusicapi's `tests/data/2025_11_get_explore.json`. |
+| `album.json` | Real album page (May 2026). Trimmed from ytmusicapi's `tests/data/2026_05_get_album.json`. |
+| `artist.json` | Real artist page (May 2026). Trimmed from ytmusicapi's `tests/data/2026_05_get_artist1.json`. |
+| `home_synthetic.json` | Written by hand in the Home layout (carousels of list rows and of cards). Not a real reply. |
+| `search_synthetic.json` | Written by hand in the search layout (top result card, song and album shelves). Not a real reply. |
+| `next_synthetic.json` | Written by hand in the Up next layout ytmusicapi reads (`playlistPanelRenderer`, with a song/video pair and an unplayable row). Not a real reply. |
 
-Trimming kept the structure the readers walk and dropped thumbnails,
-tracking blobs and all but the first rows.
+Trimming kept the structure the readers walk and dropped tracking blobs,
+long descriptions and all but the first few rows or cards of each list.
 
 ytmusicapi (https://github.com/sigma67/ytmusicapi) is MIT licensed,
 Copyright (c) 2026 sigma67.

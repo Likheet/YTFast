@@ -22,6 +22,7 @@ use ytfast_core::cookies::CookieJar;
 use ytfast_core::helpers::{self, Progress};
 use ytfast_core::innertube::{ApiError, Session};
 use ytfast_core::net;
+use ytfast_core::prepare::Preparer;
 use ytfast_core::ytdlp::{Browser, YtDlp, is_video_id};
 
 use crate::play::Song;
@@ -264,13 +265,13 @@ fn run(rt: &Runtime, args: &Args, folders: &Folders, report: &mut Report) {
             .block_on(session.history())
             .map(|page| page.tracks.into_iter().map(|t| t.video_id).collect())
             .unwrap_or_default();
-        let context = play::Context {
+        let preparer = Preparer {
             session: Arc::clone(&session),
             yt_dlp: yt_dlp.clone(),
             download: net::download_client(),
             cookies_file: cookies_file.clone(),
         };
-        let reported = play::run(rt, &context, songs, resolved, report);
+        let reported = play::run(rt, &preparer, songs, resolved, report);
         (reported, before)
     };
 
@@ -557,7 +558,8 @@ fn step_account(rt: &Runtime, cookies: &CookieJar, report: &mut Report) -> Optio
             let premium = match flags.premium {
                 Some(true) => "yes",
                 Some(false) => "no",
-                None => "unknown",
+                // Not every reply says; step 5 shows it for certain.
+                None => "checked in step 5",
             };
             let channel = if config.delegated_session_id.is_some() {
                 "a secondary (brand) channel"
@@ -682,6 +684,11 @@ fn step_songs(
                 Outcome::Ok,
                 format!("{count} on the first page{more}"),
             );
+            if let Some(premium) = page.flags.premium {
+                let answer = if premium { "yes" } else { "no" };
+                ui::say(&format!("YouTube Music Premium: {answer}"));
+                report.fact("Premium (from Liked songs)", answer);
+            }
             if chosen.is_empty() {
                 chosen = page
                     .tracks

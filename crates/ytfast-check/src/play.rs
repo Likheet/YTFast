@@ -3,7 +3,6 @@
 //! play is reported to YouTube so it lands in History.
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,10 +12,10 @@ use crossterm::terminal::{self, Clear, ClearType};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use ytfast_core::audio::{self, Player};
-use ytfast_core::innertube::Session;
 use ytfast_core::playreport::PlayReport;
+use ytfast_core::prepare::Preparer;
 use ytfast_core::read::PlayerInfo;
-use ytfast_core::ytdlp::{Resolved, YtDlp};
+use ytfast_core::ytdlp::Resolved;
 
 use crate::report::{Outcome, Report, SongResult, clock};
 use crate::ui;
@@ -50,26 +49,20 @@ impl Song {
     }
 }
 
-/// What playing needs, cloneable into background tasks.
-#[derive(Clone)]
-pub struct Context {
-    pub session: Arc<Session>,
-    pub yt_dlp: YtDlp,
-    pub download: reqwest::Client,
-    pub cookies_file: PathBuf,
-}
-
 /// A song ready to play.
 struct Prepared {
     song: Song,
     info: PlayerInfo,
     bytes: Vec<u8>,
+    gain: f32,
     result: SongResult,
 }
 
-/// Finds, describes and downloads one song. Errors are plain sentences.
+/// Finds, describes and downloads one song (with the engine's own
+/// [`Preparer`]), then decodes it once to prove the download is a whole,
+/// playable song. Errors are plain sentences.
 async fn prepare(
-    ctx: Context,
+    preparer: Preparer,
     song: Song,
     resolved: Option<Resolved>,
     show_progress: bool,
@@ -78,39 +71,6 @@ async fn prepare(
         expected_seconds: song.expected_seconds,
         ..SongResult::default()
     };
-    let fail = |mut result: SongResult, problem: String| {
-        result.problem = Some(problem);
-        Err(Box::new(result))
-    };
-
-    let resolved = match resolved {
-        Some(r) => r,
-        None => match ctx.yt_dlp.resolve(&song.video_id, &ctx.cookies_file).await {
-            Ok(r) => r,
-            Err(e) => return fail(result, e.to_string()),
-        },
-    };
-    result.find_seconds = resolved.took.as_secs_f64();
-    if result.expected_seconds.is_none() {
-        result.expected_seconds = resolved.duration_seconds;
-    }
-    let Some(format) = resolved.best_playable().cloned() else {
-        return fail(result, "YouTube offered no AAC audio for this song".into());
-    };
-    result.format = format.describe();
-    result.premium = format.is_premium();
-
-    // Loudness and the History report addresses. Playing works without
-    // them, so a failure here is only noted.
-    let info = match ctx.session.player(&song.video_id).await {
-        Ok(info) => info,
-        Err(e) => {
-            result.problem = Some(format!("could not get song details for History: {e}"));
-            PlayerInfo::default()
-        }
-    };
-    result.loudness_db = info.loudness_db;
-
     let progress = |done: u64, total: Option<u64>| {
         if show_progress {
             match total {
@@ -123,25 +83,33 @@ async fn prepare(
             }
         }
     };
-    let downloaded = match audio::download(&ctx.download, &format, &progress).await {
-        Ok(d) => d,
-        Err(e) => {
-            if show_progress {
-                ui::end_progress();
-            }
-            return fail(result, e.to_string());
-        }
-    };
+    let prepared = preparer.prepare(&song.video_id, resolved, &progress).await;
     if show_progress {
         ui::end_progress();
     }
-    result.size_bytes = downloaded.bytes.len() as u64;
-    result.download_seconds = downloaded.took.as_secs_f64();
+    let prepared = match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            result.problem = Some(e.to_string());
+            return Err(Box::new(result));
+        }
+    };
+    result.format = prepared.format.clone();
+    result.premium = prepared.premium;
+    result.find_seconds = prepared.find_time.as_secs_f64();
+    result.download_seconds = prepared.download_time.as_secs_f64();
+    result.size_bytes = prepared.bytes.len() as u64;
+    result.loudness_db = prepared.info.loudness_db;
+    if result.expected_seconds.is_none() {
+        result.expected_seconds = prepared.duration_seconds;
+    }
+    if let Some(problem) = &prepared.details_problem {
+        result.problem = Some(format!("could not get song details for History: {problem}"));
+    }
 
-    // Decode it all once: proves the download is a whole, playable song.
     let (bytes, length) = tokio::task::spawn_blocking(move || {
-        let length = audio::decoded_length(&downloaded.bytes);
-        (downloaded.bytes, length)
+        let length = audio::decoded_length(&prepared.bytes);
+        (prepared.bytes, length)
     })
     .await
     .map_err(|e| {
@@ -152,11 +120,15 @@ async fn prepare(
     })?;
     match length {
         Ok(length) => result.decoded_seconds = Some(length.as_secs_f64()),
-        Err(e) => return fail(result, e.to_string()),
+        Err(e) => {
+            result.problem = Some(e.to_string());
+            return Err(Box::new(result));
+        }
     }
     Ok(Prepared {
         song,
-        info,
+        gain: prepared.gain,
+        info: prepared.info,
         bytes,
         result,
     })
@@ -194,7 +166,7 @@ fn status_line(text: &str) {
 /// reported, for the History check.
 pub fn run(
     rt: &Runtime,
-    ctx: &Context,
+    preparer: &Preparer,
     songs: Vec<Song>,
     first_resolved: Option<Resolved>,
     report: &mut Report,
@@ -235,18 +207,24 @@ pub fn run(
             None => {
                 let Some(song) = queue.next() else { break };
                 ui::say("Finding and downloading the song...");
-                rt.block_on(prepare(ctx.clone(), song, first.take().flatten(), true))
+                rt.block_on(prepare(
+                    preparer.clone(),
+                    song,
+                    first.take().flatten(),
+                    true,
+                ))
             }
         };
         // Get the following song while this one plays.
         if let Some(next) = queue.next() {
-            pending = Some(rt.spawn(prepare(ctx.clone(), next, None, false)));
+            pending = Some(rt.spawn(prepare(preparer.clone(), next, None, false)));
         }
 
         let Prepared {
             song,
             info,
             bytes,
+            gain,
             mut result,
         } = match prepared {
             Ok(p) => p,
@@ -264,7 +242,6 @@ pub fn run(
             }
         };
 
-        let gain = audio::gain_for_loudness(info.loudness_db);
         if let Err(e) = player.play_song(bytes, gain) {
             ui::result(
                 Outcome::Fail,
@@ -289,7 +266,7 @@ pub fn run(
         let play_report = PlayReport::new(&info);
         let song_index = report.songs.len();
         if let Some(url) = play_report.started(0.0) {
-            let session = Arc::clone(&ctx.session);
+            let session = Arc::clone(&preparer.session);
             report_tasks.push((
                 song_index,
                 "started",
@@ -303,7 +280,7 @@ pub fn run(
         println!();
 
         if let Some(url) = play_report.listened(0.0, reached) {
-            let session = Arc::clone(&ctx.session);
+            let session = Arc::clone(&preparer.session);
             report_tasks.push((
                 song_index,
                 "listened",
