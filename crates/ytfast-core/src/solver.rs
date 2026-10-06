@@ -156,6 +156,11 @@ impl Solver {
                 "--node-modules-dir=none",
                 "--no-config",
                 "--no-npm",
+                // No optimising compiler: a solver with a player loaded
+                // takes about 70 MB instead of 100 to 270. Solving stays a
+                // few milliseconds; preparing a new player takes a few
+                // seconds instead of one, once per player.
+                "--v8-flags=--lite-mode",
             ])
             .arg(&self.script)
             .env("NO_COLOR", "1")
@@ -309,6 +314,13 @@ impl Solver {
 
     /// Stops the program when unused for `idle`, to give back its memory.
     /// It starts again when next needed.
+    /// Stops the solver now; the next request starts it afresh.
+    pub async fn stop(&self) {
+        if let Some(mut running) = self.running.lock().await.take() {
+            let _ = running.child.start_kill();
+        }
+    }
+
     pub async fn stop_if_idle(&self, idle: Duration) {
         let unused = self
             .last_used
@@ -405,6 +417,17 @@ mod tests {
         assert_eq!(
             solver.solve("p1", &["ab".into()], &[]).await.unwrap().n["ab"],
             "ba"
+        );
+        // Stopped at once (after preparing a player), and started again.
+        solver.stop().await;
+        assert_eq!(solver.loaded().await, None);
+        solver
+            .load("p1", PlayerCode::Preprocessed(stand_in.into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            solver.solve("p1", &[], &["t".into()]).await.unwrap().sig["t"],
+            "t!"
         );
     }
 

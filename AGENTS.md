@@ -90,8 +90,10 @@ Paolino), as `audio.rs` does.
 - Songs are found the fast way (`direct.rs`): one `player` request
   carrying the player code's signature timestamp, then the stream address
   unlocked by the solver (`solver.rs`: yt-dlp's own EJS scripts, from
-  inside the yt-dlp download, kept running in Deno and stopped after 15
-  minutes unused). The player code is cached on disk by its ID. If any
+  inside the yt-dlp download, kept running in Deno in V8's lite mode,
+  about 70 MB, and stopped after 15 minutes unused). The player code and
+  its prepared form are cached on disk by the player's ID; the solver is
+  restarted after preparing a new player, which leaves it larger. If any
   step fails, yt-dlp finds the song instead (`prepare.rs`) and the log says
   why. Settings can turn the fast way off.
 - A song plays from its first 256 KB while the rest downloads
@@ -248,6 +250,9 @@ reading a fake Firefox sign-in through yt-dlp, and the app in demo mode
 under a virtual screen. Not yet tested: anything the app asks of YouTube
 or LRCLIB with a real account (the fast way, likes, playlist changes,
 lyrics, related songs, suggestions), sound from the app, and the Mac and
-Windows builds beyond CI compiling and packaging them. Memory in demo mode
-was about 160 MB (a debug build on a software-drawn virtual screen);
-measure the release build on the laptops.
+Windows builds beyond CI compiling and packaging them. Memory, measured in
+demo mode on a virtual screen: the release build about 157 MB, of which
+about 70 MB is the software renderer (libLLVM, libgallium) that a real
+graphics card replaces; the solver about 70 MB with a player loaded (a
+synthetic 2 MB player; the real one is untested). Measure both on the
+laptops.

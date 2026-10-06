@@ -109,18 +109,38 @@ impl Direct {
             }
         };
         let sts = signature_timestamp(&code).ok_or("no signature timestamp in the player")?;
-        let loaded = match std::fs::read_to_string(&ready_path) {
-            Ok(ready) => self
+        let mut loaded = false;
+        if let Ok(ready) = std::fs::read_to_string(&ready_path) {
+            match self.solver.load(&id, PlayerCode::Preprocessed(ready)).await {
+                Ok(_) => loaded = true,
+                Err(e) => {
+                    log::info!("the saved prepared player did not load: {e}");
+                    let _ = std::fs::remove_file(&ready_path);
+                }
+            }
+        }
+        if !loaded {
+            let ready = self
                 .solver
-                .load(&id, PlayerCode::Preprocessed(ready))
-                .await
-                .map(|_| ()),
-            Err(_) => Err(String::new()),
-        };
-        if loaded.is_err() {
-            let ready = self.solver.load(&id, PlayerCode::Code(code)).await?;
+                .load(&id, PlayerCode::Code(code.clone()))
+                .await?;
             if let Some(ready) = ready {
-                let _ = std::fs::write(&ready_path, ready);
+                // Reading the whole player leaves the solver larger for
+                // good; a fresh one given only the prepared code is smaller.
+                self.solver.stop().await;
+                match self
+                    .solver
+                    .load(&id, PlayerCode::Preprocessed(ready.clone()))
+                    .await
+                {
+                    Ok(_) => {
+                        let _ = std::fs::write(&ready_path, ready);
+                    }
+                    Err(e) => {
+                        log::info!("the prepared player did not load: {e}");
+                        self.solver.load(&id, PlayerCode::Code(code)).await?;
+                    }
+                }
             }
         }
         let player = Player { id, sts };
