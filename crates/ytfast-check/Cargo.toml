@@ -1,0 +1,23 @@
+[package]
+name = "ytfast-check"
+description = "Step 0: proves sign-in, Premium audio, playback and play reporting work on this computer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ytfast-core = { path = "../ytfast-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+# Keyboard controls while a song plays.
+crossterm = "0.29"
+log = "0.4"
+# Where the helper programs and caches live, per operating system.
+directories = "6"
+reqwest = { version = "0.12", default-features = false }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+[lints]
+workspace = true
