@@ -1,5 +1,5 @@
-# Checks every push, and builds YtFast (the app) and ytfast-check for the two
-# computers YtFast targets. The builds are downloadable from the run's
+# Checks every push, and builds YTFast (the app) and ytfast-check for the two
+# computers YTFast targets. The builds are downloadable from the run's
 # "Artifacts" section.
 name: CI
 
@@ -26,11 +26,11 @@ jobs:
         include:
           - name: macOS (Apple Silicon)
             os: macos-latest
-            app: YtFast-for-Mac
+            app: YTFast-for-Mac
             check: ytfast-check-macos-apple-silicon
           - name: Windows (Intel/AMD)
             os: windows-latest
-            app: YtFast-for-Windows
+            app: YTFast-for-Windows
             check: ytfast-check-windows
           - name: Linux (checks only)
             os: ubuntu-latest
@@ -62,7 +62,7 @@ jobs:
         if: matrix.app != ''
         run: cargo build --release --locked -p ytfast -p ytfast-check
 
-      # The app as YtFast.app, with its icon, signed "ad hoc" (there is no
+      # The app as YTFast.app, with its icon, signed "ad hoc" (there is no
       # Apple developer account), so macOS runs it once it is allowed in
       # Privacy & Security. ditto and tar keep the "this is a program"
       # permission that a plain zip loses.
@@ -70,21 +70,21 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p dist/app dist/check
-          app=dist/YtFast.app
+          app=dist/YTFast.app
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp target/release/ytfast "$app/Contents/MacOS/ytfast"
           cp packaging/macos/Info.plist "$app/Contents/Info.plist"
-          iconset="$RUNNER_TEMP/YtFast.iconset"
+          iconset="$RUNNER_TEMP/YTFast.iconset"
           mkdir -p "$iconset"
           for size in 16 32 128 256 512; do
             double=$((size * 2))
             sips -z "$size" "$size" packaging/icons/macos-1024.png --out "$iconset/icon_${size}x${size}.png" > /dev/null
             sips -z "$double" "$double" packaging/icons/macos-1024.png --out "$iconset/icon_${size}x${size}@2x.png" > /dev/null
           done
-          iconutil -c icns "$iconset" -o "$app/Contents/Resources/YtFast.icns"
+          iconutil -c icns "$iconset" -o "$app/Contents/Resources/YTFast.icns"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
-          ditto -c -k --keepParent "$app" dist/app/YtFast-mac.zip
+          ditto -c -k --keepParent "$app" dist/app/YTFast-mac.zip
           cp docs/run-the-app.md dist/app/HOW-TO-RUN.md
           tar -C target/release -czf dist/check/ytfast-check-macos.tar.gz ytfast-check
           cp docs/run-the-check.md dist/check/HOW-TO-RUN.md
@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/app dist/check
-          cp target/release/ytfast.exe dist/app/YtFast.exe
+          cp target/release/ytfast.exe dist/app/YTFast.exe
           cp docs/run-the-app.md dist/app/HOW-TO-RUN.md
           cp target/release/ytfast-check.exe dist/check/
           cp docs/run-the-check.md dist/check/HOW-TO-RUN.md
