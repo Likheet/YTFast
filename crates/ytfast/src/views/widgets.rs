@@ -246,6 +246,46 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card) {
     }
 }
 
+/// A card as a row (an album or artist in search results): a small cover,
+/// the title and the subtitle. Clicking opens it.
+pub fn card_row(app: &App, ui: &mut egui::Ui, card: &Card) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, theme::ROW_HEIGHT), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(4), PALETTE.surface);
+    }
+    let art = Rect::from_min_size(
+        pos2(rect.left() + 8.0, rect.center().y - 20.0),
+        Vec2::splat(40.0),
+    );
+    cover(app, ui, art, card.thumbnail.as_ref(), card.round);
+    let mut text_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                pos2(art.right() + 14.0, rect.top() + 9.0),
+                pos2(rect.right() - 16.0, rect.bottom()),
+            ))
+            .layout(Layout::top_down(Align::Min)),
+    );
+    text_ui.spacing_mut().item_spacing.y = 2.0;
+    theme::label(&mut text_ui, &card.title, theme::medium(14.5), PALETTE.text);
+    theme::label(
+        &mut text_ui,
+        &card.subtitle,
+        theme::regular(13.0),
+        PALETTE.secondary,
+    );
+    if response.clicked()
+        && let Some(target) = card.open.clone().or_else(|| card.play.clone())
+    {
+        app.act(Action::Open(target, None));
+    }
+}
+
 /// A mood or genre button (a card without a picture).
 pub fn chip(app: &App, ui: &mut egui::Ui, card: &Card) {
     let text = egui::RichText::new(&card.title)

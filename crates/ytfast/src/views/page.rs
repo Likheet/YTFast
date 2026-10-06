@@ -2,7 +2,7 @@
 //! album, a playlist or an artist. All of them are a header and sections.
 
 use egui::{Align, Layout, Sense, Vec2, vec2};
-use ytfast_core::read::{Card, Header, Item, Page, Section, Track};
+use ytfast_core::read::{Card, Header, Item, Page, Section, Shape, Track};
 
 use crate::app::{Action, App, Loadable};
 use crate::backend::Route;
@@ -195,26 +195,48 @@ fn section_block(app: &App, ui: &mut egui::Ui, route: &Route, section: &Section,
 
     if !cards.is_empty() {
         let pictures = cards.iter().any(|c| c.thumbnail.is_some());
-        if pictures {
-            egui::ScrollArea::horizontal()
-                .id_salt(("carousel", route, index))
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
-                .show(ui, |ui| {
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 18.0;
-                        for card in &cards {
-                            widgets::card(app, ui, card);
-                        }
-                    });
-                    ui.add_space(6.0);
+        match section.shape {
+            // Moods and genres: buttons, wrapped.
+            _ if !pictures => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+                    for card in &cards {
+                        widgets::chip(app, ui, card);
+                    }
                 });
-        } else {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+            }
+            Shape::Carousel => {
+                egui::ScrollArea::horizontal()
+                    .id_salt(("carousel", route, index))
+                    .scroll_bar_visibility(
+                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+                    )
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 18.0;
+                            for card in &cards {
+                                widgets::card(app, ui, card);
+                            }
+                        });
+                        ui.add_space(6.0);
+                    });
+            }
+            Shape::Grid => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(18.0, 18.0);
+                    for card in &cards {
+                        widgets::card(app, ui, card);
+                    }
+                });
+            }
+            // Search results: one under another.
+            Shape::List => {
+                ui.spacing_mut().item_spacing.y = 0.0;
                 for card in &cards {
-                    widgets::chip(app, ui, card);
+                    widgets::card_row(app, ui, card);
                 }
-            });
+                ui.spacing_mut().item_spacing.y = 6.0;
+            }
         }
         ui.add_space(8.0);
     }
@@ -224,16 +246,52 @@ fn section_block(app: &App, ui: &mut egui::Ui, route: &Route, section: &Section,
         .entry
         .as_ref()
         .map(|e| e.track.video_id.as_str());
+    let play_from = |start: usize| Action::PlayTracks {
+        tracks: section.tracks(),
+        start,
+        source: source(route),
+    };
+    let tracks: Vec<&Track> = songs(section).collect();
+    if section.shape == Shape::Carousel && tracks.len() > GRID_ROWS {
+        // Quick picks: columns of four songs that scroll sideways.
+        let width = (ui.available_width() / 2.2).clamp(300.0, 440.0);
+        egui::ScrollArea::horizontal()
+            .id_salt(("songs", route, index))
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    for (column, chunk) in tracks.chunks(GRID_ROWS).enumerate() {
+                        ui.allocate_ui_with_layout(
+                            vec2(width, theme::ROW_HEIGHT * GRID_ROWS as f32),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.set_width(width);
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                for (row, track) in chunk.iter().enumerate() {
+                                    let start = column * GRID_ROWS + row;
+                                    let is_playing = playing == Some(track.video_id.as_str());
+                                    widgets::track_row(app, ui, track, None, is_playing, || {
+                                        play_from(start)
+                                    });
+                                }
+                            },
+                        );
+                    }
+                });
+                ui.add_space(6.0);
+            });
+        return;
+    }
     let numbered = is_album(route) && section.title.is_empty();
     ui.spacing_mut().item_spacing.y = 0.0;
-    for (start, track) in songs(section).enumerate() {
+    for (start, track) in tracks.into_iter().enumerate() {
         let is_playing = playing == Some(track.video_id.as_str());
         let number = numbered.then_some(start + 1);
-        widgets::track_row(app, ui, track, number, is_playing, || Action::PlayTracks {
-            tracks: section.tracks(),
-            start,
-            source: source(route),
-        });
+        widgets::track_row(app, ui, track, number, is_playing, || play_from(start));
     }
     ui.spacing_mut().item_spacing.y = 6.0;
 }
+
+/// Songs per column in a sideways shelf (Quick picks).
+const GRID_ROWS: usize = 4;

@@ -11,7 +11,7 @@ use serde_json::Value;
 
 mod page;
 
-pub use page::{Card, Header, Item, Page, PageKind, Section, Target, Thumb, page, up_next};
+pub use page::{Card, Header, Item, Page, PageKind, Section, Shape, Target, Thumb, page, up_next};
 
 /// Two flags YouTube puts in every reply (`GFEEDBACK` tracking params).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

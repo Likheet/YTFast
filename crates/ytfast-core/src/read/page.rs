@@ -152,6 +152,20 @@ pub struct Section {
     pub items: Vec<Item>,
     /// The page with all of the section ("More").
     pub more: Option<Target>,
+    /// How YouTube Music lays the section out.
+    pub shape: Shape,
+}
+
+/// How a section is laid out on YouTube Music.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shape {
+    /// One item under another (a playlist's songs, search results).
+    #[default]
+    List,
+    /// A row that scrolls sideways (Home's shelves).
+    Carousel,
+    /// Rows that wrap (the Library, a "More" page).
+    Grid,
 }
 
 impl Section {
@@ -308,7 +322,17 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
         .or_else(|| shelf.get("items"))
         .and_then(Value::as_array);
     items.extend(rows.into_iter().flatten().filter_map(item));
-    vec![Section { title, items, more }]
+    let shape = match key {
+        "musicCarouselShelfRenderer" | "musicImmersiveCarouselShelfRenderer" => Shape::Carousel,
+        "gridRenderer" => Shape::Grid,
+        _ => Shape::List,
+    };
+    vec![Section {
+        title,
+        items,
+        more,
+        shape,
+    }]
 }
 
 fn item(row: &Value) -> Option<Item> {
@@ -527,6 +551,9 @@ mod tests {
                 "New music videos"
             ]
         );
+        // The top buttons wrap; the shelves scroll sideways.
+        assert_eq!(page.sections[0].shape, Shape::Grid);
+        assert_eq!(page.sections[1].shape, Shape::Carousel);
         // Albums: a card that opens the album and plays it.
         let Item::Card(album) = &page.sections[1].items[0] else {
             panic!("a card")
@@ -620,6 +647,7 @@ mod tests {
         let page = page(&fixture("playlist_signed_in_premium.json"));
         assert_eq!(page.header.clone().unwrap().title, "03 Jan 12:09");
         assert_eq!(page.tracks().len(), 3);
+        assert_eq!(page.sections[0].shape, Shape::List);
     }
 
     #[test]

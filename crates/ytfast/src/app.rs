@@ -154,6 +154,8 @@ pub struct App {
     back: Vec<Route>,
     forward: Vec<Route>,
     pub pages: HashMap<Route, Loadable>,
+    /// Pages in the order they were shown, the latest last.
+    visited: Vec<Route>,
     pub queue: Queue,
     pub playback: Playback,
     /// The audio thread's latest status, read once per frame.
@@ -224,6 +226,7 @@ impl App {
             back: Vec::new(),
             forward: Vec::new(),
             pages: HashMap::new(),
+            visited: Vec::new(),
             queue: Queue::default(),
             playback: Playback::default(),
             audio_status: Status::default(),
@@ -265,6 +268,7 @@ impl App {
                     }
                     self.auth = Auth::SignedIn { name };
                     self.pages.clear();
+                    self.visited.clear();
                     self.load(Route::Home);
                     self.load(Route::Library);
                 }
@@ -294,7 +298,10 @@ impl App {
                         Ok(page) => Loadable::Ready(page),
                         Err(message) => Loadable::Failed(message),
                     };
-                    self.pages.insert(route, loaded);
+                    // A page let go while it loaded is not wanted any more.
+                    if let Some(slot) = self.pages.get_mut(&route) {
+                        *slot = loaded;
+                    }
                 }
                 Event::Prepared { entry, result } => self.prepared(entry, result),
                 Event::UpNext { video_id, result } => self.more_arrived(&video_id, result),
@@ -533,22 +540,52 @@ impl App {
     // ---- Pages ----
 
     pub fn load(&mut self, route: Route) {
+        self.touch(&route);
         self.pages.insert(route.clone(), Loadable::Loading);
         self.backend.send(Request::Page(route));
+        self.trim_pages();
+    }
+
+    /// Marks a page as just shown, for [`App::trim_pages`].
+    fn touch(&mut self, route: &Route) {
+        self.visited.retain(|r| r != route);
+        self.visited.push(route.clone());
+    }
+
+    /// Lets go of the pages shown longest ago, beyond [`MAX_PAGES`]. The
+    /// page on screen and the sidebar's pages stay.
+    fn trim_pages(&mut self) {
+        while self.pages.len() > MAX_PAGES {
+            let current = &self.route;
+            let keep = |r: &Route| {
+                r == current || matches!(r, Route::Home | Route::Library | Route::Liked)
+            };
+            let Some(index) = self.visited.iter().position(|r| !keep(r)) else {
+                break;
+            };
+            let old = self.visited.remove(index);
+            self.pages.remove(&old);
+        }
+    }
+
+    /// Shows the page for the current route, loading it when it is not
+    /// here (never loaded, let go, or failed).
+    fn show_current(&mut self) {
+        let route = self.route.clone();
+        match self.pages.get(&route) {
+            None | Some(Loadable::Failed(_)) => self.load(route),
+            Some(_) => self.touch(&route),
+        }
     }
 
     fn navigate(&mut self, route: Route) {
         if route == self.route {
             return;
         }
-        let old = std::mem::replace(&mut self.route, route.clone());
+        let old = std::mem::replace(&mut self.route, route);
         self.back.push(old);
         self.forward.clear();
-        if !self.pages.contains_key(&route)
-            || matches!(self.pages.get(&route), Some(Loadable::Failed(_)))
-        {
-            self.load(route);
-        }
+        self.show_current();
     }
 
     pub fn can_go_back(&self) -> bool {
@@ -605,12 +642,14 @@ impl App {
                 if let Some(route) = self.back.pop() {
                     let old = std::mem::replace(&mut self.route, route);
                     self.forward.push(old);
+                    self.show_current();
                 }
             }
             Action::Forward => {
                 if let Some(route) = self.forward.pop() {
                     let old = std::mem::replace(&mut self.route, route);
                     self.back.push(old);
+                    self.show_current();
                 }
             }
             Action::Search(query) => {
@@ -712,6 +751,7 @@ impl App {
                 self.queue.clear();
                 self.playback = Playback::default();
                 self.pages.clear();
+                self.visited.clear();
                 self.settings.browser = None;
                 self.backend.send(Request::SignOut);
                 self.auth = Auth::Choosing {
@@ -816,6 +856,10 @@ fn add_rows(page: &mut Page, tracks: Vec<Track>) {
         section.items.extend(tracks.into_iter().map(Item::Track));
     }
 }
+
+/// The most pages kept in memory; one shown again after being let go
+/// loads again.
+const MAX_PAGES: usize = 24;
 
 /// How long a notice shows.
 const NOTICE_TIME: Duration = Duration::from_secs(4);
