@@ -35,6 +35,8 @@ pub enum Route {
         params: Option<String>,
     },
     Search(String),
+    /// Search results of one kind only.
+    SearchOnly(String, SearchKind),
     /// The library's other tabs.
     LibrarySongs,
     LibraryAlbums,
@@ -42,6 +44,39 @@ pub enum Route {
     History,
     /// YTFast's own settings (not loaded from YouTube).
     Settings,
+}
+
+/// The kinds search results can be narrowed to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SearchKind {
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+}
+
+impl SearchKind {
+    pub const ALL: [Self; 4] = [Self::Songs, Self::Albums, Self::Artists, Self::Playlists];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Songs => "Songs",
+            Self::Albums => "Albums",
+            Self::Artists => "Artists",
+            Self::Playlists => "Playlists",
+        }
+    }
+
+    /// The search `params` YouTube Music's web client sends for each (as
+    /// ytmusicapi has them).
+    fn params(self) -> &'static str {
+        match self {
+            Self::Songs => "EgWKAQIIAWoMEA4QChADEAQQCRAF",
+            Self::Albums => "EgWKAQIYAWoMEA4QChADEAQQCRAF",
+            Self::Artists => "EgWKAQIgAWoMEA4QChADEAQQCRAF",
+            Self::Playlists => "EgeKAQQoAEABagwQDhAKEAMQBBAJEAU%3D",
+        }
+    }
 }
 
 impl Route {
@@ -78,10 +113,13 @@ pub enum Request {
         video_id: String,
         playlist_id: Option<String>,
     },
-    /// The songs of a playlist or album, to play it.
+    /// The songs of a playlist or album, to play it (or queue it).
     PlaylistQueue {
         playlist_id: String,
+        mode: crate::app::QueueMode,
     },
+    /// Suggestions for what is being typed in the search box.
+    Suggest(String),
     /// Find a song's audio ahead of time (it was pointed at, or is the
     /// top search result), so it starts at once if played.
     Warm(String),
@@ -203,8 +241,10 @@ pub enum Event {
     },
     PlaylistQueue {
         playlist_id: String,
+        mode: crate::app::QueueMode,
         result: Result<Vec<Track>, String>,
     },
+    Suggestions(String, Vec<String>),
     /// More songs of a long list already shown (a playlist, Liked
     /// Music), loaded after its first ones.
     MoreRows {
@@ -420,9 +460,10 @@ async fn serve(
                     video_id,
                     playlist_id,
                 } => up_next(&shared, video_id, playlist_id).await,
-                Request::PlaylistQueue { playlist_id } => {
-                    playlist_queue(&shared, playlist_id).await
+                Request::PlaylistQueue { playlist_id, mode } => {
+                    playlist_queue(&shared, playlist_id, mode).await
                 }
+                Request::Suggest(text) => suggest(&shared, text).await,
                 Request::Warm(video_id) => {
                     if !shared.demo
                         && let Some(preparer) = shared.preparer().await
@@ -604,6 +645,13 @@ async fn page(shared: &Shared, route: Route) {
         Route::Liked => session.long_page("VLLM", None).await,
         Route::Browse { id, params } => session.long_page(id, params.as_deref()).await,
         Route::Search(query) => session.search(query).await.map(|p| (p, None)),
+        Route::SearchOnly(query, kind) => session
+            .call(
+                "search",
+                serde_json::json!({ "query": query, "params": kind.params() }),
+            )
+            .await
+            .map(|reply| (ytfast_core::read::page(&reply), None)),
         Route::LibrarySongs => session.long_page("FEmusic_liked_videos", None).await,
         Route::LibraryAlbums => session
             .page("FEmusic_liked_albums", None)
@@ -785,7 +833,28 @@ async fn up_next(shared: &Shared, video_id: String, playlist_id: Option<String>)
     shared.send(Event::UpNext { video_id, result });
 }
 
-async fn playlist_queue(shared: &Shared, playlist_id: String) {
+async fn suggest(shared: &Shared, text: String) {
+    let found = if shared.demo {
+        let lower = text.to_lowercase();
+        [
+            "Glass Hearts",
+            "Mara Sol",
+            "Midnight Arcade",
+            "Night Ferries",
+            "Low Tide",
+            "Lemon Skies",
+        ]
+        .iter()
+        .filter(|s| s.to_lowercase().contains(&lower))
+        .map(|s| s.to_string())
+        .collect()
+    } else {
+        Vec::new()
+    };
+    shared.send(Event::Suggestions(text, found));
+}
+
+async fn playlist_queue(shared: &Shared, playlist_id: String, mode: crate::app::QueueMode) {
     let result = if shared.demo {
         Ok(demo::playlist_songs(&playlist_id))
     } else {
@@ -800,6 +869,7 @@ async fn playlist_queue(shared: &Shared, playlist_id: String) {
     };
     shared.send(Event::PlaylistQueue {
         playlist_id,
+        mode,
         result,
     });
 }

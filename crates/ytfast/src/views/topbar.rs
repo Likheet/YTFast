@@ -54,5 +54,86 @@ fn search_box(app: &App, ui: &mut egui::Ui) {
     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         app.act(Action::Search(text.clone()));
     }
+    suggestions(app, ui, &response, rect, &mut text);
     ui.data_mut(|d| d.insert_temp(id, text));
+}
+
+/// What YouTube Music suggests for the words typed so far, under the box.
+fn suggestions(
+    app: &App,
+    ui: &mut egui::Ui,
+    field: &egui::Response,
+    rect: egui::Rect,
+    text: &mut String,
+) {
+    let id = ui.id().with("suggest");
+    let now = ui.input(|i| i.time);
+    let typed = text.trim().to_string();
+    // Asked for once typing pauses for a moment.
+    let (asked, changed): (String, f64) = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    if typed != asked {
+        let (pending, since): (String, f64) = ui
+            .data(|d| d.get_temp(id.with("pending")))
+            .unwrap_or_default();
+        if pending != typed {
+            ui.data_mut(|d| d.insert_temp(id.with("pending"), (typed.clone(), now)));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(260));
+        } else if now - since > 0.25 && !typed.is_empty() {
+            app.act(Action::Suggest(typed.clone()));
+            ui.data_mut(|d| d.insert_temp(id, (typed.clone(), now)));
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+    let _ = changed;
+    let (for_text, found) = &app.suggestions;
+    let popup_rect: Option<egui::Rect> = ui.data(|d| d.get_temp(id.with("rect")));
+    let over_popup = popup_rect.is_some_and(|r| ui.rect_contains_pointer(r));
+    let show = (field.has_focus() || over_popup)
+        && !typed.is_empty()
+        && *for_text == typed
+        && !found.is_empty();
+    if !show {
+        ui.data_mut(|d| d.remove::<egui::Rect>(id.with("rect")));
+        return;
+    }
+    let area = egui::Area::new(id.with("popup"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.left_bottom() + vec2(0.0, 6.0))
+        .show(ui.ctx(), |ui| {
+            Frame::new()
+                .fill(egui::Color32::from_rgba_premultiplied(26, 26, 30, 248))
+                .stroke(egui::Stroke::new(1.0, PALETTE.outline))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::same(6))
+                .show(ui, |ui| {
+                    ui.set_width(rect.width() - 12.0);
+                    for suggestion in found.iter().take(8) {
+                        let (row, response) = ui
+                            .allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+                        if response.hovered() {
+                            ui.painter()
+                                .rect_filled(row, CornerRadius::same(6), PALETTE.surface);
+                        }
+                        let icon =
+                            egui::Rect::from_min_size(row.min + vec2(6.0, 7.0), Vec2::splat(20.0));
+                        theme::paint_icon(ui, Icon::Search, icon, 15.0, PALETTE.dim);
+                        ui.painter().text(
+                            row.left_center() + vec2(34.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            suggestion,
+                            theme::regular(14.5),
+                            PALETTE.text,
+                        );
+                        if response.clicked() {
+                            *text = suggestion.clone();
+                            app.act(Action::Search(suggestion.clone()));
+                            ui.memory_mut(|m| m.surrender_focus(field.id));
+                        }
+                    }
+                });
+        });
+    ui.data_mut(|d| d.insert_temp(id.with("rect"), area.response.rect));
 }

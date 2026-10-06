@@ -77,7 +77,10 @@ fn content(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
     ui.add_space(20.0);
     match (&page.header, route) {
         (Some(header), _) => header_block(app, ui, route, page, header),
-        (None, Route::Search(query)) => title(ui, &format!("Results for \u{201c}{query}\u{201d}")),
+        (None, Route::Search(query) | Route::SearchOnly(query, _)) => {
+            title(ui, &format!("Results for \u{201c}{query}\u{201d}"));
+            search_kinds(app, ui, route, query);
+        }
         (
             None,
             Route::Library | Route::LibrarySongs | Route::LibraryAlbums | Route::LibraryArtists,
@@ -107,6 +110,40 @@ pub fn sections(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
     for (index, section) in page.sections.iter().enumerate() {
         section_block(app, ui, route, section, index);
     }
+}
+
+/// All, Songs, Albums, Artists, Playlists.
+fn search_kinds(app: &App, ui: &mut egui::Ui, route: &Route, query: &str) {
+    use crate::backend::SearchKind;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let all = std::iter::once((Route::Search(query.to_string()), "All"));
+        let kinds = SearchKind::ALL
+            .into_iter()
+            .map(|k| (Route::SearchOnly(query.to_string(), k), k.label()));
+        for (tab, name) in all.chain(kinds) {
+            let chosen = *route == tab;
+            let text = egui::RichText::new(name)
+                .font(theme::medium(14.0))
+                .color(if chosen {
+                    egui::Color32::BLACK
+                } else {
+                    PALETTE.text
+                });
+            let button = egui::Button::new(text)
+                .fill(if chosen {
+                    PALETTE.text
+                } else {
+                    PALETTE.surface
+                })
+                .corner_radius(egui::CornerRadius::same(16))
+                .min_size(vec2(64.0, 32.0));
+            if ui.add(button).clicked() {
+                app.act(Action::Navigate(tab));
+            }
+        }
+    });
+    ui.add_space(14.0);
 }
 
 /// Playlists, Songs, Albums, Artists.
