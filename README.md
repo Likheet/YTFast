@@ -1,8 +1,8 @@
 # YtFast
 
 **YouTube Music, native and fast.** A desktop app for YouTube Music that
-opens in under a second and stays light on memory, in the spirit of
-[Spotifast](https://github.com/crmne/spotifast). It does everything the
+aims to open in under a second and stay light on memory, in the spirit of
+[Spotifast](https://github.com/crmne/spotifast). The goal is everything the
 YouTube Music app does except video, with its own screens instead of a web
 page.
 
