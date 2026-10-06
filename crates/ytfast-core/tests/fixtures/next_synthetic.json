@@ -1,0 +1,229 @@
+{
+ "contents": {
+  "singleColumnMusicWatchNextResultsRenderer": {
+   "tabbedRenderer": {
+    "watchNextTabbedResultsRenderer": {
+     "tabs": [
+      {
+       "tabRenderer": {
+        "content": {
+         "musicQueueRenderer": {
+          "content": {
+           "playlistPanelRenderer": {
+            "contents": [
+             {
+              "playlistPanelVideoRenderer": {
+               "videoId": "nextSong001",
+               "title": {
+                "runs": [
+                 {
+                  "text": "First"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Artist One"
+                 },
+                 {
+                  "text": " \u2022 "
+                 },
+                 {
+                  "text": "Album One"
+                 },
+                 {
+                  "text": " \u2022 "
+                 },
+                 {
+                  "text": "2020"
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "3:35"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://i.ytimg.com/vi/nextSong001/sddefault.jpg",
+                  "width": 640
+                 }
+                ]
+               },
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "nextSong001",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               }
+              }
+             },
+             {
+              "playlistPanelVideoWrapperRenderer": {
+               "primaryRenderer": {
+                "playlistPanelVideoRenderer": {
+                 "videoId": "nextSong002",
+                 "title": {
+                  "runs": [
+                   {
+                    "text": "Second"
+                   }
+                  ]
+                 },
+                 "longBylineText": {
+                  "runs": [
+                   {
+                    "text": "Artist Two"
+                   }
+                  ]
+                 },
+                 "lengthText": {
+                  "runs": [
+                   {
+                    "text": "4:01"
+                   }
+                  ]
+                 },
+                 "thumbnail": {
+                  "thumbnails": [
+                   {
+                    "url": "https://i.ytimg.com/vi/nextSong002/sddefault.jpg",
+                    "width": 640
+                   }
+                  ]
+                 },
+                 "navigationEndpoint": {
+                  "watchEndpoint": {
+                   "videoId": "nextSong002",
+                   "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                     "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                    }
+                   }
+                  }
+                 }
+                }
+               },
+               "counterpart": [
+                {
+                 "counterpartRenderer": {
+                  "playlistPanelVideoRenderer": {
+                   "videoId": "nextVideo002",
+                   "title": {
+                    "runs": [
+                     {
+                      "text": "Second (Official Video)"
+                     }
+                    ]
+                   },
+                   "longBylineText": {
+                    "runs": [
+                     {
+                      "text": "Artist Two"
+                     }
+                    ]
+                   },
+                   "lengthText": {
+                    "runs": [
+                     {
+                      "text": "4:10"
+                     }
+                    ]
+                   },
+                   "thumbnail": {
+                    "thumbnails": [
+                     {
+                      "url": "https://i.ytimg.com/vi/nextVideo002/sddefault.jpg",
+                      "width": 640
+                     }
+                    ]
+                   },
+                   "navigationEndpoint": {
+                    "watchEndpoint": {
+                     "videoId": "nextVideo002",
+                     "watchEndpointMusicSupportedConfigs": {
+                      "watchEndpointMusicConfig": {
+                       "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               ]
+              }
+             },
+             {
+              "playlistPanelVideoRenderer": {
+               "videoId": "goneSong003",
+               "title": {
+                "runs": [
+                 {
+                  "text": "Gone"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Nobody"
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "1:00"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://i.ytimg.com/vi/goneSong003/sddefault.jpg",
+                  "width": 640
+                 }
+                ]
+               },
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "goneSong003",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "unplayableText": {
+                "runs": [
+                 {
+                  "text": "This song is not available"
+                 }
+                ]
+               }
+              }
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

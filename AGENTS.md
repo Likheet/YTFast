@@ -33,7 +33,7 @@ crates/ytfast-core/   the engine (no user interface)
   src/auth.rs         the request signature (SAPISIDHASH)
   src/ytcfg.rs        settings read from the YouTube Music page
   src/innertube.rs    requests to YouTube Music's internal API
-  src/read.rs         reading YouTube's replies: the ONLY place that does
+  src/read/           reading YouTube's replies: the ONLY place that does
   src/playreport.rs   reporting plays (History, recommendations)
   src/helpers.rs      downloading yt-dlp and Deno, checked by SHA-256
   src/ytdlp.rs        running yt-dlp (sign-in from browser, song audio)
@@ -65,7 +65,7 @@ Copyright (c) 2026 Carmine Paolino), as `audio.rs` does.
 
 ### Talking to YouTube
 
-- All reading of YouTube's JSON lives in `read.rs`. Readers look for the
+- All reading of YouTube's JSON lives in the `read` module (`src/read/`). Readers look for the
   piece they need wherever it is and return `None` or an empty list rather
   than failing. When a reply breaks a reader, save a real reply (nothing
   personal in it) to `tests/fixtures/` and add a test.

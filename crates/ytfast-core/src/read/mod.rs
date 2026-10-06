@@ -9,6 +9,10 @@
 
 use serde_json::Value;
 
+mod page;
+
+pub use page::{Card, Header, Item, Page, PageKind, Section, Target, Thumb, page, up_next};
+
 /// Two flags YouTube puts in every reply (`GFEEDBACK` tracking params).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccountFlags {
@@ -101,6 +105,7 @@ pub struct Track {
     pub album: Option<String>,
     pub duration_seconds: Option<u32>,
     pub kind: TrackKind,
+    pub thumbnail: Option<Thumb>,
 }
 
 /// Every playable row in a reply, in YouTube's order. Rows without a video
@@ -111,16 +116,26 @@ pub fn tracks(reply: &Value) -> Vec<Track> {
     rows.into_iter().filter_map(track).collect()
 }
 
-fn track(row: &Value) -> Option<Track> {
+pub(crate) fn track(row: &Value) -> Option<Track> {
     let video_id = row
         .pointer("/playlistItemData/videoId")
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| {
-            find_key(row, "watchEndpoint")
-                .and_then(|w| w.get("videoId"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
+            // A row that opens a page (an album, an artist) is not a song,
+            // even when its menu can play one.
+            if row.pointer("/navigationEndpoint/browseEndpoint").is_some() {
+                return None;
+            }
+            // The play button or the title; never the menu, whose radio
+            // and "play next" entries name other things.
+            ["overlay", "flexColumns"].iter().find_map(|part| {
+                row.get(*part)
+                    .and_then(|n| find_key(n, "watchEndpoint"))
+                    .and_then(|w| w.get("videoId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
         })?;
     let set_video_id = row
         .pointer("/playlistItemData/playlistSetVideoId")
@@ -145,17 +160,23 @@ fn track(row: &Value) -> Option<Track> {
         .and_then(text);
 
     let title = columns.first().cloned().unwrap_or_default();
-    let artists = columns.get(1).cloned().unwrap_or_default();
+    // Playlists put artists, album and length in columns of their own;
+    // search results and Quick picks put them in one ("Song • Artist •
+    // Album • 3:45").
+    let byline = Byline::parse(columns.get(1).map(String::as_str).unwrap_or_default());
+    let artists = byline.artists.clone();
     // The duration is usually a fixed column; some lists (collaborative
     // playlists) put it in a flexible one instead.
     let duration_seconds = fixed
         .as_deref()
         .and_then(parse_duration)
+        .or(byline.duration_seconds)
         .or_else(|| columns.iter().skip(1).find_map(|c| parse_duration(c)));
     let album = columns
         .get(2)
         .filter(|c| !c.is_empty() && parse_duration(c).is_none())
-        .cloned();
+        .cloned()
+        .or(byline.album);
     let kind = TrackKind::from_music_video_type(
         find_key(row, "watchEndpointMusicConfig")
             .and_then(|c| c.get("musicVideoType"))
@@ -169,7 +190,57 @@ fn track(row: &Value) -> Option<Track> {
         album,
         duration_seconds,
         kind,
+        thumbnail: row.get("thumbnail").and_then(Thumb::best),
     })
+}
+
+/// The parts of a "Song • Artist • Album • 3:45" line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Byline {
+    pub artists: String,
+    pub album: Option<String>,
+    pub duration_seconds: Option<u32>,
+}
+
+impl Byline {
+    /// Words YouTube puts first to say what a row is.
+    const KINDS: [&'static str; 10] = [
+        "Song", "Video", "Episode", "Single", "EP", "Album", "Playlist", "Podcast", "Artist",
+        "Profile",
+    ];
+
+    pub(crate) fn parse(line: &str) -> Self {
+        let mut parts: Vec<&str> = line
+            .split(" • ")
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.len() > 1 && Self::KINDS.contains(&parts[0]) {
+            parts.remove(0);
+        }
+        let mut byline = Self::default();
+        let mut rest = Vec::new();
+        for part in parts {
+            if let Some(seconds) = parse_duration(part) {
+                byline.duration_seconds = Some(seconds);
+            } else if !is_count_or_year(part) {
+                rest.push(part);
+            }
+        }
+        byline.artists = rest.first().map(|s| s.to_string()).unwrap_or_default();
+        byline.album = rest.get(1).map(|s| s.to_string());
+        byline
+    }
+}
+
+/// "1.2M plays", "35K views", "2019": not an artist or an album.
+fn is_count_or_year(part: &str) -> bool {
+    let lower = part.to_ascii_lowercase();
+    let year = part.len() == 4 && part.bytes().all(|b| b.is_ascii_digit());
+    year || lower.ends_with(" plays")
+        || lower.ends_with(" views")
+        || lower.ends_with(" play")
+        || lower.ends_with(" view")
 }
 
 /// The token for the next page of a list's rows, when there are more.
@@ -298,7 +369,7 @@ pub fn parse_duration(text: &str) -> Option<u32> {
 
 /// The text of a YouTube text object: `{"runs":[{"text":..}]}` or
 /// `{"simpleText":..}`.
-fn text(node: &Value) -> Option<String> {
+pub(crate) fn text(node: &Value) -> Option<String> {
     if let Some(simple) = node.get("simpleText").and_then(Value::as_str) {
         return Some(simple.to_string());
     }
@@ -311,7 +382,7 @@ fn text(node: &Value) -> Option<String> {
 }
 
 /// The first value under `key`, searching depth first.
-fn find_key<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
+pub(crate) fn find_key<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
     match node {
         Value::Object(map) => map
             .get(key)
@@ -322,7 +393,7 @@ fn find_key<'a>(node: &'a Value, key: &str) -> Option<&'a Value> {
 }
 
 /// Every value under `key`, in document order, not looking inside a match.
-fn collect<'a>(node: &'a Value, key: &str, out: &mut Vec<&'a Value>) {
+pub(crate) fn collect<'a>(node: &'a Value, key: &str, out: &mut Vec<&'a Value>) {
     match node {
         Value::Object(map) => {
             for (k, v) in map {
@@ -437,6 +508,36 @@ mod tests {
                 .starts_with("https://s.youtube.com/api/stats/watchtime")
         );
         assert!(!format!("{info:?}").contains("s.youtube.com"));
+    }
+
+    #[test]
+    fn bylines() {
+        let b = Byline::parse("Song • Daddy Yankee & Snow • Barrio Fino • 3:21");
+        assert_eq!(b.artists, "Daddy Yankee & Snow");
+        assert_eq!(b.album.as_deref(), Some("Barrio Fino"));
+        assert_eq!(b.duration_seconds, Some(201));
+        let b = Byline::parse("Eminem");
+        assert_eq!(
+            b,
+            Byline {
+                artists: "Eminem".into(),
+                album: None,
+                duration_seconds: None
+            }
+        );
+        let b = Byline::parse("Video • Rick Astley • 1.6B views • 3:33");
+        assert_eq!(b.artists, "Rick Astley");
+        assert_eq!(b.album, None);
+        let b = Byline::parse("Rick Astley • Whenever You Need Somebody • 1987");
+        assert_eq!(b.album.as_deref(), Some("Whenever You Need Somebody"));
+    }
+
+    #[test]
+    fn rows_have_thumbnails() {
+        let rows = tracks(&fixture("playlist_signed_in_premium.json"));
+        let thumb = rows[0].thumbnail.as_ref().expect("a thumbnail");
+        assert!(thumb.url.starts_with("https://"));
+        assert!(thumb.width > 0);
     }
 
     #[test]

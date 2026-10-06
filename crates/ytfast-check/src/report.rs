@@ -159,9 +159,12 @@ impl Report {
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let name = "ytfast-check-report.txt";
         let text = self.render();
-        let here = Path::new(name).to_path_buf();
+        // The full path, without canonicalize's "\\?\" prefix on Windows.
+        let here = std::env::current_dir()
+            .map(|dir| dir.join(name))
+            .unwrap_or_else(|_| Path::new(name).to_path_buf());
         match std::fs::write(&here, &text) {
-            Ok(()) => Ok(std::fs::canonicalize(&here).unwrap_or(here)),
+            Ok(()) => Ok(here),
             Err(_) => {
                 let home = directories::UserDirs::new()
                     .map(|u| u.home_dir().to_path_buf())
