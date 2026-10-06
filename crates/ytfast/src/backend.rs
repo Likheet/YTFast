@@ -81,6 +81,9 @@ pub struct Ready {
     pub format: String,
     pub premium: bool,
     pub length: Option<f64>,
+    /// How long finding the audio and downloading it took.
+    pub find_time: std::time::Duration,
+    pub download_time: std::time::Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -481,6 +484,8 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
                     format: "Demo (silent)".into(),
                     premium: true,
                     length: Some(demo::length(&video_id)),
+                    find_time: std::time::Duration::ZERO,
+                    download_time: std::time::Duration::ZERO,
                 }),
             });
         }
@@ -554,6 +559,8 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
         format: p.format.clone(),
         premium: p.premium,
         length: p.duration_seconds,
+        find_time: p.find_time,
+        download_time: p.download_time,
     });
     shared.send(Event::Prepared { entry, result });
 }

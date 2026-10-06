@@ -15,17 +15,48 @@ mod queue;
 mod theme;
 mod views;
 
-fn main() -> eframe::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let demo = args.iter().any(|a| a == "--demo");
-    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
-    env_logger::Builder::new()
+/// Problems go to `ytfast.log` in YtFast's cache folder (made new each
+/// run), with web addresses cut to their site, so the file is safe to
+/// send. On Windows there is no console to show them.
+fn start_log(verbose: bool) {
+    use std::io::Write;
+    let mut builder = env_logger::Builder::new();
+    builder
         .filter_level(if verbose {
             log::LevelFilter::Debug
         } else {
             log::LevelFilter::Warn
         })
-        .init();
+        .format(|out, record| {
+            let message = ytfast_core::redact::urls(&record.args().to_string());
+            writeln!(
+                out,
+                "{} {:5} {message}",
+                out.timestamp_seconds(),
+                record.level()
+            )
+        });
+    let file = directories::ProjectDirs::from("", "", "YtFast").and_then(|dirs| {
+        std::fs::create_dir_all(dirs.cache_dir()).ok()?;
+        std::fs::File::create(dirs.cache_dir().join("ytfast.log")).ok()
+    });
+    if let Some(file) = file {
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    }
+    builder.init();
+    // A crash says why in the log, too.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("YtFast stopped: {info}");
+        default_hook(info);
+    }));
+}
+
+fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let demo = args.iter().any(|a| a == "--demo");
+    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    start_log(verbose);
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
         .expect("the icon is a PNG");
