@@ -88,7 +88,8 @@ YTFast remembers your browser and signs in by itself each time it opens.
 **Menus**
 
 - **Right-click a song**: Play next, Add to queue, Start radio, Add to Liked
-  Music, Add to playlist, Go to album, Go to artist, Copy link.
+  Music, Add to playlist, Go to album, Go to artist, Copy link. On your own
+  playlists, also **Remove from this playlist**.
 - **Right-click an album or playlist**: Play, Shuffle, Play next, Add to
   queue, Start radio, Save to library, Copy link.
 - **Right-click a song in Up next**: Play next, Move up, Move down, Remove
@@ -99,8 +100,9 @@ YTFast remembers your browser and signs in by itself each time it opens.
 - The thumbs in the player bar like or dislike the song playing.
 - **Library** has tabs for Playlists, Songs, Albums and Artists, and
   **+ New playlist**. **History** is in the sidebar.
-- On an album or playlist: **Save to library**. On an artist: **Subscribe**.
-  On your own playlists: the pencil renames, the bin deletes.
+- On an album or playlist: **Save to library**. On an artist: **Radio** and
+  **Subscribe**. On your own playlists: the pencil renames, the bin
+  deletes. Try changes on a playlist you don't mind first.
 - **Search** suggests as you type; the results can be narrowed to Songs,
   Albums, Artists or Playlists.
 
@@ -129,6 +131,10 @@ Windows volume pop-up, or the Mac's Control Center).
 **Settings** (the gear by your name): start songs the fast way, keep
 playing when the queue ends, even out loudness, sign out, and where
 problems are noted.
+
+Lyrics come from YouTube Music, or from LRCLIB (lrclib.net, a free lyrics
+site) when YouTube Music has none that follow the song. LRCLIB is only
+asked about the song playing, when the Lyrics tab is open.
 
 ## Is it safe?
 

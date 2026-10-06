@@ -403,24 +403,23 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
             playlist_id: Some(format!("RDAMPL{id}")),
         };
         item(ui, "Start radio", Action::Play(radio, None));
-        ui.separator();
-        let saved = app.saved.get(id).copied().unwrap_or(false);
-        if saved {
+        // Mixes, Liked Music and the account's own playlists are not
+        // saved to the library.
+        let own = app.own_playlists().iter().any(|(own, _)| own == id);
+        if !own && !id.starts_with("RD") && id != "LM" && id != "SE" {
+            ui.separator();
+            let saved = app.saved.get(id).copied().unwrap_or(false);
+            let label = if saved {
+                "Remove from library"
+            } else {
+                "Save to library"
+            };
             item(
                 ui,
-                "Remove from library",
+                label,
                 Action::ToggleSave {
                     playlist_id: id.clone(),
-                    save: false,
-                },
-            );
-        } else {
-            item(
-                ui,
-                "Save to library",
-                Action::ToggleSave {
-                    playlist_id: id.clone(),
-                    save: true,
+                    save: !saved,
                 },
             );
         }

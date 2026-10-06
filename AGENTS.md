@@ -1,11 +1,11 @@
-# YtFast: guide for coding agents
+# YTFast: guide for coding agents
 
 Read this before changing anything. [docs/plan.md](docs/plan.md) has the
 product decisions, phases and risks; this file is how to work in the code.
 
 ## Who you are working with
 
-The owner is **not a programmer**. They build YtFast by talking to AI coding
+The owner is **not a programmer**. They build YTFast by talking to AI coding
 assistants. So:
 
 - Explain in plain language. Say what changed for them, not how the code
@@ -19,9 +19,10 @@ assistants. So:
 - They use a Mac (Apple Silicon) and a Windows laptop (Intel/AMD), and a
   YouTube Music Premium account.
 
-## What YtFast is
+## What YTFast is
 
-A native, fast, light YouTube Music desktop app: everything the YouTube
+YTFast (YouTube Music Fast) is a native, fast, light YouTube Music desktop
+app: everything the YouTube
 Music desktop app does except video, at Spotifast's speed. Premium only,
 audio only, Mac and Windows. No web page inside the app, visible or hidden.
 
@@ -33,11 +34,18 @@ crates/ytfast-core/   the engine (no user interface)
   src/auth.rs         the request signature (SAPISIDHASH)
   src/ytcfg.rs        settings read from the YouTube Music page
   src/innertube.rs    requests to YouTube Music's internal API
+  src/library.rs      changing the account (likes, playlists, library,
+                      subscriptions); suggestions, song details, lyrics
   src/read/           reading YouTube's replies: the ONLY place that does
   src/playreport.rs   reporting plays (History, recommendations)
   src/helpers.rs      downloading yt-dlp and Deno, checked by SHA-256
   src/ytdlp.rs        running yt-dlp (sign-in from browser, song audio)
-  src/audio.rs        downloading audio, decoding, the player
+  src/solver.rs       yt-dlp's challenge solver (EJS) kept running in Deno
+  src/direct.rs       finding a song's audio the website's way (fast way)
+  src/prepare.rs      getting a song ready: the fast way, else yt-dlp
+  src/stream.rs       downloading a song while it plays
+  src/audio.rs        decoding, the player
+  src/lyrics.rs       LRCLIB's lyrics and LRC text
   src/net.rs          HTTP clients
   src/redact.rs       keeping secrets out of messages
   tests/fixtures/     saved YouTube replies (see its README)
@@ -48,10 +56,13 @@ crates/ytfast/        the app: an egui window on fastframe
   src/audio_thread.rs the player, on a thread of its own
   src/queue.rs        what plays now and next
   src/images.rs       album covers, loaded once and kept for a while
+  src/colors.rs       colours taken from a cover (backdrop, accent)
+  src/lyrics.rs       lyrics as the player page shows them
   src/demo.rs         made-up music for `--demo`
   src/theme.rs        colours, fonts, icons, drawing helpers
-  src/views/          what the window draws: sidebar, top bar, page,
-                      player bar, Up next, sign-in
+  src/views/          what the window draws: backdrop, sidebar, top bar,
+                      page, player bar, player page (now_playing), Up
+                      next, settings, dialogs, sign-in
   assets/             icons (Lucide, ISC) and the app's own mark
   build.rs            the icon and name in the Windows program
 crates/ytfast-check/  step 0: the guided check program
@@ -76,9 +87,27 @@ Paolino), as `audio.rs` does.
 - Each queue entry has its own ID. Answers about an entry (a song made
   ready, a song that ended) carry that ID, and answers about an entry no
   longer playing are ignored.
+- Songs are found the fast way (`direct.rs`): one `player` request
+  carrying the player code's signature timestamp, then the stream address
+  unlocked by the solver (`solver.rs`: yt-dlp's own EJS scripts, from
+  inside the yt-dlp download, kept running in Deno and stopped after 15
+  minutes unused). The player code is cached on disk by its ID. If any
+  step fails, yt-dlp finds the song instead (`prepare.rs`) and the log says
+  why. Settings can turn the fast way off.
+- A song plays from its first 256 KB while the rest downloads
+  (`stream.rs`).
 - The next song is made ready while the current one plays, and more songs
   are asked for (YouTube Music's Up next) when the queue is about to run
-  out.
+  out. The top search result and a song the pointer rests on are found
+  ahead of time too (found only, not downloaded).
+- The window takes its colours from the playing song's cover
+  (`colors.rs`, `views/backdrop.rs`), in the style of Better Lyrics' Even
+  Better Lyrics Plus theme (recreated, not copied).
+- Lyrics: YouTube Music's timed lyrics, else LRCLIB's (lrclib.net, found
+  by title, artist, album and length), else YouTube Music's plain ones.
+  Asked for only when the player page shows them.
+- Changes to the account (`backend::Edit`) show at once; a refusal from
+  YouTube (`Event::EditFailed`) undoes them and says so.
 - Long lists (a playlist, Liked Music) show their first songs at once and
   load the rest in the background (`Session::more_tracks`).
 - Every page is a header and sections of songs or cards (`read::Page`), so
@@ -122,8 +151,13 @@ Paolino), as `audio.rs` does.
 
 ### Playing
 
-- A song is downloaded whole into memory before it plays. Its link expires,
-  but nothing more needs fetching once it has arrived.
+- A song is downloaded whole into memory, and plays from its first bytes
+  while the rest arrives. Its link expires, but nothing more needs
+  fetching once it has arrived.
+- Give symphonia's MP4 reader a one-way (unseekable) stream until the
+  song has fully arrived: with a seekable one it reads every top-level box
+  first, which waits for the whole download. Seeking waits for the whole
+  song, then opens it seekable.
 - Seeking builds a new decoder at the target position (`SongSource::open`).
   Do not use rodio's seek: it cannot seek in YouTube's fragmented MP4 (it
   reads the length as zero) and it waits for the audio thread, which does
@@ -174,9 +208,14 @@ cargo test --workspace
 On Linux the audio library needs ALSA headers: `sudo apt-get install
 libasound2-dev`.
 
+The solver's test runs only when `YTFAST_TEST_DENO` names a Deno program
+and `YTFAST_TEST_EJS` a folder with yt-dlp's `core.min.js` and
+`lib.min.js` (in the yt-dlp download, under
+`_internal/yt_dlp_ejs/yt/solver`).
+
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and
-Linux, and uploads the app (`YtFast-for-Mac`: YtFast.app, signed ad hoc, in
-a zip; `YtFast-for-Windows`: YtFast.exe) and `ytfast-check` for both as
+Linux, and uploads the app (`YTFast-for-Mac`: YTFast.app, signed ad hoc, in
+a zip; `YTFast-for-Windows`: YTFast.exe) and `ytfast-check` for both as
 artifacts, each with its HOW-TO-RUN guide.
 
 Version numbers live in `Cargo.toml`, `packaging/macos/Info.plist` and
@@ -186,18 +225,29 @@ Version numbers live in `Cargo.toml`, `packaging/macos/Info.plist` and
 
 Step 0 passed on the owner's Windows laptop: Firefox sign-in, account and
 Liked songs, Premium audio (AAC 256 kbps, format 141), playing with pause
-and next, and plays reaching History. Finding the first song's audio took
-about 10 seconds. The Mac run is still to do.
+and next, and plays reaching History. The Mac run is still to do.
 
-Phase 1 is built (see [docs/plan.md](docs/plan.md)) and waiting for its
-first run on the laptops (see [docs/run-the-app.md](docs/run-the-app.md)).
+The first app ran on the owner's laptop: songs played, but each took about
+10 seconds to start (yt-dlp for every song), and album covers flickered on
+hover. Both are fixed since, untested on the laptops.
 
-Tested so far, in a cloud session only: unit tests (cookie handling, request
-signature, page config, reading real saved replies, play reports, yt-dlp
-output, checksums, unpacking, decoding and exact seeking of YouTube's audio
-layout, the queue), helper download and verification on Linux, reading a
-fake Firefox sign-in through yt-dlp, and the app in demo mode under a
-virtual screen (every screen, playing, the queue, search, shortcuts), also
-with saved real pages. Not yet tested: the app with a real account, sound
-from the app, and the Mac and Windows builds of the app beyond CI compiling
-and packaging them.
+Built since (see [docs/plan.md](docs/plan.md)): the fast way to start songs
+and playing while downloading; the Even Better Lyrics Plus look; the player
+page with time-synced lyrics, Up next and Related; likes; Library tabs and
+History; making, renaming, deleting and editing playlists; saving to the
+library and subscribing; search suggestions and filters; Home's mood
+buttons; queue edits; Settings; artist Radio.
+
+Tested so far, in a cloud session only: unit tests (cookie handling,
+request signature, page config, reading real saved replies, play reports,
+yt-dlp output, checksums, unpacking, decoding and exact seeking of
+YouTube's audio layout, playing a song still arriving, the queue, account
+changes' requests, lyrics), the solver with Deno and yt-dlp's real EJS
+scripts on a stand-in player, helper download and verification on Linux,
+reading a fake Firefox sign-in through yt-dlp, and the app in demo mode
+under a virtual screen. Not yet tested: anything the app asks of YouTube
+or LRCLIB with a real account (the fast way, likes, playlist changes,
+lyrics, related songs, suggestions), sound from the app, and the Mac and
+Windows builds beyond CI compiling and packaging them. Memory in demo mode
+was about 160 MB (a debug build on a software-drawn virtual screen);
+measure the release build on the laptops.
