@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::innertube::Session;
-use crate::read::{self, PlayerInfo};
+use crate::read::{self, PlayerInfo, StreamFormat};
 use crate::redact;
 use crate::solver::{PlayerCode, Solver};
 use crate::stream::Source;
@@ -148,7 +148,7 @@ impl Direct {
                 .unwrap_or_else(|| "YouTube says this song cannot play".into()));
         }
         let formats = read::stream_formats(&reply);
-        let format = read::best_stream(&formats).ok_or("no AAC audio offered")?;
+        let format = read::best_stream(&formats).ok_or_else(|| why_no_stream(&formats))?;
         let url = self.unlock(&player, format).await?;
         let found = Found {
             source: Source {
@@ -252,6 +252,26 @@ impl Direct {
     }
 }
 
+/// Why none of a song's formats can be played, for the log: it tells
+/// what to change when YouTube changes.
+fn why_no_stream(formats: &[StreamFormat]) -> String {
+    if formats.is_empty() {
+        "YouTube's answer had no audio formats".into()
+    } else if formats
+        .iter()
+        .all(|f| f.url.is_none() && f.signature_cipher.is_none())
+    {
+        "YouTube's answer had audio formats without addresses (its newer streaming method only)"
+            .into()
+    } else {
+        let offered: Vec<String> = formats.iter().map(|f| f.itag.to_string()).collect();
+        format!(
+            "YouTube offered no plain AAC audio (formats {})",
+            offered.join(", ")
+        )
+    }
+}
+
 /// `/s/player/0123abcd/player_ias.vflset/en_US/base.js` → `0123abcd`.
 pub fn player_id(url: &str) -> Option<String> {
     let after = url.split("/s/player/").nth(1)?;
@@ -349,5 +369,22 @@ mod tests {
         assert_eq!(fields["n"], "abc");
         assert_eq!(fields["sig"], "solved=");
         assert_eq!(fields["itag"], "141");
+    }
+
+    #[test]
+    fn says_why_no_stream_plays() {
+        let reply = serde_json::json!({"streamingData": {"adaptiveFormats": [
+            {"itag": 141, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "bitrate": 260000}
+        ]}});
+        let without_addresses = read::stream_formats(&reply);
+        assert!(why_no_stream(&without_addresses).contains("without addresses"));
+        assert!(why_no_stream(&[]).contains("no audio formats"));
+        let reply = serde_json::json!({"streamingData": {"adaptiveFormats": [
+            {"itag": 251, "mimeType": "audio/webm; codecs=\"opus\"", "bitrate": 150000,
+             "url": "https://r1.googlevideo.example/d"}
+        ]}});
+        let opus_only = read::stream_formats(&reply);
+        let why = why_no_stream(&opus_only);
+        assert!(why.contains("251") && !why.contains("googlevideo"), "{why}");
     }
 }
