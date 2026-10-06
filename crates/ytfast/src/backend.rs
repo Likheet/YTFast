@@ -15,7 +15,7 @@ use ytfast_core::innertube::{ApiError, Session};
 use ytfast_core::library::{LibraryTab, Privacy, SearchFilter};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
-use ytfast_core::read::{Page, PlayerInfo, Rating, SongDetails, Track};
+use ytfast_core::read::{Item, Page, PlayerInfo, Rating, Shape, SongDetails, Track};
 use ytfast_core::solver::{self, Solver};
 use ytfast_core::stream::SongData;
 use ytfast_core::ytdlp::{Browser, YtDlp};
@@ -668,7 +668,17 @@ async fn page(shared: &Shared, route: Route) {
         Route::Settings => return,
     };
     let more = match result {
-        Ok((page, more)) => {
+        Ok((mut page, more)) => {
+            if matches!(
+                route,
+                Route::Library
+                    | Route::LibrarySongs
+                    | Route::LibraryAlbums
+                    | Route::LibraryArtists
+                    | Route::History
+            ) {
+                drop_chips(&mut page);
+            }
             shared.send(Event::Page(route.clone(), Ok(page)));
             more
         }
@@ -701,6 +711,20 @@ async fn page(shared: &Shared, route: Route) {
             }
         }
     }
+}
+
+/// Takes out the library's row of buttons (Playlists, Songs...): YTFast
+/// shows its own tabs there.
+fn drop_chips(page: &mut Page) {
+    page.sections.retain(|section| {
+        let buttons = section.title.is_empty()
+            && section.shape == Shape::Grid
+            && section
+                .items
+                .iter()
+                .all(|item| matches!(item, Item::Card(card) if card.thumbnail.is_none()));
+        !buttons
+    });
 }
 
 /// The most batches of a long list loaded (about 10,000 songs).
