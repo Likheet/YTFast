@@ -40,6 +40,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             nav_item(app, ui, Icon::Home, "Home", Route::Home);
             nav_item(app, ui, Icon::Explore, "Explore", Route::Explore);
             nav_item(app, ui, Icon::Library, "Library", Route::Library);
+            nav_item(app, ui, Icon::History, "History", Route::History);
 
             ui.add_space(10.0);
             ui.painter().hline(
@@ -86,11 +87,13 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                             theme::label(ui, name, theme::regular(13.0), PALETTE.secondary);
                         });
                     }
-                    if !app.demo
-                        && theme::icon_button(ui, Icon::LogOut, 16.0, PALETTE.secondary, "Sign out")
-                            .clicked()
-                    {
-                        app.act(Action::SignOut);
+                    let color = if app.route == Route::Settings {
+                        PALETTE.text
+                    } else {
+                        PALETTE.secondary
+                    };
+                    if theme::icon_button(ui, Icon::Settings, 17.0, color, "Settings").clicked() {
+                        app.act(Action::Navigate(Route::Settings));
                     }
                 });
             });

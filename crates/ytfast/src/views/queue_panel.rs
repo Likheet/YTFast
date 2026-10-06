@@ -53,7 +53,9 @@ pub fn list(app: &App, ui: &mut egui::Ui) {
             for (index, entry) in entries.iter().enumerate().skip(current) {
                 let playing = index == current;
                 let id = entry.id;
-                widgets::track_row(app, ui, &entry.track, None, playing, || Action::JumpTo(id));
+                widgets::track_row_in(app, ui, &entry.track, None, playing, Some(id), || {
+                    Action::JumpTo(id)
+                });
             }
             ui.add_space(12.0);
             if app.queue.remaining() == 0 {

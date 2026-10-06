@@ -1,10 +1,12 @@
 //! What the window draws. Each view reads [`App`] and pushes actions.
 
 mod backdrop;
+mod dialogs;
 mod now_playing;
 mod page;
 mod player_bar;
 mod queue_panel;
+mod settings;
 mod sidebar;
 mod signin;
 mod topbar;
@@ -34,6 +36,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             .frame(Frame::new().inner_margin(Margin::symmetric(24, 8)))
             .show(ui, |ui| now_playing::show(app, ui));
         notice(app, ui);
+        dialogs::show(app, ui);
         return;
     }
     sidebar::show(app, ui);
@@ -45,6 +48,28 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .frame(Frame::new().inner_margin(Margin::symmetric(28, 0)))
         .show(ui, |ui| page::show(app, ui));
     notice(app, ui);
+    dialogs::show(app, ui);
+}
+
+/// "Add to playlist": the account's own playlists, from the Library.
+pub fn playlists_menu(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::Track) {
+    let own: Vec<(String, String)> = app.own_playlists();
+    if own.is_empty() {
+        return;
+    }
+    ui.menu_button("Add to playlist", |ui| {
+        ui.set_min_width(200.0);
+        for (id, title) in own {
+            if ui.button(&title).clicked() {
+                app.act(crate::app::Action::AddToPlaylist {
+                    playlist_id: id,
+                    title,
+                    video_id: track.video_id.clone(),
+                });
+                ui.close();
+            }
+        }
+    });
 }
 
 /// A short message ("Added to the queue") just above the player bar.
