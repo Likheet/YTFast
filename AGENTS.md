@@ -85,6 +85,10 @@ Paolino), as `audio.rs` does.
   one view draws Home, Explore, search, albums, artists and playlists.
 - `--demo` replaces the account with made-up music and no network or
   sound, for trying the interface and for screenshots.
+- Problems go to `ytfast.log` in the cache folder, made new each run
+  (warnings; everything with `--verbose`). Every line passes through
+  `redact::urls`. Ask the owner for this file when something fails on
+  their laptop.
 
 ## Rules
 
