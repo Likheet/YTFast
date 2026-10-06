@@ -32,6 +32,23 @@ impl Lyrics {
     }
 }
 
+impl From<ytfast_core::lyrics::Lyrics> for Lyrics {
+    fn from(found: ytfast_core::lyrics::Lyrics) -> Self {
+        Self {
+            lines: found
+                .lines
+                .into_iter()
+                .map(|line| Line {
+                    start: line.start_ms.map(|ms| ms as f64 / 1000.0),
+                    text: line.text,
+                })
+                .collect(),
+            synced: found.synced,
+            source: found.source,
+        }
+    }
+}
+
 /// Lyrics for one song, as they load.
 #[derive(Clone, Debug)]
 pub enum State {

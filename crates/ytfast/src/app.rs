@@ -212,6 +212,12 @@ pub enum Action {
         name: String,
     },
     DeletePlaylist(String),
+    /// Take a row out of the playlist shown (by its own row ID).
+    RemoveFromPlaylist {
+        playlist_id: String,
+        video_id: String,
+        set_video_id: String,
+    },
     /// Save an album or playlist to the library, or take it out.
     ToggleSave {
         playlist_id: String,
@@ -402,6 +408,30 @@ impl App {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The playlist shown, when the account can change it: its ID without
+    /// `VL`.
+    pub fn editable_playlist(&self) -> Option<String> {
+        let Route::Browse { id, .. } = &self.route else {
+            return None;
+        };
+        match self.pages.get(&self.route) {
+            Some(Loadable::Ready(Page {
+                header: Some(header),
+                ..
+            })) if header.editable => Some(id.trim_start_matches("VL").to_string()),
+            _ => None,
+        }
+    }
+
+    /// Loads a playlist again, as YouTube now has it.
+    fn reload_playlist(&mut self, playlist_id: &str) {
+        let route = Route::browse(format!("VL{playlist_id}"), None);
+        self.pages.remove(&route);
+        if self.route == route {
+            self.show_current();
+        }
     }
 
     /// The accent colour: from the playing song's cover, or the default.
@@ -607,7 +637,8 @@ impl App {
                     self.related.insert(video_id, loaded);
                 }
                 Event::Liked(video_id, like) => {
-                    self.likes.insert(video_id, like);
+                    // What the user just chose wins over a late answer.
+                    self.likes.entry(video_id).or_insert(like);
                 }
                 Event::EditFailed(change, message) => {
                     match &change {
@@ -620,30 +651,29 @@ impl App {
                         Edit::Subscribe { channel_id, .. } => {
                             self.subscribed.remove(channel_id);
                         }
+                        // Show the playlist as it really is.
+                        Edit::RemoveFromPlaylist { playlist_id, .. }
+                        | Edit::RenamePlaylist { playlist_id, .. } => {
+                            self.reload_playlist(playlist_id);
+                        }
                         _ => {}
                     }
                     self.notify(format!("That did not work: {message}"));
                 }
                 Event::Edited(change) => match change {
                     // The library and the changed playlist show the change.
+                    Edit::CreatePlaylist { title, .. } => {
+                        self.notify(format!("Made the playlist {title}"));
+                        self.load(Route::Library);
+                    }
                     Edit::RenamePlaylist { .. }
                     | Edit::DeletePlaylist { .. }
-                    | Edit::Save { .. }
-                    | Edit::CreatePlaylist { .. } => self.load(Route::Library),
-                    Edit::AddToPlaylist { playlist_id, .. }
-                    | Edit::RemoveFromPlaylist { playlist_id, .. } => {
-                        let route = Route::browse(format!("VL{playlist_id}"), None);
-                        self.pages.remove(&route);
-                        if self.route == route {
-                            self.show_current();
-                        }
+                    | Edit::Save { .. } => self.load(Route::Library),
+                    Edit::AddToPlaylist { playlist_id, .. } => {
+                        self.reload_playlist(&playlist_id);
                     }
                     _ => {}
                 },
-                Event::PlaylistMade(_, title) => {
-                    self.notify(format!("Made the playlist {title}"));
-                    self.load(Route::Library);
-                }
                 Event::MoreRows { route, tracks } => {
                     if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
                         add_rows(page, tracks);
@@ -691,6 +721,8 @@ impl App {
                     gain,
                     length,
                 });
+                self.backend
+                    .send(Request::Details(current.track.video_id.clone()));
                 let report = PlayReport::new(&ready.info);
                 if let Some(url) = report.started(0.0) {
                     self.backend.send(Request::Report(url));
@@ -1121,6 +1153,14 @@ impl App {
             Action::OpenDialog(dialog) => *self.dialog.get_mut() = Some(dialog),
             Action::RenamePlaylist { playlist_id, name } => {
                 self.notify(format!("Renamed to {name}"));
+                let route = Route::browse(format!("VL{playlist_id}"), None);
+                if let Some(Loadable::Ready(Page {
+                    header: Some(header),
+                    ..
+                })) = self.pages.get_mut(&route)
+                {
+                    header.title = name.clone();
+                }
                 self.backend
                     .send(Request::Edit(Edit::RenamePlaylist { playlist_id, name }));
             }
@@ -1134,6 +1174,27 @@ impl App {
                 }
                 self.backend
                     .send(Request::Edit(Edit::DeletePlaylist { playlist_id }));
+            }
+            Action::RemoveFromPlaylist {
+                playlist_id,
+                video_id,
+                set_video_id,
+            } => {
+                let route = Route::browse(format!("VL{playlist_id}"), None);
+                if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
+                    for section in &mut page.sections {
+                        section.items.retain(|item| {
+                            !matches!(item, Item::Track(t)
+                                if t.set_video_id.as_deref() == Some(set_video_id.as_str()))
+                        });
+                    }
+                }
+                self.notify("Removed from the playlist");
+                self.backend.send(Request::Edit(Edit::RemoveFromPlaylist {
+                    playlist_id,
+                    video_id,
+                    set_video_id,
+                }));
             }
             Action::ToggleSave { playlist_id, save } => {
                 self.saved.insert(playlist_id.clone(), save);

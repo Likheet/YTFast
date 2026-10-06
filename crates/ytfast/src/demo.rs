@@ -358,6 +358,7 @@ fn browse(id: &str) -> Page {
                     owner: String::new(),
                     thumbnail: thumb(name),
                     round: true,
+                    channel_id: Some(format!("UCdemo{}", seed(name))),
                     ..Header::default()
                 }),
                 sections: vec![
@@ -395,8 +396,16 @@ fn browse(id: &str) -> Page {
             )],
         },
         _ => {
-            let tracks = songs((seed(name) % 24) as usize, 14);
+            let mut tracks = songs((seed(name) % 24) as usize, 14);
             let mix = name.ends_with("Mix");
+            if !mix {
+                // The listener's own: its rows can be taken out.
+                for (row, item) in tracks.iter_mut().enumerate() {
+                    if let Item::Track(track) = item {
+                        track.set_video_id = Some(format!("demorow{row}"));
+                    }
+                }
+            }
             Page {
                 header: Some(Header {
                     title: name.into(),
@@ -410,6 +419,7 @@ fn browse(id: &str) -> Page {
                     .into(),
                     thumbnail: thumb(name),
                     round: false,
+                    editable: !mix,
                     ..Header::default()
                 }),
                 sections: vec![section("", tracks)],
