@@ -1,0 +1,26 @@
+{
+ "responseContext": {"serviceTrackingParams": [{"service": "GFEEDBACK", "params": [{"key": "logged_in", "value": "1"}, {"key": "has_unlimited_entitlement", "value": "True"}]}]},
+ "playabilityStatus": {
+  "status": "OK",
+  "playableInEmbed": true,
+  "audioOnlyPlayability": {"audioOnlyPlayabilityRenderer": {"audioOnlyAvailability": "FEATURE_AVAILABILITY_ALLOWED"}}
+ },
+ "streamingData": {
+  "expiresInSeconds": "21540",
+  "adaptiveFormats": [
+   {"itag": 140, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "bitrate": 131007, "contentLength": "3967382", "audioQuality": "AUDIO_QUALITY_MEDIUM", "approxDurationMs": "245000", "audioSampleRate": "44100", "audioChannels": 2, "loudnessDb": -1.3}
+  ]
+ },
+ "playbackTracking": {
+  "videostatsPlaybackUrl": {"baseUrl": "https://s.youtube.com/api/stats/playback?cl=491307275&docid=AjXQiKP5kMs&ei=sample&ns=yt&plid=sample&el=detailpage&len=246&of=sample&vm=sample"},
+  "videostatsWatchtimeUrl": {"baseUrl": "https://s.youtube.com/api/stats/watchtime?cl=491307275&docid=AjXQiKP5kMs&ei=sample&ns=yt&plid=sample&el=detailpage&len=246&of=sample&vm=sample"}
+ },
+ "videoDetails": {
+  "videoId": "AjXQiKP5kMs",
+  "title": "Sample Song",
+  "lengthSeconds": "246",
+  "author": "Sample Artist",
+  "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+ },
+ "playerConfig": {"audioConfig": {"loudnessDb": -1.3, "perceptualLoudnessDb": -15.3}}
+}

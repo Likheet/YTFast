@@ -1,0 +1,13 @@
+{
+ "responseContext": {"serviceTrackingParams": [{"service": "GFEEDBACK", "params": [{"key": "logged_in", "value": "1"}]}]},
+ "actions": [
+  {"openPopupAction": {"popup": {"multiPageMenuRenderer": {
+   "header": {"activeAccountHeaderRenderer": {
+    "accountName": {"runs": [{"text": "Sample Listener"}]},
+    "channelHandle": {"runs": [{"text": "@samplelistener"}]},
+    "accountPhoto": {"thumbnails": [{"url": "https://yt3.ggpht.com/sample", "width": 88, "height": 88}]}
+   }},
+   "sections": []
+  }}}}
+ ]
+}

@@ -1,0 +1,83 @@
+# Checks every push, and builds ytfast-check for the two computers YtFast
+# targets. The builds are downloadable from the run's "Artifacts" section.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with rust-toolchain.toml.
+  RUST_TOOLCHAIN: "1.98.0"
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            artifact: ytfast-check-macos-apple-silicon
+          - name: Windows (Intel/AMD)
+            os: windows-latest
+            artifact: ytfast-check-windows
+          - name: Linux (checks only)
+            os: ubuntu-latest
+            artifact: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --component rustfmt,clippy
+
+      - name: Install audio headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      - name: Lints
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
+      - name: Build ytfast-check
+        if: matrix.artifact != ''
+        run: cargo build --release --locked -p ytfast-check
+
+      # A tar keeps the "this is a program" permission that a plain zip loses.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir dist
+          tar -C target/release -czf dist/ytfast-check-macos.tar.gz ytfast-check
+          cp docs/run-the-check.md dist/HOW-TO-RUN.md
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/ytfast-check.exe dist/
+          cp docs/run-the-check.md dist/HOW-TO-RUN.md
+
+      - name: Upload
+        if: matrix.artifact != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+          retention-days: 30

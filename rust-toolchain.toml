@@ -1,0 +1,5 @@
+# The same compiler, clippy and rustfmt locally and in CI. fastframe (the
+# desktop foundation from Spotifast) needs 1.98.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

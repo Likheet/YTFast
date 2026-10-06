@@ -1,0 +1,14 @@
+/target/
+
+# Sign-in data must never be committed. These patterns catch the usual
+# names for exported browser cookies.
+cookies.txt
+*cookies*.txt
+*.cookies
+*cookie*.json
+
+# Reports from the check program stay on your computer unless you choose
+# to share one.
+ytfast-check-report*.txt
+
+.DS_Store

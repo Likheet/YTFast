@@ -1,0 +1,43 @@
+[package]
+name = "ytfast-core"
+description = "YtFast's engine: YouTube Music sign-in, data, audio and play reporting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps YouTube's item order when walking a response.
+serde_json = { version = "1", features = ["preserve_order"] }
+# rustls with the operating system's certificates, as Spotifast does, so no
+# OpenSSL is needed on any platform.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "fs", "io-util", "sync", "signal"] }
+# SAPISIDHASH, the request signature YouTube expects from a signed-in web
+# client, is SHA-1. Downloads are checked with SHA-256.
+sha1 = "0.10"
+sha2 = "0.10"
+rand = "0.9"
+# Unpacks the yt-dlp and Deno release archives.
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tempfile = "3"
+directories = "6"
+# rodio's mixer and sink: volume, pausing, and conversion to the device's
+# rate. No rodio output backend: fastframe-audio owns the device, exactly as
+# in Spotifast. Spotifast's version, so its audio code can be shared.
+rodio = { version = "0.21", default-features = false }
+# Decoding AAC in MP4. Used directly rather than through rodio's decoder,
+# which cannot seek in fragmented MP4 (YouTube's layout): it reads the
+# song's length as zero there and clamps every seek to the start.
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "isomp4"] }
+# The audio device stream from Spotifast's shared foundation: it idles when
+# paused, follows the default output (headphones plugged in) and reopens
+# after failures.
+fastframe-audio = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+
+[lints]
+workspace = true
