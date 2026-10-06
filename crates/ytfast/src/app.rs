@@ -363,11 +363,17 @@ impl App {
                 }
                 self.playback.report = Some(report);
                 self.playback.info = Some(ready.info);
-                self.playback.format = if ready.premium {
+                let quality = if ready.premium {
                     format!("Premium audio: {}", ready.format)
                 } else {
                     ready.format
                 };
+                self.playback.format = format!(
+                    "{quality}\nFound in {:.1} s, downloaded in {:.1} s",
+                    ready.find_time.as_secs_f64(),
+                    ready.download_time.as_secs_f64()
+                );
+                log::info!("song ready: {}", self.playback.format.replace('\n', "; "));
                 self.playback.state = PlayState::Playing;
                 // Get the next song ready while this one plays.
                 self.prepare_next();

@@ -126,6 +126,18 @@ YtFast says what happened in plain words. Common fixes:
 - **Windows Security removed the file**: open Windows Security, then
   Protection history, and allow it.
 
+YtFast notes problems in a file called `ytfast.log`, made new each time it
+opens. It has no passwords or cookies in it, and web addresses are cut
+short, so it is safe to send to Claude:
+
+- Mac: `~/Library/Caches/YtFast/ytfast.log` (in Finder, press
+  Cmd+Shift+G and paste that)
+- Windows: `%LOCALAPPDATA%\YtFast\cache\ytfast.log` (paste that into the
+  File Explorer address bar)
+
+To see how long a song took to get ready, hold the pointer over the
+artist's name in the player bar.
+
 ## Try it without an account
 
 To see YtFast with made-up songs and no sign-in, start it with `--demo`.
