@@ -19,8 +19,9 @@ mod views;
 
 /// Problems go to `ytfast.log` in YtFast's cache folder (made new each
 /// run), with web addresses cut to their site, so the file is safe to
-/// send. On Windows there is no console to show them.
-fn start_log(verbose: bool) {
+/// send. On Windows there is no console to show them. The demo keeps a
+/// file of its own, so it can be open beside YTFast in real use.
+fn start_log(verbose: bool, demo: bool) {
     use std::io::Write;
     let mut builder = env_logger::Builder::new();
     builder
@@ -38,9 +39,14 @@ fn start_log(verbose: bool) {
                 record.level()
             )
         });
+    let name = if demo {
+        "ytfast-demo.log"
+    } else {
+        "ytfast.log"
+    };
     let file = directories::ProjectDirs::from("", "", "YtFast").and_then(|dirs| {
         std::fs::create_dir_all(dirs.cache_dir()).ok()?;
-        std::fs::File::create(dirs.cache_dir().join("ytfast.log")).ok()
+        std::fs::File::create(dirs.cache_dir().join(name)).ok()
     });
     if let Some(file) = file {
         builder.target(env_logger::Target::Pipe(Box::new(file)));
@@ -58,7 +64,7 @@ fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let demo = args.iter().any(|a| a == "--demo");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
-    start_log(verbose);
+    start_log(verbose, demo);
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
         .expect("the icon is a PNG");

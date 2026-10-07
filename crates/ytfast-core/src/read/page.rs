@@ -53,6 +53,19 @@ impl Thumb {
             _ => self.url.clone(),
         }
     }
+
+    /// The address for a wide picture (an artist's, across the top of
+    /// their page), cropped to `width` by `height` pixels.
+    pub fn wide(&self, width: u32, height: u32) -> String {
+        let resizable =
+            self.url.contains("googleusercontent.com") || self.url.contains("ggpht.com");
+        match self.url.rfind("=w") {
+            Some(at) if resizable => {
+                format!("{}=w{width}-h{height}-p-l90-rj", &self.url[..at])
+            }
+            _ => self.url.clone(),
+        }
+    }
 }
 
 /// What kind of page a card opens.

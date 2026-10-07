@@ -65,8 +65,26 @@ Then it gets YouTube Music's player ready in the background (a few seconds,
 again once). After that, songs start in about a second.
 
 YTFast remembers your browser and signs in by itself each time it opens.
+While it is open it also reads your browser's sign-in again by itself
+whenever YouTube stops accepting the copy it has (browsers renew their
+sign-in as they go), so you are not asked to sign in again. Stay signed in
+to music.youtube.com in that browser.
 
 ## Using it
+
+YTFast is laid out like YouTube Music: a bar across the top, the menu on
+the left, the page in the middle, and the player bar across the bottom
+once a song plays.
+
+**Getting around**
+
+- **Home**, **Explore** and **Library** are in the menu on the left, with
+  **New playlist** and your playlists under them. The button with three
+  lines at the top left closes the menu to a strip of icons, and opens it
+  again.
+- The arrows before the search box go back and forward.
+- The round button at the top right is your account: **History**,
+  **Settings** and **Sign out** are in its menu.
 
 **Playing**
 
@@ -78,40 +96,49 @@ YTFast remembers your browser and signs in by itself each time it opens.
 
 **The player page**
 
-- Click the song in the player bar (or the arrow at the far right) to open
-  it: the cover large over its own colours, with tabs for **Up next**,
+- Click the song in the player bar to open it: the cover large on the
+  left, over its own colours, and on the right the tabs **Up next**,
   **Lyrics** and **Related**.
 - Lyrics follow the song: the line being sung is lit. Click any line to jump
   there. Scroll to read ahead; it starts following again a moment later.
-- **Esc** or the arrow at the top left closes it.
+- **Esc**, the back arrow, or another click on the song in the player bar
+  closes it.
 
 **Menus**
 
-- **Right-click a song**: Play next, Add to queue, Start radio, Add to Liked
-  Music, Add to playlist, Go to album, Go to artist, Copy link. On your own
-  playlists, also **Remove from this playlist**.
-- **Right-click an album or playlist**: Play, Shuffle, Play next, Add to
-  queue, Start radio, Save to library, Copy link.
+- **Right-click a song**, or click the three dots that show at its right
+  when the pointer is on it: Start radio, Play next, Add to queue, Add to
+  liked songs, Add to playlist, Go to album, Go to artist, Copy link. On
+  your own playlists, also **Remove from playlist**. The three dots at the
+  right of the player bar give the same for the song playing.
+- **Right-click an album or playlist**: Play, Shuffle play, Start radio,
+  Play next, Add to queue, Save to library, Copy link.
 - **Right-click a song in Up next**: Play next, Move up, Move down, Remove
   from queue.
 
 **Your music**
 
 - The thumbs in the player bar like or dislike the song playing.
-- **Library** has tabs for Playlists, Songs, Albums and Artists, and
-  **+ New playlist**. **History** is in the sidebar.
-- On an album or playlist: **Save to library**. On an artist: **Radio** and
-  **Subscribe**. On your own playlists: the pencil renames, the bin
-  deletes. Try changes on a playlist you don't mind first.
+- **Library** has Playlists, Songs, Albums and Artists.
+- An album or a playlist shows its cover on the left with three buttons
+  under it: the big one plays it, the one with three dots has Shuffle
+  play, Play next and Add to queue, and the third saves it to your library
+  (a plus, or a tick once saved). On your own playlists the third is a
+  pencil, which renames it, and **Delete playlist** is under the three
+  dots. Try changes on a playlist you don't mind first.
+- On an artist: **Shuffle**, **Radio** and **Subscribe**.
 - **Search** suggests as you type; the results can be narrowed to Songs,
   Albums, Artists or Playlists.
 
 **In the player bar**
 
-- **Repeat** goes from off, to repeating the queue, to repeating the song.
-- **Shuffle** mixes up the songs coming up.
-- The **list** button shows **Up next** beside the page.
-- Click or drag the line along the top of the bar to jump in the song.
+- In the middle: **Shuffle** (mixes up the songs coming up), previous,
+  play or pause, next, and **Repeat** (off, then the queue, then the
+  song; it is lit while on).
+- On the right: the time, like and dislike, the volume (click it to mute;
+  rest the pointer on it for the volume bar, or scroll over it), and the
+  song's menu.
+- Click or drag the red line along the top of the bar to jump in the song.
 
 | Key | What it does |
 |---|---|
@@ -128,9 +155,9 @@ YTFast remembers your browser and signs in by itself each time it opens.
 The song playing also shows in your computer's own media controls (the
 Windows volume pop-up, or the Mac's Control Center).
 
-**Settings** (the gear by your name): start songs the fast way, keep
-playing when the queue ends, even out loudness, sign out, and where
-problems are noted.
+**Settings** (in your account's menu, at the top right): start songs the
+fast way, keep playing when the queue ends, even out loudness, sign out,
+and where problems are noted.
 
 Lyrics come from YouTube Music, or from LRCLIB (lrclib.net, a free lyrics
 site) when YouTube Music has none that follow the song. LRCLIB is only
@@ -163,6 +190,10 @@ YTFast says what happened in plain words. Common fixes:
 
 - **Sign-in fails**: open music.youtube.com in that browser, check you are
   signed in to the right account, quit the browser, and click **Try again**.
+- **A song says YouTube no longer accepts the saved sign-in**: YTFast could
+  not read a fresh sign-in from your browser. Check you are still signed
+  in to music.youtube.com there, wait a minute, and press play again. If
+  it keeps happening, send Claude the log (below).
 - **Songs take about ten seconds to start, or fail to start**: the fast way
   did not work (YouTube may have changed something), and YTFast used
   yt-dlp instead. Send Claude the log (below). If songs fail to start at
@@ -196,4 +227,7 @@ artist's name in the player bar.
 To see YTFast with made-up songs and no sign-in, start it with `--demo`.
 On Windows, in the folder with YTFast.exe, type `cmd` in the address bar,
 press Enter, and run `YTFast.exe --demo`. On a Mac, open Terminal and run
-`/Applications/YTFast.app/Contents/MacOS/ytfast --demo`.
+`/Applications/YTFast.app/Contents/MacOS/ytfast --demo`. The demo can be
+open at the same time as YTFast itself: it does not touch your sign-in or
+your settings, and notes its problems in a file of its own
+(`ytfast-demo.log`).

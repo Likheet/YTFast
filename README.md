@@ -9,19 +9,23 @@ page.
 For YouTube Music **Premium** accounts, on **Mac (Apple Silicon)** and
 **Windows**.
 
-## Status: the second version of the app
+## Status: the third version of the app
 
-The app has the YouTube Music layout: a sidebar with Home, Explore, Library,
-History and your playlists; search with suggestions and filters; album,
-artist, playlist and mood pages; a player bar with likes, repeat, shuffle and
-volume; Up next; and a player page with the song's cover, time-synced lyrics
-and related songs, over colours taken from the cover (in the style of Better
+The app is laid out as YouTube Music itself is, with its sizes and colours:
+the bar across the top with search and your account; the menu on the left
+with Home, Explore, Library and your playlists; album, artist, playlist and
+mood pages; the player bar with shuffle, repeat, likes and volume; and a
+player page with the song's cover beside Up next, time-synced lyrics and
+related songs, over colours taken from the cover (in the style of Better
 Lyrics' Even Better Lyrics Plus theme). You can like songs, save albums and
 playlists, subscribe to artists, and make, rename, delete and edit
 playlists. Songs start in about a second.
 
-The first version ran on a real account; this one is still to be tried on
-the owner's laptops.
+The second version ran on the owner's Windows laptop with a real account:
+almost everything worked and it was quick, but the sign-in had to be
+redone about every hour and the look was unfinished. This version reads
+the browser's sign-in again by itself and has the new look; both are
+still to be tried with a real account.
 
 **Run the app:** [docs/run-the-app.md](docs/run-the-app.md)
 

@@ -89,6 +89,20 @@ pub enum YtDlpError {
     },
 }
 
+impl YtDlpError {
+    /// yt-dlp found the sign-in it was given no longer accepted. A browser
+    /// renews its cookies as it goes, which ends an earlier copy's;
+    /// reading the browser's again mends it.
+    pub fn sign_in_expired(&self) -> bool {
+        matches!(self, Self::Failed { details, .. } if says_sign_in_expired(&details.to_ascii_lowercase()))
+    }
+}
+
+/// yt-dlp's words (in lower case) for cookies YouTube stopped accepting.
+fn says_sign_in_expired(lower: &str) -> bool {
+    lower.contains("no longer valid") || lower.contains("rotated")
+}
+
 /// One audio-only stream yt-dlp found.
 #[derive(Clone)]
 pub struct AudioFormat {
@@ -431,7 +445,7 @@ fn failure(default: &str, stderr: &[u8]) -> YtDlpError {
     let lower = details.to_ascii_lowercase();
     let summary = if lower.contains("not a bot") {
         "YouTube asked to confirm this is not a bot. Open music.youtube.com in your browser, play a song there, then try again"
-    } else if lower.contains("no longer valid") || lower.contains("rotated") {
+    } else if says_sign_in_expired(&lower) {
         "YouTube no longer accepts the saved sign-in. Sign in to music.youtube.com in your browser again"
     } else if lower.contains("could not find") && lower.contains("cookies database") {
         "That browser's sign-in data was not found. Is it installed, and have you opened music.youtube.com in it?"
@@ -537,6 +551,13 @@ mod tests {
             b"ERROR: could not find chrome cookies database in \"/x\"",
         );
         assert!(err.to_string().contains("not found"));
+        assert!(!err.sign_in_expired());
+        let err = failure(
+            "default",
+            b"ERROR: [youtube] x: The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser as a security measure.",
+        );
+        assert!(err.sign_in_expired());
+        assert!(err.to_string().contains("no longer accepts"));
         assert_eq!(failure("default", b"something else").to_string(), "default");
     }
 
