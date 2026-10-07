@@ -97,7 +97,7 @@ fn switch(app: &App, ui: &mut egui::Ui, title: &str, about: &str, on: bool, whic
             let (rect, response) = ui.allocate_exact_size(vec2(44.0, 24.0), Sense::click());
             let t = ui.ctx().animate_bool_with_time(response.id, on, 0.15);
             let fill = if on {
-                app.accent()
+                PALETTE.switch
             } else {
                 PALETTE.surface_hover
             };

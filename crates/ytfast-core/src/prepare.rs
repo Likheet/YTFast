@@ -64,6 +64,9 @@ impl std::fmt::Debug for Prepared {
 pub enum PrepareError {
     #[error("{0}")]
     Find(String),
+    /// YouTube no longer accepts the sign-in, and it could not be renewed.
+    #[error("{0}")]
+    SignIn(String),
     #[error("YouTube offered no audio YtFast can play for this song")]
     NoPlayableAudio,
     #[error("{0}")]
@@ -96,7 +99,29 @@ struct Located {
 impl Preparer {
     /// Prepares `video_id`: finds its audio and returns once the first part
     /// has arrived. `resolved` skips finding when yt-dlp already did.
+    ///
+    /// When the sign-in has gone stale (a browser renews its own as it
+    /// goes, which ends the copy's), it is read again and the song
+    /// prepared once more, so the user is not asked to sign in again.
     pub async fn prepare(
+        &self,
+        video_id: &str,
+        resolved: Option<Resolved>,
+    ) -> Result<Prepared, PrepareError> {
+        match self.prepare_once(video_id, resolved).await {
+            Err(PrepareError::SignIn(problem)) => {
+                if self.session.renew_sign_in().await {
+                    log::info!("the sign-in was read again; getting the song once more");
+                    self.prepare_once(video_id, None).await
+                } else {
+                    Err(PrepareError::SignIn(problem))
+                }
+            }
+            result => result,
+        }
+    }
+
+    async fn prepare_once(
         &self,
         video_id: &str,
         resolved: Option<Resolved>,
@@ -140,7 +165,13 @@ impl Preparer {
                 .yt_dlp
                 .resolve(video_id, &self.cookies_file)
                 .await
-                .map_err(|e| PrepareError::Find(e.to_string()))?,
+                .map_err(|e| {
+                    if e.sign_in_expired() {
+                        PrepareError::SignIn(e.to_string())
+                    } else {
+                        PrepareError::Find(e.to_string())
+                    }
+                })?,
         };
         let find_time = if resolved.took.is_zero() {
             started.elapsed()

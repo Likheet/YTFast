@@ -5,7 +5,11 @@
 //! the way the web page sends them (see `auth.rs` and `ytcfg.rs`). The
 //! header set follows yt-dlp's `generate_api_headers`.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
@@ -51,11 +55,33 @@ pub struct TrackPage {
     pub flags: AccountFlags,
 }
 
+/// Reads the sign-in again from where it first came (the browser). `None`
+/// when it cannot be read, or when the browser is signed out too.
+pub type Renewer = Arc<dyn Fn() -> Renewing + Send + Sync>;
+
+/// A [`Renewer`] at work.
+pub type Renewing = Pin<Box<dyn Future<Output = Option<CookieJar>> + Send>>;
+
+/// The shortest time between two readings of the browser's sign-in, so a
+/// sign-in that is truly gone is not asked for again and again.
+const RENEW_PAUSE: Duration = Duration::from_secs(60);
+
 /// A signed-in YouTube Music session: the cookies and the page config.
+///
+/// A browser renews its sign-in cookies as it goes, and YouTube then stops
+/// accepting the copy taken earlier. With a [`Renewer`] the session reads
+/// the browser's sign-in again when that happens and sends the request
+/// once more, so the user is not asked to sign in again.
 pub struct Session {
     http: reqwest::Client,
-    cookies: CookieJar,
+    /// Replaced when the sign-in is renewed.
+    cookies: RwLock<CookieJar>,
     config: WebConfig,
+    renewer: OnceLock<Renewer>,
+    /// How many times the sign-in has been renewed.
+    renewals: AtomicU64,
+    /// Held while renewing: when the browser's sign-in was last read.
+    renewing: tokio::sync::Mutex<Option<Instant>>,
 }
 
 impl Session {
@@ -81,19 +107,69 @@ impl Session {
             });
         }
         let config = WebConfig::from_html(&html);
-        Ok(Self {
+        Ok(Self::new(http, cookies, config))
+    }
+
+    fn new(http: reqwest::Client, cookies: CookieJar, config: WebConfig) -> Self {
+        Self {
             http,
-            cookies,
+            cookies: RwLock::new(cookies),
             config,
-        })
+            renewer: OnceLock::new(),
+            renewals: AtomicU64::new(0),
+            renewing: tokio::sync::Mutex::new(None),
+        }
     }
 
     pub fn config(&self) -> &WebConfig {
         &self.config
     }
 
-    pub fn cookies(&self) -> &CookieJar {
-        &self.cookies
+    /// The sign-in in use now.
+    pub fn cookies(&self) -> CookieJar {
+        self.jar().clone()
+    }
+
+    fn jar(&self) -> std::sync::RwLockReadGuard<'_, CookieJar> {
+        self.cookies.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Says how to read the sign-in again when YouTube stops accepting it.
+    /// Set once, after signing in.
+    pub fn renew_with(&self, renewer: Renewer) {
+        let _ = self.renewer.set(renewer);
+    }
+
+    /// Reads the sign-in again, after something else (yt-dlp) found it no
+    /// longer accepted. True when a newer one is now in use.
+    pub async fn renew_sign_in(&self) -> bool {
+        self.renew(self.renewals.load(Ordering::Acquire)).await
+    }
+
+    /// Reads the sign-in again after YouTube refused the one a request
+    /// used (`used` is its number). True when there is a newer one to send
+    /// the request with. Requests refused at the same moment share one
+    /// reading.
+    async fn renew(&self, used: u64) -> bool {
+        let Some(renewer) = self.renewer.get() else {
+            return false;
+        };
+        let mut last_read = self.renewing.lock().await;
+        if self.renewals.load(Ordering::Acquire) != used {
+            // Another request renewed it while this one waited.
+            return true;
+        }
+        if last_read.is_some_and(|at| at.elapsed() < RENEW_PAUSE) {
+            return false;
+        }
+        *last_read = Some(Instant::now());
+        let Some(cookies) = renewer().await else {
+            return false;
+        };
+        *self.cookies.write().unwrap_or_else(PoisonError::into_inner) =
+            cookies.youtube_only().with_consent();
+        self.renewals.fetch_add(1, Ordering::AcqRel);
+        true
     }
 
     fn context(&self) -> Value {
@@ -160,7 +236,8 @@ impl Session {
         if self.config.logged_in == Some(true) {
             put("x-youtube-bootstrap-logged-in", "true");
         }
-        let sids = self.cookies.sid_cookies(HOST);
+        let cookies = self.jar();
+        let sids = cookies.sid_cookies(HOST);
         if let Some(signature) = auth::authorization(
             &sids,
             ORIGIN,
@@ -169,7 +246,7 @@ impl Session {
         ) {
             put("authorization", &signature);
         }
-        if let Some(cookie) = self.cookies.header_for(HOST) {
+        if let Some(cookie) = cookies.header_for(HOST) {
             put("cookie", &cookie);
         }
         headers
@@ -192,7 +269,7 @@ impl Session {
         client_version: &str,
     ) -> Result<Value, ApiError> {
         let context = self.context_as(client_name, client_version);
-        self.send(endpoint, &[], body, context).await
+        self.send(endpoint, &[], body, context, false).await
     }
 
     /// [`Session::call`], with more in the address.
@@ -202,15 +279,19 @@ impl Session {
         query: &[(&str, &str)],
         body: Value,
     ) -> Result<Value, ApiError> {
-        self.send(endpoint, query, body, self.context()).await
+        self.send(endpoint, query, body, self.context(), true).await
     }
 
+    /// Sends a request, and once more with the sign-in read again when
+    /// YouTube did not accept it. `own_client` is a request as the web page
+    /// itself, whose replies say whether YouTube saw a signed-in account.
     async fn send(
         &self,
         endpoint: &str,
         query: &[(&str, &str)],
         mut body: Value,
         context: Value,
+        own_client: bool,
     ) -> Result<Value, ApiError> {
         if !body.is_object() {
             body = json!({});
@@ -221,12 +302,26 @@ impl Session {
             url.push_str("&key=");
             url.push_str(key);
         }
+        let used = self.renewals.load(Ordering::Acquire);
+        let reply = self.post(&url, query, &body).await;
+        if not_accepted(&reply, own_client) && self.renew(used).await {
+            return self.post(&url, query, &body).await;
+        }
+        reply
+    }
+
+    async fn post(
+        &self,
+        url: &str,
+        query: &[(&str, &str)],
+        body: &Value,
+    ) -> Result<Value, ApiError> {
         let response = self
             .http
             .post(url)
             .query(query)
             .headers(self.headers())
-            .json(&body)
+            .json(body)
             .send()
             .await
             .map_err(network)?;
@@ -452,11 +547,22 @@ impl Session {
             .http
             .get(url)
             .header("Referer", "https://music.youtube.com/");
-        if let Some(cookie) = self.cookies.header_for(&host) {
+        if let Some(cookie) = self.jar().header_for(&host) {
             request = request.header("Cookie", cookie);
         }
         let response = request.send().await.map_err(network)?;
         Ok(response.status().as_u16())
+    }
+}
+
+/// Whether YouTube answered as it does when the sign-in sent is no longer
+/// accepted: it refused the request, or (to the web page's own requests)
+/// replied as if nobody were signed in.
+fn not_accepted(reply: &Result<Value, ApiError>, own_client: bool) -> bool {
+    match reply {
+        Err(ApiError::SignedOut) => true,
+        Ok(reply) => own_client && read::account_flags(reply).logged_in == Some(false),
+        Err(_) => false,
     }
 }
 
@@ -497,11 +603,76 @@ mod tests {
             ".youtube.com\tTRUE\t/\tTRUE\t4102444800\tSAPISID\tsap\n\
              #HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t4102444800\tLOGIN_INFO\tlogin\n",
         );
-        Session {
-            http: reqwest::Client::new(),
-            cookies,
-            config,
-        }
+        Session::new(reqwest::Client::new(), cookies, config)
+    }
+
+    /// A renewer that hands out a sign-in with another `SAPISID`, and
+    /// counts how often it was asked.
+    fn renewer(asked: Arc<AtomicU64>, answer: bool) -> Renewer {
+        Arc::new(move || -> Renewing {
+            asked.fetch_add(1, Ordering::AcqRel);
+            Box::pin(async move {
+                answer.then(|| {
+                    CookieJar::parse_netscape(
+                        ".youtube.com\tTRUE\t/\tTRUE\t4102444800\tSAPISID\trenewed\n\
+                         .bank.example\tTRUE\t/\tTRUE\t4102444800\tsession\tsecret\n",
+                    )
+                })
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn a_refused_sign_in_is_read_again_once() {
+        let s = session(WebConfig::default());
+        // Without a way to read it again, nothing changes.
+        assert!(!s.renew_sign_in().await);
+
+        let asked = Arc::new(AtomicU64::new(0));
+        s.renew_with(renewer(Arc::clone(&asked), true));
+        assert!(s.renew(0).await);
+        let cookie = s.headers()["cookie"].to_str().unwrap().to_string();
+        assert!(cookie.contains("SAPISID=renewed"));
+        // Only YouTube's cookies are kept from what was read.
+        assert!(!cookie.contains("secret"));
+        // A request refused before the renewal goes again without another
+        // reading; one refused with the renewed sign-in waits its turn.
+        assert!(s.renew(0).await);
+        assert!(!s.renew(1).await);
+        assert_eq!(asked.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_that_cannot_be_read_again_stays() {
+        let s = session(WebConfig::default());
+        let asked = Arc::new(AtomicU64::new(0));
+        s.renew_with(renewer(Arc::clone(&asked), false));
+        assert!(!s.renew_sign_in().await);
+        assert!(!s.renew_sign_in().await);
+        assert_eq!(asked.load(Ordering::Acquire), 1);
+        assert!(
+            s.headers()["cookie"]
+                .to_str()
+                .unwrap()
+                .contains("SAPISID=sap")
+        );
+    }
+
+    #[test]
+    fn knows_a_reply_to_a_stale_sign_in() {
+        let signed_out = json!({ "responseContext": { "serviceTrackingParams": [
+            { "service": "GFEEDBACK", "params": [{ "key": "logged_in", "value": "0" }] }
+        ] } });
+        let signed_in = json!({ "responseContext": { "serviceTrackingParams": [
+            { "service": "GFEEDBACK", "params": [{ "key": "logged_in", "value": "1" }] }
+        ] } });
+        assert!(not_accepted(&Err(ApiError::SignedOut), false));
+        assert!(not_accepted(&Ok(signed_out.clone()), true));
+        // Another client's replies are not read for this.
+        assert!(!not_accepted(&Ok(signed_out), false));
+        assert!(!not_accepted(&Ok(signed_in), true));
+        assert!(!not_accepted(&Ok(json!({})), true));
+        assert!(!not_accepted(&Err(ApiError::Network("x".into())), true));
     }
 
     #[test]
