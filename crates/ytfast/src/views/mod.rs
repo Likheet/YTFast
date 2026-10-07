@@ -1,4 +1,7 @@
-//! What the window draws. Each view reads [`App`] and pushes actions.
+//! What the window draws, laid out as YouTube Music lays its page out: a
+//! bar across the top, the menu on the left, the page, and the player bar
+//! across the bottom once something plays. Each view reads [`App`] and
+//! pushes actions.
 
 mod backdrop;
 mod dialogs;
@@ -21,32 +24,29 @@ use crate::theme::{self, PALETTE};
 pub const SEARCH_BOX: &str = "ytfast-search-box";
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
-    backdrop::paint(app, ui, ui.max_rect());
+    backdrop::paint(ui, ui.max_rect());
     if !matches!(app.auth, Auth::SignedIn { .. }) {
         egui::CentralPanel::default()
             .frame(Frame::new())
             .show(ui, |ui| signin::show(app, ui));
         return;
     }
-    // Panels first, in the order they take their space; the page fills
-    // what is left.
-    player_bar::show(app, ui);
-    if app.now_playing {
-        egui::CentralPanel::default()
-            .frame(Frame::new().inner_margin(Margin::symmetric(24, 8)))
-            .show(ui, |ui| now_playing::show(app, ui));
-        notice(app, ui);
-        dialogs::show(app, ui);
-        return;
-    }
-    sidebar::show(app, ui);
-    if app.show_queue {
-        queue_panel::show(app, ui);
+    // Panels first, in the order they take their space: the two bars span
+    // the window, the menu sits between them, and the page fills the rest.
+    if app.playback.entry.is_some() {
+        player_bar::show(app, ui);
     }
     topbar::show(app, ui);
+    sidebar::show(app, ui);
     egui::CentralPanel::default()
-        .frame(Frame::new().inner_margin(Margin::symmetric(28, 0)))
-        .show(ui, |ui| page::show(app, ui));
+        .frame(Frame::new())
+        .show(ui, |ui| {
+            if app.now_playing {
+                now_playing::show(app, ui);
+            } else {
+                page::show(app, ui);
+            }
+        });
     notice(app, ui);
     dialogs::show(app, ui);
 }
@@ -58,7 +58,7 @@ pub fn playlists_menu(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::T
         return;
     }
     ui.menu_button("Add to playlist", |ui| {
-        ui.set_min_width(200.0);
+        theme::menu(ui);
         for (id, title) in own {
             if ui.button(&title).clicked() {
                 app.act(crate::app::Action::AddToPlaylist {
@@ -72,22 +72,24 @@ pub fn playlists_menu(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::T
     });
 }
 
-/// A short message ("Added to the queue") just above the player bar.
+/// A short message ("Added to the queue") at the bottom left, just above
+/// the player bar, as YouTube Music shows its own.
 fn notice(app: &App, ui: &egui::Ui) {
     let Some((text, _)) = &app.notice else { return };
+    let bar = if app.playback.entry.is_some() {
+        theme::PLAYER_BAR_HEIGHT
+    } else {
+        0.0
+    };
     egui::Area::new(egui::Id::new("notice"))
         .order(egui::Order::Foreground)
-        .anchor(
-            egui::Align2::CENTER_BOTTOM,
-            egui::vec2(0.0, -(theme::PLAYER_BAR_HEIGHT + 16.0)),
-        )
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(24.0, -(bar + 24.0)))
         .interactable(false)
         .show(ui.ctx(), |ui| {
             Frame::new()
-                .fill(egui::Color32::from_rgba_premultiplied(30, 30, 34, 235))
-                .stroke(egui::Stroke::new(1.0, PALETTE.outline))
-                .corner_radius(egui::CornerRadius::same(10))
-                .inner_margin(Margin::symmetric(16, 10))
+                .fill(PALETTE.panel)
+                .corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(Margin::symmetric(24, 14))
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new(text)

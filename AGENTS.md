@@ -102,9 +102,28 @@ Paolino), as `audio.rs` does.
   are asked for (YouTube Music's Up next) when the queue is about to run
   out. The top search result and a song the pointer rests on are found
   ahead of time too (found only, not downloaded).
-- The window takes its colours from the playing song's cover
-  (`colors.rs`, `views/backdrop.rs`), in the style of Better Lyrics' Even
-  Better Lyrics Plus theme (recreated, not copied).
+- The sign-in is a copy of the browser's. A browser renews its own as it
+  goes, which ends the copy (within the hour, with YouTube open in the
+  browser). When YouTube stops accepting it (HTTP 401, a reply as if
+  nobody were signed in, or yt-dlp saying its cookies are no longer
+  valid), the session reads the browser's sign-in again and sends the
+  request once more, without asking the user: `Session::renew_with` and
+  `Session::send` (`innertube.rs`), `Preparer::prepare` (`prepare.rs`),
+  `backend::renewer`. The browser is read at most once a minute.
+- The window is laid out as YouTube Music's own page: a bar across the
+  top, the menu on the left (which closes to icons), the page, and the
+  player bar across the bottom. Sizes and colours are YouTube Music's,
+  measured from music.youtube.com (`theme.rs`, `views/widgets.rs`): an
+  album or playlist has its cover and buttons on the left and its songs
+  on the right, an artist's page begins under a wide picture, and the
+  player page has the cover on the left and the tabs Up next, Lyrics and
+  Related on the right. The owner wants a one-to-one copy of YouTube
+  Music's look: when changing a screen, open the real one and measure.
+- An album's or playlist's page is washed at the top with its cover's
+  colour, and the player page lies over the playing song's cover, blurred
+  (`colors.rs`, `views/backdrop.rs`), with lyrics that follow the song in
+  the style of Better Lyrics' Even Better Lyrics Plus theme (recreated,
+  not copied).
 - Lyrics: YouTube Music's timed lyrics, else LRCLIB's (lrclib.net, found
   by title, artist, album and length), else YouTube Music's plain ones.
   Asked for only when the player page shows them.
@@ -115,7 +134,10 @@ Paolino), as `audio.rs` does.
 - Every page is a header and sections of songs or cards (`read::Page`), so
   one view draws Home, Explore, search, albums, artists and playlists.
 - `--demo` replaces the account with made-up music and no network or
-  sound, for trying the interface and for screenshots.
+  sound, for trying the interface and for screenshots. It can be open
+  beside YTFast in real use without disturbing it: it keeps a log of its
+  own (`ytfast-demo.log`), leaves the sign-in folders alone, and saves no
+  settings.
 - Problems go to `ytfast.log` in the cache folder, made new each run
   (warnings; everything with `--verbose`). Every line passes through
   `redact::urls`. Ask the owner for this file when something fails on
@@ -190,6 +212,14 @@ Paolino), as `audio.rs` does.
   virtual screen (Xvfb, with `libxkbcommon-x11-0`), click with `xdotool`
   and take screenshots with ImageMagick's `import`. Give the window
   keyboard focus first (`xdotool windowfocus`) or typing goes nowhere.
+- On the owner's Windows laptop the demo can be driven without moving
+  their mouse or taking the keyboard: every button has a name for screen
+  readers (set with `widget_info`), so press it by name through Windows'
+  UI Automation; type by posting key messages to the window; take its
+  picture with `PrintWindow`. Posted mouse moves do not work (the pointer
+  is taken as gone at once), so what shows only under the pointer cannot
+  be seen this way. Give new buttons a name, for this and for screen
+  readers.
 
 ### Platforms and licences
 
@@ -231,28 +261,50 @@ and next, and plays reaching History. The Mac run is still to do.
 
 The first app ran on the owner's laptop: songs played, but each took about
 10 seconds to start (yt-dlp for every song), and album covers flickered on
-hover. Both are fixed since, untested on the laptops.
+hover.
 
-Built since (see [docs/plan.md](docs/plan.md)): the fast way to start songs
-and playing while downloading; the Even Better Lyrics Plus look; the player
-page with time-synced lyrics, Up next and Related; likes; Library tabs and
-History; making, renaming, deleting and editing playlists; saving to the
-library and subscribing; search suggestions and filters; Home's mood
-buttons; queue edits; Settings; artist Radio.
+The second app (the fast way to start songs and playing while downloading;
+the player page with time-synced lyrics, Up next and Related; likes;
+Library tabs and History; making, renaming, deleting and editing
+playlists; saving to the library and subscribing; search suggestions and
+filters; Home's mood buttons; queue edits; Settings; artist Radio; see
+[docs/plan.md](docs/plan.md)) ran on the owner's Windows laptop with their
+account in October 2026. The owner's words: almost everything works, and
+it is quick. Two things were wrong. The sign-in stopped being accepted
+after the app had been open a while (the log: the fast way got "Video
+unavailable", then yt-dlp refused the cookies), and signing out and in
+again mended it each time. And the look was unfinished beside YouTube
+Music's, which the owner wants copied one to one.
 
-Tested so far, in a cloud session only: unit tests (cookie handling,
-request signature, page config, reading real saved replies, play reports,
-yt-dlp output, checksums, unpacking, decoding and exact seeking of
-YouTube's audio layout, playing a song still arriving, the queue, account
-changes' requests, lyrics), the solver with Deno and yt-dlp's real EJS
-scripts on a stand-in player, helper download and verification on Linux,
-reading a fake Firefox sign-in through yt-dlp, and the app in demo mode
-under a virtual screen. Not yet tested: anything the app asks of YouTube
-or LRCLIB with a real account (the fast way, likes, playlist changes,
-lyrics, related songs, suggestions), sound from the app, and the Mac and
-Windows builds beyond CI compiling and packaging them. Memory, measured in
-demo mode on a virtual screen: the release build about 157 MB, of which
-about 70 MB is the software renderer (libLLVM, libgallium) that a real
-graphics card replaces; the solver about 70 MB with a player loaded (a
-synthetic 2 MB player; the real one is untested). Measure both on the
-laptops.
+Built since, on the owner's Windows laptop: the session reads the
+browser's sign-in again by itself when YouTube stops accepting it; and the
+window was laid out again as YouTube Music's own page, from measurements of
+music.youtube.com (signed out, in a browser, 1280 wide). Tested: the unit
+tests (among them when the sign-in is read again, and that it is read once
+for requests refused together), and every screen in demo mode on that
+laptop, beside the real pages, at 1280 by 820 and at 960 by 600. Not yet
+tested: reading the sign-in again with a real account (it needs the app
+open until the sign-in goes stale, about an hour with YouTube open in the
+browser), the new look with real pages (the owner's library, real covers,
+an artist's wide picture), what shows only under the pointer (the menu
+button on a song row, the volume bar), and the Mac.
+
+Where the look still differs from YouTube Music's: the font is Inter, not
+Roboto and YouTube Sans; the icons are Lucide's; there are no like or play
+counts, no descriptions, and no Comments tab; back and forward arrows
+stand before the search box (a browser has its own); History and Settings
+are in the account's menu; and what only a signed-in page shows was not
+seen while measuring.
+
+Tested earlier, in a cloud session: unit tests (cookie handling, request
+signature, page config, reading real saved replies, play reports, yt-dlp
+output, checksums, unpacking, decoding and exact seeking of YouTube's
+audio layout, playing a song still arriving, the queue, account changes'
+requests, lyrics), the solver with Deno and yt-dlp's real EJS scripts on a
+stand-in player, helper download and verification on Linux, and reading a
+fake Firefox sign-in through yt-dlp. Memory, measured in demo mode on a
+virtual screen before the look changed: the release build about 157 MB,
+of which about 70 MB is the software renderer (libLLVM, libgallium) that
+a real graphics card replaces; the solver about 70 MB with a player
+loaded (a synthetic 2 MB player; the real one is untested). Measure both
+on the laptops.
