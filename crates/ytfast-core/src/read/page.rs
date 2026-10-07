@@ -152,6 +152,31 @@ pub struct Card {
     pub play: Option<Target>,
 }
 
+impl Card {
+    /// The song a click on this card plays, for a card of one song (a tile
+    /// on Home or Explore), with the card's name, artist and cover. `None`
+    /// for a card that opens a page.
+    pub fn song(&self) -> Option<Track> {
+        let Some(Target::Watch {
+            video_id: Some(video_id),
+            ..
+        }) = self.open.as_ref().or(self.play.as_ref())
+        else {
+            return None;
+        };
+        let byline = Byline::parse(&self.subtitle);
+        Some(Track {
+            video_id: video_id.clone(),
+            title: self.title.clone(),
+            artists: byline.artists,
+            album: byline.album,
+            duration_seconds: byline.duration_seconds,
+            thumbnail: self.thumbnail.clone(),
+            ..Track::default()
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
     Track(Track),
@@ -793,6 +818,26 @@ mod tests {
             matches!(&page.sections[1].more, Some(Target::Browse { id, .. }) if id == "FEmusic_new_releases_albums")
         );
         assert_eq!(page.header, None);
+    }
+
+    #[test]
+    fn a_card_of_one_song_is_that_song() {
+        let page = page(&fixture("explore.json"));
+        // New music videos: each card plays one song.
+        let Item::Card(video) = &page.sections[5].items[0] else {
+            panic!("a card")
+        };
+        let song = video.song().expect("a song");
+        assert_eq!(song.video_id, "BWYIt1UNbyQ");
+        assert_eq!(song.title, "mil preguntas");
+        assert_eq!(song.artists, "Zhamira");
+        assert!(song.thumbnail.is_some());
+        assert_eq!(song.thumbnail, video.thumbnail);
+        // An album's card opens its page.
+        let Item::Card(album) = &page.sections[1].items[0] else {
+            panic!("a card")
+        };
+        assert_eq!(album.song(), None);
     }
 
     #[test]
