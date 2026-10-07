@@ -231,6 +231,8 @@ pub enum Action {
         subscribe: bool,
     },
     OpenLogFolder,
+    /// Open System Settings at Full Disk Access (on a Mac).
+    OpenFullDiskAccess,
     /// Queue edits, by entry.
     RemoveFromQueue(u64),
     ShiftInQueue(u64, bool),
@@ -1231,6 +1233,7 @@ impl App {
                     open_folder(dirs.cache_dir());
                 }
             }
+            Action::OpenFullDiskAccess => open_full_disk_access(),
             Action::ShuffleQueue => {
                 self.queue.shuffle_upcoming();
                 self.prepare_next();
@@ -1483,5 +1486,14 @@ fn open_folder(path: &std::path::Path) {
     let _ = std::fs::create_dir_all(path);
     if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
         log::warn!("could not open the folder: {e}");
+    }
+}
+
+/// Opens System Settings at Full Disk Access. A Mac has no question an app
+/// can ask for this permission; showing its switch is the nearest thing.
+fn open_full_disk_access() {
+    let page = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+    if let Err(e) = std::process::Command::new("open").arg(page).spawn() {
+        log::warn!("could not open System Settings: {e}");
     }
 }
