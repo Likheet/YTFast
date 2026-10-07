@@ -18,6 +18,7 @@ a few hundred MB of memory at most, measured on the finished app.
 | YouTube Music's own internal API for everything else | It is what music.youtube.com uses. There is no official YouTube Music API. |
 | No casting, no offline downloads (for now) | Casting to TVs and speakers is very hard to rebuild. The YouTube Music desktop app has no downloads either. |
 | Memory: **about 200 MB** at most | The owner's limit. Measured on the release builds on the laptops. |
+| The look is **YouTube Music's own**, copied one to one | It is the app its users know. Sizes and colours are measured from music.youtube.com. The player page keeps the cover's colours behind it and lyrics that follow the song, after Better Lyrics. |
 
 ## The phases
 
@@ -45,7 +46,11 @@ shortcuts, and a Mac app and a Windows program with their own icon. A demo
 mode (`--demo`) shows it all with made-up music.
 
 Sign-in for everyday use borrows the browser's sign-in, as the check does:
-simple, and it keeps working as long as you stay signed in there.
+simple, and it keeps working as long as you stay signed in there. The
+browser renews its sign-in as it goes, and YouTube then stops accepting
+the copy YTFast took (within the hour, in the first runs); YTFast reads
+the browser's sign-in again by itself when that happens (built; to be
+confirmed on the laptops).
 
 The first run worked, but songs took about 10 seconds to start and album
 covers flickered on hover. Both are fixed: songs are now found the
@@ -59,14 +64,23 @@ History, the Library's tabs (Playlists, Songs, Albums, Artists), Home's
 mood buttons, "Go to album" and "Go to artist" from a song, Radio on
 artist pages, and related songs. Podcasts only if wanted.
 
-### Phase 3: lyrics and the look (built)
+### Phase 3: lyrics and the look (built; the new look to be tried with a real account)
 
-Time-synced lyrics (YouTube Music's own, then LRCLIB), and a look inspired
-by Better Lyrics' Even Better Lyrics Plus theme, recreated natively: the
-window over a soft blur of the playing song's cover, rounded glass panels,
-the accent colour from the cover, and a player page with big lyrics that
+Time-synced lyrics (YouTube Music's own, then LRCLIB), and YouTube Music's
+own look: the bar across the top, the menu on the left, an album or
+playlist with its cover on the left and its songs on the right, an artist
+under a wide picture, the player bar with its controls in the middle, and
+the player page with the cover beside the tabs Up next, Lyrics and
+Related. (The first look, rounded glass panels over a blur of the playing
+song's cover, was replaced: it did not look like YouTube Music.) From
+Better Lyrics' Even Better Lyrics Plus theme, recreated natively, the
+player page keeps the soft blur of the cover behind it and lyrics that
 light up as they are sung. Better Lyrics' code is GPL and its lyrics
 server is private, so neither is used directly.
+
+Still different from YouTube Music: the font (Inter, not Roboto and
+YouTube Sans), the icons (Lucide's), and no like counts, play counts,
+descriptions or Comments.
 
 ### Phase 4: changing things (built; to be tried on the laptops)
 

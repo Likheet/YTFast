@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, OnceCell, RwLock, Semaphore};
 use ytfast_core::cookies::CookieJar;
 use ytfast_core::direct::Direct;
 use ytfast_core::helpers::{self, Progress};
-use ytfast_core::innertube::{ApiError, Session};
+use ytfast_core::innertube::{ApiError, Renewer, Renewing, Session};
 use ytfast_core::library::{LibraryTab, Privacy, SearchFilter};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
@@ -274,7 +274,7 @@ pub struct Backend {
 impl Backend {
     /// Starts the backend thread. `wake` asks the window to redraw.
     pub fn start(wake: impl Fn() + Send + Sync + 'static, demo: bool) -> std::io::Result<Self> {
-        let folders = Folders::new()?;
+        let folders = Folders::new(demo)?;
         let session_dir = folders.session.clone();
         let (requests, receiver) = tokio::sync::mpsc::unbounded_channel();
         let (sender, events) = mpsc::channel();
@@ -322,13 +322,15 @@ struct Folders {
 }
 
 impl Folders {
-    fn new() -> std::io::Result<Self> {
+    fn new(demo: bool) -> std::io::Result<Self> {
         let dirs = directories::ProjectDirs::from("", "", "YtFast")
             .ok_or_else(|| std::io::Error::other("no home folder"))?;
         let cache = dirs.cache_dir().to_path_buf();
-        // Left over from a run that did not close properly.
+        // Left over from a run that did not close properly. The demo
+        // leaves them be: it may be open beside YTFast in real use, whose
+        // sign-in is in one of them.
         let sessions = cache.join("app-sessions");
-        if let Ok(entries) = std::fs::read_dir(&sessions) {
+        if !demo && let Ok(entries) = std::fs::read_dir(&sessions) {
             for entry in entries.flatten() {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
@@ -573,6 +575,12 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
         .map(|a| a.name)
         .unwrap_or_else(|| "your account".into());
     let session = Arc::new(session);
+    session.renew_with(renewer(
+        yt_dlp.clone(),
+        browser,
+        shared.folders.session.clone(),
+        cookies_file.clone(),
+    ));
     let direct = fast_way(shared, &helpers, &session);
     *shared.signed_in.write().await = Some(Preparer {
         session,
@@ -582,6 +590,40 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
         direct,
     });
     Ok(name)
+}
+
+/// How the session reads the sign-in again when YouTube stops accepting
+/// its copy. A browser renews its sign-in as it goes, which ends a copy
+/// taken earlier (within the hour, with YouTube open in the browser);
+/// reading the browser's again mends it, without asking the user.
+fn renewer(yt_dlp: YtDlp, browser: Browser, scratch: PathBuf, cookies_file: PathBuf) -> Renewer {
+    Arc::new(move || -> Renewing {
+        let (yt_dlp, scratch, cookies_file) =
+            (yt_dlp.clone(), scratch.clone(), cookies_file.clone());
+        Box::pin(async move {
+            let jar = match yt_dlp.read_browser_sign_in(browser, None, &scratch).await {
+                Ok(jar) => jar,
+                Err(e) => {
+                    log::warn!("the sign-in could not be read again: {e}");
+                    return None;
+                }
+            };
+            if !jar.looks_signed_in() {
+                log::warn!("{} is no longer signed in to YouTube", browser.label());
+                return None;
+            }
+            // yt-dlp's copy, too.
+            if let Err(e) = write_private(&cookies_file, &jar.to_netscape()) {
+                log::warn!("the sign-in read again could not be kept for yt-dlp: {e}");
+            }
+            // Not a fault, but worth knowing how often it happens.
+            log::warn!(
+                "YouTube stopped accepting the sign-in; read it from {} again",
+                browser.label()
+            );
+            Some(jar)
+        })
+    })
 }
 
 /// Sets up finding songs the website's way, and gets it ready in the
@@ -740,7 +782,7 @@ fn classify(error: PrepareError) -> Failure {
                 || lower.contains("unavailable")
                 || lower.contains("private")
         }
-        PrepareError::Download(_) => false,
+        PrepareError::SignIn(_) | PrepareError::Download(_) => false,
     };
     Failure { message, song_only }
 }
@@ -922,6 +964,8 @@ async fn report(shared: &Shared, url: String) {
 /// The largest side a picture is kept at. Covers are drawn at most this
 /// big (the player page's); larger pictures only cost memory.
 const IMAGE_SIDE: u32 = 544;
+/// The same for an artist's wide picture, drawn across the page.
+const WIDE_IMAGE_SIDE: u32 = 1280;
 
 /// The most songs whose details are kept.
 const MAX_DETAILS: usize = 50;
@@ -1156,9 +1200,16 @@ async fn image(shared: &Shared, url: String) {
         Ok(response) => response.bytes().await.ok(),
         Err(_) => None,
     };
+    // An artist's wide picture (asked for cropped, `-p`) is drawn across
+    // the page; covers are never drawn larger than the player page's.
+    let side = if url.contains("-p-l90-rj") {
+        WIDE_IMAGE_SIDE
+    } else {
+        IMAGE_SIDE
+    };
     let picture = match bytes {
         Some(bytes) => {
-            tokio::task::spawn_blocking(move || decode_picture(&bytes).map(Picture::new))
+            tokio::task::spawn_blocking(move || decode_picture(&bytes, side).map(Picture::new))
                 .await
                 .ok()
                 .flatten()
@@ -1168,10 +1219,10 @@ async fn image(shared: &Shared, url: String) {
     shared.send(Event::Image(url, picture));
 }
 
-fn decode_picture(bytes: &[u8]) -> Option<egui::ColorImage> {
+fn decode_picture(bytes: &[u8], side: u32) -> Option<egui::ColorImage> {
     let picture = image::load_from_memory(bytes).ok()?;
-    let picture = if picture.width() > IMAGE_SIDE || picture.height() > IMAGE_SIDE {
-        picture.thumbnail(IMAGE_SIDE, IMAGE_SIDE)
+    let picture = if picture.width() > side || picture.height() > side {
+        picture.thumbnail(side, side)
     } else {
         picture
     };

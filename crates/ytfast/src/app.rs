@@ -32,6 +32,8 @@ pub struct Settings {
     pub autoplay: bool,
     /// Turn loud songs down, as YouTube Music does.
     pub even_loudness: bool,
+    /// The menu on the left is closed to its icons.
+    pub mini_guide: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +45,7 @@ impl Default for Settings {
             fast_way: true,
             autoplay: true,
             even_loudness: true,
+            mini_guide: false,
         }
     }
 }
@@ -232,7 +235,8 @@ pub enum Action {
     RemoveFromQueue(u64),
     ShiftInQueue(u64, bool),
     MoveNextInQueue(u64),
-    ToggleQueue,
+    /// Open the menu on the left, or close it to its icons.
+    ToggleGuide,
     /// Open or close the player page.
     ToggleNowPlaying,
     CloseNowPlaying,
@@ -267,14 +271,12 @@ pub struct App {
     pub playback: Playback,
     /// The audio thread's latest status, read once per frame.
     pub audio_status: Status,
-    pub show_queue: bool,
     /// A short message shown above the player bar.
     pub notice: Option<(String, Instant)>,
     pub actions: RefCell<Vec<Action>>,
     /// Songs already asked for ahead of time.
     warmed: RefCell<std::collections::HashSet<String>>,
-    /// The playing song's cover colours (backdrop, accent).
-    pub colors: Option<crate::colors::Summary>,
+    /// The playing song's cover, blurred, behind the player page.
     pub backdrop: RefCell<Backdrop>,
     /// The player page is open, and on which tab.
     pub now_playing: bool,
@@ -364,14 +366,12 @@ impl App {
             queue: Queue::default(),
             playback: Playback::default(),
             audio_status: Status::default(),
-            show_queue: false,
             notice: None,
             actions: RefCell::new(Vec::new()),
             warmed: RefCell::new(std::collections::HashSet::new()),
-            colors: None,
             backdrop: RefCell::new(Backdrop::default()),
             now_playing: false,
-            np_tab: NpTab::Lyrics,
+            np_tab: NpTab::UpNext,
             lyrics: HashMap::new(),
             related: HashMap::new(),
             likes: HashMap::new(),
@@ -434,13 +434,6 @@ impl App {
         }
     }
 
-    /// The accent colour: from the playing song's cover, or the default.
-    pub fn accent(&self) -> egui::Color32 {
-        self.colors
-            .as_ref()
-            .map_or(crate::theme::PALETTE.accent, |c| c.accent)
-    }
-
     /// Asks for what the player page shows of the playing song (lyrics,
     /// related), once per song, when the page is open.
     fn want_song_extras(&mut self) {
@@ -480,7 +473,7 @@ impl App {
         }
     }
 
-    /// Reads the playing song's cover colours, and makes its backdrop.
+    /// Makes the player page's backdrop from the playing song's cover.
     fn update_colors(&mut self, ctx: &egui::Context) {
         let cover = self
             .playback
@@ -502,7 +495,6 @@ impl App {
             backdrop.previous = backdrop.current.take();
             backdrop.current = Some((cover, texture));
         }
-        self.colors = Some(colors);
     }
 
     /// Finds a song's audio ahead of time, so it starts at once if played
@@ -520,6 +512,13 @@ impl App {
     /// The cover texture for a picture address, when it has arrived.
     pub fn picture(&self, url: &str) -> Option<egui::TextureHandle> {
         self.images.borrow_mut().get(url, &self.backend)
+    }
+
+    /// A cover's colour (all of it averaged), when it has arrived: what an
+    /// album's or playlist's page is washed with at the top.
+    pub fn cover_color(&self, url: &str) -> Option<egui::Color32> {
+        let summary = self.images.borrow_mut().summary(url, &self.backend)?;
+        Some(crate::colors::shrink(&summary.tiny, 1).pixels[0])
     }
 
     fn notify(&mut self, text: impl Into<String>) {
@@ -964,6 +963,8 @@ impl App {
     }
 
     fn navigate(&mut self, route: Route) {
+        // Going to a page shows it: the player page steps aside.
+        self.now_playing = false;
         if route == self.route {
             return;
         }
@@ -974,7 +975,7 @@ impl App {
     }
 
     pub fn can_go_back(&self) -> bool {
-        !self.back.is_empty()
+        self.now_playing || !self.back.is_empty()
     }
 
     pub fn can_go_forward(&self) -> bool {
@@ -1028,13 +1029,17 @@ impl App {
         match action {
             Action::Navigate(route) => self.navigate(route),
             Action::Back => {
-                if let Some(route) = self.back.pop() {
+                // With the player page open, Back closes it.
+                if self.now_playing {
+                    self.now_playing = false;
+                } else if let Some(route) = self.back.pop() {
                     let old = std::mem::replace(&mut self.route, route);
                     self.forward.push(old);
                     self.show_current();
                 }
             }
             Action::Forward => {
+                self.now_playing = false;
                 if let Some(route) = self.forward.pop() {
                     let old = std::mem::replace(&mut self.route, route);
                     self.back.push(old);
@@ -1114,7 +1119,7 @@ impl App {
                 self.queue.move_next(id);
                 self.prepare_next();
             }
-            Action::ToggleQueue => self.show_queue = !self.show_queue,
+            Action::ToggleGuide => self.settings.mini_guide = !self.settings.mini_guide,
             Action::ToggleNowPlaying => self.now_playing = !self.now_playing,
             Action::CloseNowPlaying => self.now_playing = false,
             Action::NowPlayingTab(tab) => self.np_tab = tab,
@@ -1454,7 +1459,10 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, "ytfast", &self.settings);
+        // What is changed in the demo is not kept: it is for trying things.
+        if !self.demo {
+            eframe::set_value(storage, "ytfast", &self.settings);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

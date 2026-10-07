@@ -1,62 +1,71 @@
-//! The sidebar: Home, Explore, Library, Liked Music, and the playlists in
-//! the library, as in YouTube Music.
+//! The menu on the left, as YouTube Music's: Home, Explore and Library,
+//! then New playlist and the playlists in the library. The button in the
+//! top bar closes it to a strip of icons.
 
-use egui::{Align, CornerRadius, Frame, Layout, Margin, Rect, Sense, Vec2, pos2, vec2};
+use egui::{Align2, CornerRadius, Frame, Rect, Sense, Vec2, pos2, vec2};
 use ytfast_core::read::{Item, Target};
 
-use crate::app::{Action, App, Auth, Loadable};
+use crate::app::{Action, App, Dialog, Loadable};
 use crate::backend::Route;
 use crate::theme::{self, Icon, PALETTE};
 
+/// How wide the menu is now.
+pub fn width(app: &App) -> f32 {
+    if app.settings.mini_guide {
+        theme::GUIDE_MINI_WIDTH
+    } else {
+        theme::GUIDE_WIDTH
+    }
+}
+
+const PAGES: [(Icon, &str, Route); 3] = [
+    (Icon::Home, "Home", Route::Home),
+    (Icon::Explore, "Explore", Route::Explore),
+    (Icon::Library, "Library", Route::Library),
+];
+
 pub fn show(app: &App, ui: &mut egui::Ui) {
-    egui::Panel::left("sidebar")
-        .exact_size(theme::SIDEBAR_WIDTH)
+    let mini = app.settings.mini_guide;
+    egui::Panel::left(if mini { "guide-mini" } else { "guide" })
+        .exact_size(width(app))
         .resizable(false)
         .show_separator_line(false)
-        .frame(
-            Frame::new()
-                .fill(PALETTE.panel)
-                .stroke(egui::Stroke::new(1.0, PALETTE.outline))
-                .corner_radius(egui::CornerRadius::same(theme::PANEL_RADIUS))
-                .outer_margin(Margin {
-                    left: theme::GAP,
-                    right: 0,
-                    top: theme::GAP,
-                    bottom: 0,
-                })
-                .inner_margin(Margin::symmetric(12, 0)),
-        )
+        .frame(Frame::new())
         .show(ui, |ui| {
-            ui.add_space(18.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-                theme::paint_logo(ui, rect);
-                ui.add_space(2.0);
-                theme::label(ui, "YTFast", theme::bold(20.0), PALETTE.text);
-            });
-            ui.add_space(18.0);
-
-            nav_item(app, ui, Icon::Home, "Home", Route::Home);
-            nav_item(app, ui, Icon::Explore, "Explore", Route::Explore);
-            nav_item(app, ui, Icon::Library, "Library", Route::Library);
-            nav_item(app, ui, Icon::History, "History", Route::History);
-
-            ui.add_space(10.0);
+            let rect = ui.max_rect();
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add_space(8.0);
+            if mini {
+                for (icon, text, route) in PAGES {
+                    mini_item(app, ui, icon, text, route);
+                }
+                return;
+            }
+            // The hairline between the menu and the page.
+            ui.painter().vline(
+                rect.right() - 0.5,
+                rect.y_range(),
+                egui::Stroke::new(1.0, PALETTE.outline),
+            );
+            for (icon, text, route) in PAGES {
+                nav_item(app, ui, icon, text, route);
+            }
+            ui.add_space(24.0);
             ui.painter().hline(
-                ui.max_rect().x_range(),
+                (rect.left() + 24.0)..=(rect.right() - 24.0),
                 ui.cursor().top(),
                 egui::Stroke::new(1.0, PALETTE.outline),
             );
-            ui.add_space(12.0);
+            ui.add_space(24.0);
+            new_playlist(app, ui);
+            ui.add_space(16.0);
 
-            let bottom = 48.0;
             egui::ScrollArea::vertical()
-                .id_salt("sidebar-playlists")
-                .max_height((ui.available_height() - bottom).max(0.0))
+                .id_salt("guide-playlists")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    playlist_item(app, ui, "Liked Music", "Auto playlist", Route::Liked);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    playlist_item(app, ui, "Liked Music", "Auto playlist", true, Route::Liked);
                     if let Some(Loadable::Ready(page)) = app.pages.get(&Route::Library) {
                         for section in &page.sections {
                             for item in &section.items {
@@ -69,58 +78,40 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                                     continue;
                                 }
                                 let route = Route::browse(id.clone(), params.clone());
-                                playlist_item(app, ui, &card.title, &card.subtitle, route);
+                                playlist_item(app, ui, &card.title, &card.subtitle, false, route);
                             }
                         }
                     }
+                    ui.add_space(16.0);
                 });
-
-            // The account, and signing out, at the bottom.
-            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if let Auth::SignedIn { name } = &app.auth {
-                        let (icon, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
-                        theme::paint_icon(ui, Icon::User, icon, 16.0, PALETTE.secondary);
-                        let width = ui.available_width() - 40.0;
-                        ui.allocate_ui(vec2(width, 24.0), |ui| {
-                            theme::label(ui, name, theme::regular(13.0), PALETTE.secondary);
-                        });
-                    }
-                    let color = if app.route == Route::Settings {
-                        PALETTE.text
-                    } else {
-                        PALETTE.secondary
-                    };
-                    if theme::icon_button(ui, Icon::Settings, 17.0, color, "Settings").clicked() {
-                        app.act(Action::Navigate(Route::Settings));
-                    }
-                });
-            });
         });
 }
 
+/// Whether `route` is the page showing (not hidden by the player page).
+fn showing(app: &App, route: &Route) -> bool {
+    !app.now_playing && app.route == *route
+}
+
+/// Home, Explore, Library: an icon and a name, 48 high.
 fn nav_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route) {
-    let active = app.route == route;
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
-    if active || response.hovered() {
-        let fill = if active {
-            PALETTE.surface
-        } else {
-            PALETTE.surface.gamma_multiply(0.6)
-        };
-        ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+    let rect = slot.shrink2(vec2(8.0, 0.0));
+    let response = ui.interact(rect, ui.id().with(("nav", text)), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+    if showing(app, &route) || response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(8), PALETTE.surface);
     }
     let icon_rect = Rect::from_min_size(
-        pos2(rect.left() + 12.0, rect.center().y - 12.0),
+        pos2(rect.left() + 16.0, rect.center().y - 12.0),
         Vec2::splat(24.0),
     );
-    theme::paint_icon(ui, icon, icon_rect, 22.0, PALETTE.text);
+    theme::paint_icon(ui, icon, icon_rect, 24.0, PALETTE.text);
     ui.painter().text(
-        pos2(icon_rect.right() + 16.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
+        pos2(rect.left() + 60.0, rect.center().y),
+        Align2::LEFT_CENTER,
         text,
-        theme::medium(15.0),
+        theme::medium(16.0),
         PALETTE.text,
     );
     if response.clicked() {
@@ -128,59 +119,112 @@ fn nav_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route) 
     }
 }
 
-fn playlist_item(app: &App, ui: &mut egui::Ui, title: &str, subtitle: &str, route: Route) {
-    let active = app.route == route;
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());
-    if active || response.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(8),
-            PALETTE
-                .surface
-                .gamma_multiply(if active { 1.0 } else { 0.6 }),
-        );
+/// The same pages with the menu closed: an icon over a small name.
+fn mini_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route) {
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
+    let rect = Rect::from_center_size(slot.center(), vec2(56.0, 56.0));
+    let response = ui.interact(rect, ui.id().with(("mini", text)), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+    if showing(app, &route) || response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(8), PALETTE.surface);
     }
-    let left = rect.left() + 12.0;
-    let width = rect.width() - 24.0;
-    let painter = ui.painter().with_clip_rect(rect.shrink2(vec2(10.0, 0.0)));
-    let title_galley = painter.layout_no_wrap(title.to_string(), theme::medium(14.0), PALETTE.text);
-    painter.galley(
-        pos2(left, rect.top() + 6.0),
-        elide(ui, title_galley, width),
+    let icon_rect =
+        Rect::from_center_size(pos2(rect.center().x, rect.top() + 21.0), Vec2::splat(24.0));
+    theme::paint_icon(ui, icon, icon_rect, 24.0, PALETTE.text);
+    ui.painter().text(
+        pos2(rect.center().x, rect.bottom() - 13.0),
+        Align2::CENTER_CENTER,
+        text,
+        theme::regular(10.0),
         PALETTE.text,
-    );
-    let subtitle_galley = painter.layout_no_wrap(
-        subtitle.to_string(),
-        theme::regular(12.5),
-        PALETTE.secondary,
-    );
-    painter.galley(
-        pos2(left, rect.top() + 26.0),
-        elide(ui, subtitle_galley, width),
-        PALETTE.secondary,
     );
     if response.clicked() {
         app.act(Action::Navigate(route));
     }
 }
 
-/// Cuts a laid-out line short with "…" when it is wider than `width`.
-fn elide(
-    ui: &egui::Ui,
-    galley: std::sync::Arc<egui::Galley>,
-    width: f32,
-) -> std::sync::Arc<egui::Galley> {
-    if galley.size().x <= width {
-        return galley;
+/// "+ New playlist", a wide pill.
+fn new_playlist(app: &App, ui: &mut egui::Ui) {
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
+    let rect = slot.shrink2(vec2(24.0, 0.0));
+    let response = ui.interact(rect, ui.id().with("new-playlist"), Sense::click());
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New playlist"));
+    let fill = if response.hovered() {
+        PALETTE.surface_hover
+    } else {
+        PALETTE.surface
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(18), fill);
+    let words = ui.painter().layout_no_wrap(
+        "New playlist".to_string(),
+        theme::medium(14.0),
+        PALETTE.text,
+    );
+    let left = rect.center().x - (words.size().x + 26.0) / 2.0;
+    let plus = Rect::from_min_size(pos2(left, rect.center().y - 10.0), Vec2::splat(20.0));
+    theme::paint_icon(ui, Icon::Plus, plus, 20.0, PALETTE.text);
+    ui.painter().galley(
+        pos2(left + 26.0, rect.center().y - words.size().y / 2.0),
+        words,
+        PALETTE.text,
+    );
+    if response.clicked() {
+        app.act(Action::OpenDialog(Dialog::NewPlaylist {
+            name: String::new(),
+            song: None,
+        }));
     }
-    let text = galley.text().to_string();
-    let format = galley
-        .job
-        .sections
-        .first()
-        .map(|s| s.format.clone())
-        .unwrap_or_default();
-    let mut job = egui::text::LayoutJob::single_section(text, format);
-    job.wrap = egui::text::TextWrapping::truncate_at_width(width);
-    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// A playlist: its name over a quieter line (who made it).
+fn playlist_item(
+    app: &App,
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: &str,
+    pinned: bool,
+    route: Route,
+) {
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+    if !ui.is_rect_visible(slot) {
+        return;
+    }
+    let rect = slot.shrink2(vec2(8.0, 0.0));
+    let response = ui.interact(rect, ui.id().with(("playlist", &route)), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    if showing(app, &route) || response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(8), PALETTE.surface);
+    }
+    let left = rect.left() + 16.0;
+    let width = rect.width() - 32.0;
+    theme::paint_line(
+        ui,
+        pos2(left, rect.top() + 7.0),
+        title,
+        theme::medium(14.0),
+        PALETTE.text,
+        width,
+    );
+    let mut below = pos2(left, rect.top() + 27.0);
+    let mut below_width = width;
+    if pinned {
+        let pin = Rect::from_min_size(below + vec2(-1.0, 1.0), Vec2::splat(13.0));
+        theme::paint_icon(ui, Icon::Pin, pin, 13.0, PALETTE.secondary);
+        below.x += 17.0;
+        below_width -= 17.0;
+    }
+    theme::paint_line(
+        ui,
+        below,
+        subtitle,
+        theme::regular(12.0),
+        PALETTE.secondary,
+        below_width,
+    );
+    if response.clicked() {
+        app.act(Action::Navigate(route));
+    }
 }
