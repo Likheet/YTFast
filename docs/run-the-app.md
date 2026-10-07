@@ -51,9 +51,11 @@ taskbar**.
    - **Chrome, Edge or Brave:** your Mac asks whether to allow access to
      "Chrome Safe Storage" (or the browser's own). Type your Mac password and
      click **Always Allow**. This is how YTFast reads your YouTube sign-in.
-   - **Safari:** your Mac may refuse at first. Open System Settings, then
-     Privacy & Security, then **Full Disk Access**, turn on **YTFast**, and
-     try again.
+   - **Safari:** your Mac refuses at first, and again after each new copy
+     downloaded from GitHub. Click **Open Full Disk Access** under the
+     message, turn on **YTFast** in the list that opens, and let your Mac
+     reopen it. (A copy that Claude builds on your Mac keeps the
+     permission.)
 
 ## The first time
 

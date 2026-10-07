@@ -66,8 +66,8 @@ crates/ytfast/        the app: an egui window on fastframe
   assets/             icons (Lucide, ISC) and the app's own mark
   build.rs            the icon and name in the Windows program
 crates/ytfast-check/  step 0: the guided check program
-packaging/            app icon files, the Mac Info.plist, the Windows
-                      resource file
+packaging/            app icon files, the Mac Info.plist and its
+                      build-and-install script, the Windows resource file
 docs/                 plan, how to run the app and the check
 ```
 
@@ -220,6 +220,14 @@ Paolino), as `audio.rs` does.
   is taken as gone at once), so what shows only under the pointer cannot
   be seen this way. Give new buttons a name, for this and for screen
   readers.
+- On the owner's Mac, build and install with
+  `packaging/macos/install.sh`. It puts YTFast in Applications, signed
+  with that Mac's own fixed signature ("YTFast Local Signing", kept in the
+  login keychain and made by the script the first time), so macOS takes
+  every build for the same app and keeps the Full Disk Access that reading
+  Safari's sign-in needs. CI's builds are signed ad hoc: macOS takes each
+  for a new app and forgets what it allowed. Leave no other YTFast.app on
+  the disk (not in `target/` either): the Mac lists every copy it finds.
 
 ### Platforms and licences
 
@@ -288,6 +296,20 @@ open until the sign-in goes stale, about an hour with YouTube open in the
 browser), the new look with real pages (the owner's library, real covers,
 an artist's wide picture), what shows only under the pointer (the menu
 button on a song row, the volume bar), and the Mac.
+
+An earlier build (before the new look) ran on the owner's Mac with their
+account on 7 October 2026, built there, signed in through Safari. The
+owner's words: it does everything well. Three things were wrong. A tile
+of one song (as on Home and Explore) showed "Song" and no cover in the
+player bar. macOS asked for Full Disk Access again with every new build.
+And in demo mode the release build took about 210 to 225 MB of memory,
+over the 200 MB target (80 MB of it window surfaces), not yet looked
+into. Built since: a song's tile gives the player its name, artist and
+cover (tested against the saved Explore page); the refusal shows an Open
+Full Disk Access button; and builds made on the Mac carry a fixed
+signature (above). Not yet tested: any of these with the owner's account,
+the button's page in System Settings, and whether Full Disk Access now
+lasts from one build to the next.
 
 Where the look still differs from YouTube Music's: the font is Inter, not
 Roboto and YouTube Sans; the icons are Lucide's; there are no like or play

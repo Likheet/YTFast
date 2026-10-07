@@ -88,9 +88,16 @@ fn card(app: &App, ui: &mut egui::Ui) {
                     .color(PALETTE.danger),
             );
             ui.add_space(10.0);
-            if theme::pill_button(ui, "Try again", true).clicked() {
-                app.act(Action::SignIn);
-            }
+            // On a Mac, the permission's switch is one click away.
+            let blocked = cfg!(target_os = "macos") && message.contains("Full Disk Access");
+            ui.horizontal(|ui| {
+                if blocked && theme::pill_button(ui, "Open Full Disk Access", true).clicked() {
+                    app.act(Action::OpenFullDiskAccess);
+                }
+                if theme::pill_button(ui, "Try again", !blocked).clicked() {
+                    app.act(Action::SignIn);
+                }
+            });
         }
         _ => {
             if theme::pill_button(ui, "Continue", true).clicked() {
