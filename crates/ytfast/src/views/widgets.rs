@@ -539,12 +539,12 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
     response.context_menu(|ui| card_menu(app, ui, card));
     if play_clicked {
         if let Some(target) = card.play.clone() {
-            app.act(Action::Play(target, None));
+            app.act(Action::Play(target, card.song()));
         }
     } else if response.clicked()
         && let Some(target) = card.open.clone().or_else(|| card.play.clone())
     {
-        app.act(Action::Open(target, None));
+        app.act(Action::Open(target, card.song()));
     }
 }
 
@@ -678,7 +678,7 @@ pub fn card_row(app: &App, ui: &mut egui::Ui, style: Row, card: &Card) {
     if response.clicked()
         && let Some(target) = card.open.clone().or_else(|| card.play.clone())
     {
-        app.act(Action::Open(target, None));
+        app.act(Action::Open(target, card.song()));
     }
 }
 
