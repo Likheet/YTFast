@@ -140,10 +140,19 @@ impl Session {
         let _ = self.renewer.set(renewer);
     }
 
-    /// Reads the sign-in again, after something else (yt-dlp) found it no
-    /// longer accepted. True when a newer one is now in use.
-    pub async fn renew_sign_in(&self) -> bool {
-        self.renew(self.renewals.load(Ordering::Acquire)).await
+    /// Which sign-in is in use: the number goes up each time it is read
+    /// again. Noted before the sign-in is handed to something else
+    /// (yt-dlp), for [`Session::renew_sign_in`].
+    pub fn sign_in_number(&self) -> u64 {
+        self.renewals.load(Ordering::Acquire)
+    }
+
+    /// Reads the sign-in again, after something else (yt-dlp) found the one
+    /// numbered `used` ([`Session::sign_in_number`]) no longer accepted.
+    /// True when a newer one is now in use: read now, or by another request
+    /// since that one was handed out.
+    pub async fn renew_sign_in(&self, used: u64) -> bool {
+        self.renew(used).await
     }
 
     /// Reads the sign-in again after YouTube refused the one a request
@@ -304,8 +313,19 @@ impl Session {
         }
         let used = self.renewals.load(Ordering::Acquire);
         let reply = self.post(&url, query, &body).await;
-        if not_accepted(&reply, own_client) && self.renew(used).await {
-            return self.post(&url, query, &body).await;
+        if !not_accepted(&reply, own_client) {
+            return reply;
+        }
+        let reply = if self.renew(used).await {
+            self.post(&url, query, &body).await
+        } else {
+            reply
+        };
+        // Still answered as if nobody were signed in, though the browser's
+        // sign-in was read again (or could not be): say so, rather than
+        // show an empty, signed-out page as the account's.
+        if not_accepted(&reply, own_client) {
+            return Err(ApiError::SignedOut);
         }
         reply
     }
@@ -626,7 +646,7 @@ mod tests {
     async fn a_refused_sign_in_is_read_again_once() {
         let s = session(WebConfig::default());
         // Without a way to read it again, nothing changes.
-        assert!(!s.renew_sign_in().await);
+        assert!(!s.renew_sign_in(s.sign_in_number()).await);
 
         let asked = Arc::new(AtomicU64::new(0));
         s.renew_with(renewer(Arc::clone(&asked), true));
@@ -647,8 +667,8 @@ mod tests {
         let s = session(WebConfig::default());
         let asked = Arc::new(AtomicU64::new(0));
         s.renew_with(renewer(Arc::clone(&asked), false));
-        assert!(!s.renew_sign_in().await);
-        assert!(!s.renew_sign_in().await);
+        assert!(!s.renew_sign_in(s.sign_in_number()).await);
+        assert!(!s.renew_sign_in(s.sign_in_number()).await);
         assert_eq!(asked.load(Ordering::Acquire), 1);
         assert!(
             s.headers()["cookie"]
@@ -656,6 +676,21 @@ mod tests {
                 .unwrap()
                 .contains("SAPISID=sap")
         );
+    }
+
+    #[tokio::test]
+    async fn yt_dlp_refused_after_a_renewal_tries_the_newer_sign_in() {
+        let s = session(WebConfig::default());
+        let asked = Arc::new(AtomicU64::new(0));
+        s.renew_with(renewer(Arc::clone(&asked), true));
+        // yt-dlp is handed the sign-in, then another request renews it.
+        let handed = s.sign_in_number();
+        assert!(s.renew(handed).await);
+        // yt-dlp's refusal of the older one needs no reading of its own
+        // (which the once-a-minute pause would refuse): the newer one is
+        // there to try.
+        assert!(s.renew_sign_in(handed).await);
+        assert_eq!(asked.load(Ordering::Acquire), 1);
     }
 
     #[test]

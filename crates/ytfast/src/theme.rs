@@ -129,12 +129,11 @@ fastframe_icons::icons! {
     }
 }
 
-/// Sets up fonts, icons and egui's colours. Call once, at start.
-pub fn install(ctx: &egui::Context) {
+/// Sets up fonts, icons and egui's colours. Call once, at start. The fonts
+/// for other scripts come later, when needed (see [`ScriptFonts`]).
+pub fn install(ctx: &egui::Context) -> ScriptFonts {
     let rendering = fastframe_text::detect();
-    let mut fonts = fastframe_fonts::FontSetup::default().definitions();
-    rendering.apply_to(&mut fonts);
-    ctx.set_fonts(fonts);
+    ctx.set_fonts(font_definitions(rendering, false));
     egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
 
@@ -176,6 +175,141 @@ pub fn install(ctx: &egui::Context) {
     });
     // fastframe-text's rendering settings, after the visuals.
     ctx.all_styles_mut(|style| rendering.apply_to_visuals(&mut style.visuals));
+    ScriptFonts {
+        ctx: ctx.clone(),
+        rendering,
+        state: Loading::NotWanted,
+        unsure: std::collections::BTreeSet::new(),
+    }
+}
+
+/// Inter at every weight and egui's own fonts (emoji among them), and with
+/// `scripts` the computer's fonts for the scripts Inter does not draw.
+fn font_definitions(
+    rendering: fastframe_text::TextRendering,
+    scripts: bool,
+) -> egui::FontDefinitions {
+    let mut fonts = fastframe_fonts::FontSetup::default()
+        .system_fallbacks(scripts)
+        .definitions();
+    rendering.apply_to(&mut fonts);
+    fonts
+}
+
+/// The fonts for the scripts Inter does not draw (Chinese, Japanese,
+/// Korean, Arabic, the Indian scripts...) are the computer's own, read
+/// whole into memory: about 60 MB on Windows. They are added only once some
+/// words need them, so a library in Latin letters never pays for them.
+pub struct ScriptFonts {
+    ctx: egui::Context,
+    rendering: fastframe_text::TextRendering,
+    state: Loading,
+    /// Characters seen that Inter and egui's own fonts may not draw, to
+    /// look up in them (see [`ScriptFonts::check`]).
+    unsure: std::collections::BTreeSet<char>,
+}
+
+enum Loading {
+    NotWanted,
+    /// Being read, on a thread of their own (a fraction of a second).
+    Reading(std::sync::mpsc::Receiver<egui::FontDefinitions>),
+    Added,
+}
+
+/// The most characters kept to look up; past it, the fonts are read.
+const MAX_UNSURE: usize = 256;
+
+impl ScriptFonts {
+    /// Notes the characters in `text` the fonts in use may not draw.
+    pub fn want_for(&mut self, text: &str) {
+        if !matches!(self.state, Loading::NotWanted) {
+            return;
+        }
+        self.unsure
+            .extend(text.chars().filter(|c| may_need_script_fonts(*c)));
+    }
+
+    /// Looks the characters noted up in the fonts in use, and starts
+    /// reading the fonts for other scripts when one is missing. Call while
+    /// drawing (egui's fonts exist from the first frame).
+    pub fn check(&mut self) {
+        if self.unsure.is_empty() || !matches!(self.state, Loading::NotWanted) {
+            return;
+        }
+        let unsure = std::mem::take(&mut self.unsure);
+        let font = FontId::proportional(14.0);
+        let missing = unsure.len() > MAX_UNSURE
+            || self
+                .ctx
+                .fonts_mut(|fonts| unsure.iter().any(|c| !fonts.has_glyph(&font, *c)));
+        if missing {
+            self.read();
+        }
+    }
+
+    /// Reads the fonts for other scripts, on a thread of their own.
+    fn read(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (ctx, rendering) = (self.ctx.clone(), self.rendering);
+        let reading = std::thread::Builder::new()
+            .name("ytfast-fonts".into())
+            .spawn(move || {
+                let _ = sender.send(font_definitions(rendering, true));
+                ctx.request_repaint();
+            });
+        self.state = match reading {
+            Ok(_) => Loading::Reading(receiver),
+            Err(e) => {
+                log::warn!("the fonts for other scripts could not be read: {e}");
+                Loading::Added
+            }
+        };
+    }
+
+    /// Hands the fonts to egui once read; they show from the next frame.
+    pub fn add_when_read(&mut self) {
+        let Loading::Reading(receiver) = &self.state else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(fonts) => {
+                self.ctx.set_fonts(fonts);
+                self.ctx.request_repaint();
+                self.state = Loading::Added;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("reading the fonts for other scripts stopped part way");
+                self.state = Loading::Added;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+}
+
+/// Whether the fonts in use may not draw `c`: anything past Inter's Latin,
+/// Greek and Cyrillic, and past the punctuation, symbols and emoji that
+/// Inter and egui's own fonts carry. Those are then looked up in the fonts
+/// themselves ([`ScriptFonts::check`]).
+fn may_need_script_fonts(c: char) -> bool {
+    let c = u32::from(c);
+    c >= 0x0530
+        && !matches!(
+            c,
+            // Phonetic extensions, then Latin and Greek extended.
+            0x1D00..=0x1DBF
+                | 0x1E00..=0x1FFF
+                // Punctuation, super- and subscripts, currencies.
+                | 0x2000..=0x20CF
+                // Letterlike symbols, number forms, arrows.
+                | 0x2100..=0x21FF
+                // Variation selectors, and the byte order mark.
+                | 0xFE00..=0xFE0F
+                | 0xFEFF
+                // Emoji, in egui's own emoji font, and the tags in flag
+                // emoji.
+                | 0x1F000..=0x1FAFF
+                | 0xE0000..=0xE007F
+        )
 }
 
 pub fn regular(size: f32) -> FontId {
@@ -462,5 +596,38 @@ mod tests {
         assert_eq!(clock(0.0), "0:00");
         assert_eq!(clock(65.4), "1:05");
         assert_eq!(clock(3_725.0), "1:02:05");
+    }
+
+    #[test]
+    fn notes_characters_the_fonts_may_not_draw() {
+        let noted = |text: &str| text.chars().any(may_need_script_fonts);
+        // Inter draws these, with egui's own emoji.
+        for text in [
+            "Señorita (feat. Björk) – “Live”…",
+            "Αθήνα, Москва",
+            "Phở Đặc Biệt",
+            "£3 → €5™",
+            "Fire 🔥🇧🇷",
+            "",
+        ] {
+            assert!(!noted(text), "{text}");
+        }
+        // These are looked up in the fonts: most need the computer's fonts
+        // (Inter happens to draw the stars and hearts).
+        for text in [
+            "東京",
+            "あいみょん",
+            "방탄소년단",
+            "عمرو دياب",
+            "שלום",
+            "हिन्दी",
+            "தமிழ்",
+            "ไทย",
+            "★ Stars ♡",
+            "ＦＵＬＬ",
+            "𝓢𝓽𝔂𝓵𝓮",
+        ] {
+            assert!(noted(text), "{text}");
+        }
     }
 }

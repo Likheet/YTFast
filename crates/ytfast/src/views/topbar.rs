@@ -73,6 +73,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 PALETTE.text,
             );
             let home = ui.interact(mark.union(name), ui.id().with("home"), Sense::click());
+            home.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "YTFast home")
+            });
             if home.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
@@ -292,6 +295,9 @@ fn suggestions(
                     for suggestion in found.iter().take(7) {
                         let (row, response) = ui
                             .allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, suggestion)
+                        });
                         if response.hovered() {
                             ui.painter().rect_filled(row, 0.0, PALETTE.surface);
                         }

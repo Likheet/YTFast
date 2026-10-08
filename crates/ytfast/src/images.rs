@@ -2,6 +2,7 @@
 //! not drawn for a while so memory stays small.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use egui::TextureHandle;
 
@@ -10,8 +11,13 @@ use crate::backend::{Backend, Request};
 enum Slot {
     Loading,
     Ready(TextureHandle, crate::colors::Summary),
-    Failed,
+    /// It did not load, at this time.
+    Failed(Instant),
 }
+
+/// How long a cover that did not load waits before it is asked for again,
+/// when it is next on screen (the network may be back).
+const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 struct Cached {
     slot: Slot,
@@ -69,9 +75,13 @@ impl Images {
         match self.cache.get_mut(url) {
             Some(cached) => {
                 cached.used = frame;
+                if matches!(cached.slot, Slot::Failed(at) if at.elapsed() >= RETRY_AFTER) {
+                    cached.slot = Slot::Loading;
+                    backend.send(Request::Image(url.to_string()));
+                }
                 match &cached.slot {
                     Slot::Ready(texture, _) => Some(texture.clone()),
-                    Slot::Loading | Slot::Failed => None,
+                    Slot::Loading | Slot::Failed(_) => None,
                 }
             }
             None => {
@@ -111,7 +121,7 @@ impl Images {
                 let texture = ctx.load_texture(&url, picture.image, egui::TextureOptions::LINEAR);
                 (Slot::Ready(texture, picture.summary), bytes)
             }
-            None => (Slot::Failed, 0),
+            None => (Slot::Failed(Instant::now()), 0),
         };
         let used = self.frame;
         if let Some(old) = self.cache.insert(url, Cached { slot, used, bytes }) {
