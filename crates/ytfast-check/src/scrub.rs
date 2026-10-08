@@ -726,7 +726,24 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
             let (clean, _) = scrubbed(original.clone());
             assert_eq!(read::tracks(&clean), read::tracks(&original), "{name}");
-            assert_eq!(read::page(&clean), read::page(&original), "{name}");
+            // A playlist's maker (its facepile) is a person: the scrubbed
+            // page names the sample one instead. All else reads the same.
+            let mut clean_page = read::page(&clean);
+            let mut original_page = read::page(&original);
+            if let (Some(clean), Some(original)) =
+                (&mut clean_page.header, &mut original_page.header)
+                && original.owner_picture.is_some()
+            {
+                assert_eq!(clean.owner, SAMPLE_NAME, "{name}");
+                assert_eq!(
+                    clean.owner_picture.as_ref().map(|p| p.url.as_str()),
+                    Some(SAMPLE_PHOTO_URL),
+                    "{name}"
+                );
+                clean.owner.clone_from(&original.owner);
+                clean.owner_picture.clone_from(&original.owner_picture);
+            }
+            assert_eq!(clean_page, original_page, "{name}");
             assert_eq!(
                 read::track_continuation(&clean).is_some(),
                 read::track_continuation(&original).is_some(),

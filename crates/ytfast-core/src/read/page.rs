@@ -138,6 +138,12 @@ pub enum Target {
         video_id: Option<String>,
         playlist_id: Option<String>,
     },
+    /// Searching (search's filter buttons): narrowed by `params`, or all
+    /// results without.
+    Search {
+        query: String,
+        params: Option<String>,
+    },
 }
 
 impl Target {
@@ -180,6 +186,24 @@ pub struct Card {
     /// An episode's podcast (the tile's second title), shown as the
     /// episode's artist when it plays.
     pub podcast: Option<String>,
+    /// How it is drawn, beyond a cover and words.
+    pub look: CardLook,
+}
+
+/// How a card is drawn beyond a cover and words: a button's icon and a
+/// mood's coloured stripe (cards without pictures), a wide picture, a
+/// chosen chip.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CardLook {
+    /// YouTube's name for a button's icon (Explore's `MUSIC_NEW_RELEASE`,
+    /// `TRENDING_UP`, `STICKER_EMOTICON`).
+    pub icon: Option<String>,
+    /// A mood's colour, the stripe at its button's left (`0xRRGGBB`).
+    pub stripe: Option<u32>,
+    /// A 16:9 picture (a video), not a square one.
+    pub wide: bool,
+    /// The chip chosen now (Home's mood being shown).
+    pub chosen: bool,
 }
 
 impl Card {
@@ -242,6 +266,33 @@ pub struct Section {
     pub more: Option<Target>,
     /// How YouTube Music lays the section out.
     pub shape: Shape,
+    /// A search's top result: the first item is drawn as a big card, the
+    /// rest (a few of its songs) at the card's right.
+    pub top: Option<Box<TopResult>>,
+    /// Its title is YouTube Music's smaller one (`DISPLAY_TWO`), as an
+    /// artist's shelves have.
+    pub small_title: bool,
+}
+
+/// What a search's top result card shows besides its picture and name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TopResult {
+    /// The line under the name, as YouTube Music writes it ("Artist •
+    /// 332M monthly audience").
+    pub subtitle: String,
+    /// Its buttons (an artist's Shuffle and Mix), in YouTube's order.
+    pub buttons: Vec<CardButton>,
+}
+
+/// A button on a top result card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardButton {
+    pub text: String,
+    /// YouTube's name for its icon (`MUSIC_SHUFFLE`, `MIX`, `PLAY_ARROW`).
+    pub icon: Option<String>,
+    /// White with dark words (the first, main button); else outlined.
+    pub filled: bool,
+    pub target: Option<Target>,
 }
 
 /// How a section is laid out on YouTube Music.
@@ -279,6 +330,14 @@ pub struct Header {
     pub detail: String,
     /// The album's artist, or the playlist's owner.
     pub owner: String,
+    /// The owner's small round picture (an album's artist's, a playlist
+    /// maker's), when the reply has it.
+    pub owner_picture: Option<Thumb>,
+    /// The description as written (an album's or an artist's, from
+    /// Wikipedia; a playlist's own).
+    pub description: String,
+    /// An artist's subscribers, as Subscribe shows them ("28.6M").
+    pub subscribers: String,
     pub thumbnail: Option<Thumb>,
     /// Artists are drawn round.
     pub round: bool,
@@ -411,15 +470,14 @@ pub fn page(reply: &Value) -> Page {
     let mut sections = Vec::new();
     // Home's moods come first, above its shelves.
     sections.extend(chips(reply));
-    walk(reply, &mut sections);
+    walk(reply, &mut sections, &mut None);
     sections.retain(|s| !s.items.is_empty());
     Page { header, sections }
 }
 
 /// The row of buttons above Home's shelves (Energize, Relax, Workout...),
 /// as a section of cards without pictures. Each opens Home for that mood.
-/// Search's filter buttons search rather than open a page, and are left
-/// out.
+/// Search's filter buttons (Songs, Albums...) search instead.
 fn chips(reply: &Value) -> Option<Section> {
     let items: Vec<Item> = chip_cloud(reply)?
         .get("chips")?
@@ -431,14 +489,24 @@ fn chips(reply: &Value) -> Option<Section> {
                 .get("text")
                 .and_then(text)
                 .filter(|t| !t.trim().is_empty())?;
-            let browse = chip.pointer("/navigationEndpoint/browseEndpoint")?;
-            let open = Target::Browse {
-                id: browse.get("browseId")?.as_str()?.to_string(),
-                kind: PageKind::Other,
-                params: browse
+            let params = |endpoint: &Value| {
+                endpoint
                     .get("params")
                     .and_then(Value::as_str)
-                    .map(str::to_string),
+                    .map(str::to_string)
+            };
+            let open = if let Some(search) = chip.pointer("/navigationEndpoint/searchEndpoint") {
+                Target::Search {
+                    query: search.get("query")?.as_str()?.to_string(),
+                    params: params(search),
+                }
+            } else {
+                let browse = chip.pointer("/navigationEndpoint/browseEndpoint")?;
+                Target::Browse {
+                    id: browse.get("browseId")?.as_str()?.to_string(),
+                    kind: PageKind::Other,
+                    params: params(browse),
+                }
             };
             Some(Item::Card(Card {
                 title,
@@ -448,6 +516,10 @@ fn chips(reply: &Value) -> Option<Section> {
                 open: Some(open),
                 play: None,
                 podcast: None,
+                look: CardLook {
+                    chosen: chip.get("isSelected").and_then(Value::as_bool) == Some(true),
+                    ..CardLook::default()
+                },
             }))
         })
         .collect();
@@ -455,10 +527,9 @@ fn chips(reply: &Value) -> Option<Section> {
         return None;
     }
     Some(Section {
-        title: String::new(),
         items,
-        more: None,
         shape: Shape::Grid,
+        ..Section::default()
     })
 }
 
@@ -478,18 +549,40 @@ fn chip_cloud(node: &Value) -> Option<&Value> {
 
 /// Collects shelves in document order, without looking inside headers
 /// (an album header holds a description "shelf") or inside a shelf.
-fn walk(node: &Value, out: &mut Vec<Section>) {
+///
+/// Search's results come one per `itemSectionRenderer`, with no shelf
+/// around them: those in a row become one list (`results` is where it
+/// is in `out`, while it can still grow).
+fn walk(node: &Value, out: &mut Vec<Section>, results: &mut Option<usize>) {
     match node {
         Value::Object(map) => {
             for (key, value) in map {
                 if SHELVES.contains(&key.as_str()) {
                     out.extend(shelf(key, value));
+                    *results = None;
+                } else if key == "itemSectionRenderer" {
+                    let rows = value.get("contents").and_then(Value::as_array);
+                    let items: Vec<Item> = rows.into_iter().flatten().filter_map(item).collect();
+                    if items.is_empty() {
+                        walk(value, out, results);
+                        continue;
+                    }
+                    match *results {
+                        Some(at) if at + 1 == out.len() => out[at].items.extend(items),
+                        _ => {
+                            out.push(Section {
+                                items,
+                                ..Section::default()
+                            });
+                            *results = Some(out.len() - 1);
+                        }
+                    }
                 } else if !HEADERS.contains(&key.as_str()) {
-                    walk(value, out);
+                    walk(value, out, results);
                 }
             }
         }
-        Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+        Value::Array(items) => items.iter().for_each(|v| walk(v, out, results)),
         _ => {}
     }
 }
@@ -533,10 +626,15 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
         });
 
     let mut items = Vec::new();
+    let mut top = None;
     if key == "musicCardShelfRenderer" {
         // The top search result: one big card, then a few songs.
         if let Some(card) = top_result(shelf) {
             items.push(card);
+            top = Some(Box::new(TopResult {
+                subtitle: shelf.get("subtitle").and_then(text).unwrap_or_default(),
+                buttons: card_buttons(shelf),
+            }));
         }
     }
     let rows = shelf
@@ -549,12 +647,41 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
         "gridRenderer" => Shape::Grid,
         _ => Shape::List,
     };
+    let small_title = shelf
+        .pointer("/header/musicCarouselShelfBasicHeaderRenderer/headerStyle")
+        .and_then(Value::as_str)
+        == Some("MUSIC_CAROUSEL_SHELF_BASIC_HEADER_STYLE_DISPLAY_TWO");
     vec![Section {
         title,
         items,
         more,
         shape,
+        top,
+        small_title,
     }]
+}
+
+/// A top result card's buttons: what each says and plays.
+fn card_buttons(shelf: &Value) -> Vec<CardButton> {
+    let buttons = shelf.get("buttons").and_then(Value::as_array);
+    buttons
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b.get("buttonRenderer"))
+        .filter_map(|b| {
+            Some(CardButton {
+                text: b.get("text").and_then(text)?,
+                icon: b
+                    .pointer("/icon/iconType")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                filled: b.get("style").and_then(Value::as_str) == Some("STYLE_DARK_ON_WHITE"),
+                target: ["command", "navigationEndpoint"]
+                    .into_iter()
+                    .find_map(|k| b.get(k).and_then(Target::from_endpoint)),
+            })
+        })
+        .collect()
 }
 
 /// The rows shelves and grids hold.
@@ -568,7 +695,7 @@ const ITEMS: [&str; 4] = [
 /// One row of a shelf or grid: a song, or a tile. A tile that leads
 /// nowhere is left out: the library's "New playlist" opens a dialog of
 /// YouTube's own, not a page (ytmusicapi skips it too).
-fn item(row: &Value) -> Option<Item> {
+pub(super) fn item(row: &Value) -> Option<Item> {
     match any_item(row)? {
         Item::Card(card) if card.open.is_none() && card.play.is_none() => None,
         item => Some(item),
@@ -586,6 +713,15 @@ fn any_item(row: &Value) -> Option<Item> {
         return two_row_card(two_row).map(Item::Card);
     }
     if let Some(button) = row.get("musicNavigationButtonRenderer") {
+        // An ARGB number: the stripe's colour is its lower three bytes.
+        let stripe = button
+            .pointer("/solid/leftStripeColor")
+            .and_then(Value::as_u64)
+            .map(|argb| (argb & 0x00ff_ffff) as u32);
+        let icon = button
+            .pointer("/iconStyle/icon/iconType")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         return Some(Item::Card(Card {
             title: button.get("buttonText").and_then(text)?,
             subtitle: String::new(),
@@ -594,6 +730,11 @@ fn any_item(row: &Value) -> Option<Item> {
             open: button.get("clickCommand").and_then(Target::from_endpoint),
             play: None,
             podcast: None,
+            look: CardLook {
+                icon,
+                stripe,
+                ..CardLook::default()
+            },
         }));
     }
     if let Some(episode) = row.get("musicMultiRowListItemRenderer") {
@@ -610,6 +751,7 @@ fn any_item(row: &Value) -> Option<Item> {
                 .get("secondTitle")
                 .and_then(text)
                 .filter(|p| !p.trim().is_empty()),
+            look: CardLook::default(),
         }));
     }
     None
@@ -663,6 +805,11 @@ fn two_row_card(row: &Value) -> Option<Card> {
             .and_then(Target::from_endpoint),
         play: row.get("thumbnailOverlay").and_then(play_button),
         podcast: None,
+        look: CardLook {
+            wide: row.get("aspectRatio").and_then(Value::as_str)
+                == Some("MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_RECTANGLE_16_9"),
+            ..CardLook::default()
+        },
     })
 }
 
@@ -690,6 +837,7 @@ fn list_row_card(row: &Value) -> Option<Card> {
             .and_then(Target::from_endpoint),
         play: row.get("overlay").and_then(play_button),
         podcast: None,
+        look: CardLook::default(),
     })
 }
 
@@ -736,6 +884,7 @@ fn top_result(shelf: &Value) -> Option<Item> {
             artist_id: links.artist_id,
             album_id: links.album_id,
             playable: true,
+            more: None,
         }));
     }
     Some(Item::Card(Card {
@@ -746,6 +895,7 @@ fn top_result(shelf: &Value) -> Option<Item> {
         open,
         play: play_button(shelf),
         podcast: None,
+        look: CardLook::default(),
     }))
 }
 
@@ -757,11 +907,48 @@ fn header(key: &str, h: &Value, reply: &Value) -> Header {
         "musicImmersiveHeaderRenderer" => t("monthlyListenerCount"),
         _ => t("subtitle"),
     };
+    // A playlist's maker, in its "facepile": a picture and a name.
+    let face = h.pointer("/facepile/avatarStackViewModel");
+    let face_picture = face
+        .and_then(|f| f.pointer("/avatars/0/avatarViewModel/image/sources/0/url"))
+        .and_then(Value::as_str)
+        .map(|url| Thumb {
+            url: url.to_string(),
+            width: 48,
+        });
+    // Its name is its text, or (several makers) what it says to screen
+    // readers.
+    let face_name = face
+        .and_then(|f| {
+            [
+                "/text/content",
+                "/rendererContext/accessibilityContext/label",
+            ]
+            .into_iter()
+            .find_map(|at| f.pointer(at).and_then(Value::as_str))
+        })
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string);
+    let mut owner = t("straplineTextOne");
+    if owner.is_empty() {
+        owner = face_name.unwrap_or_default();
+    }
     let mut header = Header {
         title: t("title"),
         subtitle,
         detail: t("secondSubtitle"),
-        owner: t("straplineTextOne"),
+        owner,
+        owner_picture: h
+            .get("straplineThumbnail")
+            .and_then(Thumb::best)
+            .or(face_picture),
+        // An album's comes in a shelf of its own; an artist's as text.
+        description: h
+            .pointer("/description/musicDescriptionShelfRenderer/description")
+            .or_else(|| h.get("description"))
+            .and_then(text)
+            .unwrap_or_default(),
         thumbnail: h.get("thumbnail").and_then(Thumb::best),
         round: key == "musicImmersiveHeaderRenderer",
         ..Header::default()
@@ -788,6 +975,10 @@ fn header(key: &str, h: &Value, reply: &Value) -> Header {
             .and_then(Value::as_str)
             .map(str::to_string);
         header.subscribed = button.get("subscribed").and_then(Value::as_bool);
+        header.subscribers = button
+            .get("subscriberCountText")
+            .and_then(text)
+            .unwrap_or_default();
     }
     // Albums and playlists can be saved to the library.
     if matches!(
@@ -890,6 +1081,22 @@ fn queue_panels(reply: &Value) -> Vec<&Value> {
     panels
 }
 
+/// What the songs of a `next` reply play from, as Up next names it under
+/// "Playing from" ("Yellow Mix", a playlist's name): its queue header's
+/// subtitle, else the list's own title.
+pub fn queue_title(reply: &Value) -> Option<String> {
+    find_key(reply, "musicQueueHeaderRenderer")
+        .and_then(|h| h.get("subtitle"))
+        .or_else(|| {
+            queue_panels(reply)
+                .into_iter()
+                .find_map(|panel| panel.get("title"))
+        })
+        .and_then(|t| text(t).or_else(|| t.as_str().map(str::to_string)))
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
 /// Where the next songs of a queue come from (the `next` reply's
 /// continuation, as ytmusicapi's `get_watch_playlist` follows it), when
 /// there are more: a playlist's (`nextContinuationData`) or a radio's
@@ -965,6 +1172,7 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
             artist_id: links.artist_id,
             album_id: links.album_id,
             playable: true,
+            more: None,
         })
     })
     .collect()
@@ -1141,6 +1349,11 @@ mod tests {
                 .iter()
                 .all(|i| matches!(i, Item::Track(_)))
         );
+        // Its description, and its shelves' smaller titles (Top songs is
+        // a list, with a title of the usual size).
+        assert!(header.description.starts_with("Hatsune Miku, officially"));
+        assert!(!page.sections[0].small_title);
+        assert!(page.sections[1..].iter().all(|s| s.small_title));
         // Top songs' "Show all": the artist's whole list of top songs.
         assert_eq!(
             page.sections[0].more,
@@ -1199,8 +1412,157 @@ mod tests {
     }
 
     #[test]
+    fn real_headers_description_and_owner_picture() {
+        let album = page(&fixture("album.json"));
+        let header = album.header.as_ref().unwrap();
+        assert!(
+            header
+                .description
+                .starts_with("17 is the debut studio album")
+        );
+        // A collaborative playlist's maker, with their picture.
+        let playlist = page(&fixture("playlist_collaborative.json"));
+        let header = playlist.header.as_ref().unwrap();
+        assert!(!header.owner.is_empty());
+        assert!(
+            header
+                .owner_picture
+                .as_ref()
+                .is_some_and(|p| p.url.starts_with("https://yt3.ggpht.com/"))
+        );
+        assert_eq!(header.description, "a description");
+    }
+
+    #[test]
+    fn real_explore_buttons_moods_and_chart() {
+        let explore = page(&fixture("explore.json"));
+        let cards: Vec<&Card> = explore
+            .sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter_map(|i| match i {
+                Item::Card(c) => Some(c),
+                Item::Track(_) => None,
+            })
+            .collect();
+        let card = |title: &str| cards.iter().find(|c| c.title == title).unwrap();
+        // The three big buttons, with YouTube's names for their icons.
+        assert_eq!(
+            card("New releases").look.icon.as_deref(),
+            Some("MUSIC_NEW_RELEASE")
+        );
+        assert_eq!(card("Charts").look.icon.as_deref(), Some("TRENDING_UP"));
+        // The moods, with their colours.
+        assert_eq!(card("Chill").look.stripe, Some(0xa4c5ff));
+        assert_eq!(card("Commute").look.stripe, Some(0xffc200));
+        // Square covers are not wide.
+        assert!(!card("Call Me").look.wide);
+        // Trending: places and views.
+        let chart: Vec<&Track> = explore
+            .sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter_map(|i| match i {
+                Item::Track(t) if t.rank().is_some() => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(chart[0].rank(), Some("1"));
+        assert_eq!(chart[0].count(), Some("28M views"));
+        assert_eq!(chart[0].artists, "Daddy Yankee");
+    }
+
+    #[test]
+    fn real_search_top_result() {
+        let search = page(&fixture("search.json"));
+        // YouTube's own filter buttons first, each a search of its own.
+        let chips: Vec<&Card> = search.sections[0]
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Card(c) => Some(c),
+                Item::Track(_) => None,
+            })
+            .collect();
+        assert_eq!(chips.len(), 9);
+        assert_eq!(chips[0].title, "Artists");
+        assert_eq!(chips[1].title, "Community playlists");
+        assert!(chips.iter().all(|c| !c.look.chosen));
+        assert_eq!(
+            chips[0].open,
+            Some(Target::Search {
+                query: "coldplay".into(),
+                params: Some("EgWKAQIgAWoSEAUQChAJEAMQBBAQEA4QFRAR".into()),
+            })
+        );
+        // Then the top result card, then one result per section, in
+        // YouTube's order, with no headings.
+        let top = &search.sections[1];
+        let card = top.top.as_ref().expect("the top result card");
+        assert_eq!(card.subtitle, "Artist \u{2022} 332M monthly audience");
+        let Item::Card(artist) = &top.items[0] else {
+            panic!("the artist's card")
+        };
+        assert_eq!(artist.title, "Coldplay");
+        assert!(artist.round);
+        assert!(matches!(
+            &artist.open,
+            Some(Target::Browse {
+                kind: PageKind::Artist,
+                ..
+            })
+        ));
+        // Its three songs come after it, for the card's right half.
+        let songs = top.tracks();
+        assert_eq!(songs.len(), 3);
+        assert_eq!(songs[0].title, "Always in My Head");
+        assert_eq!(songs[0].duration_seconds, Some(217));
+        // Its own buttons: Shuffle (the main one) and Mix.
+        let words: Vec<(&str, bool)> = card
+            .buttons
+            .iter()
+            .map(|b| (b.text.as_str(), b.filled))
+            .collect();
+        assert_eq!(words, [("Shuffle", true), ("Mix", false)]);
+        assert_eq!(card.buttons[0].icon.as_deref(), Some("MUSIC_SHUFFLE"));
+        assert!(card.buttons.iter().all(|b| matches!(
+            &b.target,
+            Some(Target::Watch {
+                playlist_id: Some(_),
+                ..
+            })
+        )));
+        // Then every other result in one list, in YouTube's order:
+        // playlists, then singles (albums), then a playlist.
+        assert_eq!(search.sections.len(), 3);
+        let results = &search.sections[2];
+        assert!(results.top.is_none() && results.title.is_empty());
+        let names: Vec<&str> = results
+            .items
+            .iter()
+            .map(|item| match item {
+                Item::Card(card) => card.title.as_str(),
+                Item::Track(track) => track.title.as_str(),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Top 20 - Le migliori canzoni dei Coldplay",
+                "Coldplay - Greatest Hits (Full Album, Super Collection)",
+                "Fix You",
+                "Violet Hill",
+                "Everyday Life",
+                "Coldplay - A Head Full Of Dreams",
+            ]
+        );
+    }
+
+    #[test]
     fn up_next_list() {
         let reply = fixture("next_synthetic.json");
+        // What they play from, as Up next names it.
+        assert_eq!(queue_title(&reply).as_deref(), Some("Pop Mix"));
         let tracks = up_next(&reply);
         let ids: Vec<&str> = tracks.iter().map(|t| t.video_id.as_str()).collect();
         // The video counterpart and the unplayable row are left out.
@@ -1302,6 +1664,7 @@ mod tests {
             Some("UCJwGWV914kBlV4dKRn7AEFA")
         );
         assert_eq!(artist.subscribed, Some(false));
+        assert_eq!(artist.subscribers, "4.41M");
         assert_eq!(artist.library_id, None);
         assert_eq!(artist.saved, None);
         assert!(!artist.editable);
@@ -1448,7 +1811,7 @@ mod tests {
             })
         );
 
-        // Search's filter buttons search instead: no section for them.
+        // Search's filter buttons search instead.
         let search = serde_json::json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {
             "header": {"chipCloudRenderer": {"chips": [
                 {"chipCloudChipRenderer": {
@@ -1461,7 +1824,18 @@ mod tests {
                 "contents": [{"musicResponsiveListItemRenderer": {"playlistItemData": {"videoId": "abcdefghijk"}}}]
             }}]
         }}}}]}}});
-        assert_eq!(titles(&page(&search)), ["Songs"]);
+        let search = page(&search);
+        assert_eq!(titles(&search), ["", "Songs"]);
+        let Item::Card(songs) = &search.sections[0].items[0] else {
+            panic!("a chip")
+        };
+        assert_eq!(
+            songs.open,
+            Some(Target::Search {
+                query: "daft punk".into(),
+                params: Some("EgWKAQIIAWoMEA4QChADEAQQCRAF".into())
+            })
+        );
     }
 
     #[test]

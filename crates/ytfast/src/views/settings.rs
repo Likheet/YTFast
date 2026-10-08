@@ -1,8 +1,6 @@
 //! YTFast's settings: a few switches, the account, and where problems are
 //! noted.
 
-use egui::{Color32, CornerRadius, Sense, pos2, vec2};
-
 use crate::app::{Action, App, Auth, Setting};
 use crate::theme::{self, PALETTE};
 
@@ -94,25 +92,8 @@ fn switch(app: &App, ui: &mut egui::Ui, title: &str, about: &str, on: bool, whic
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (rect, response) = ui.allocate_exact_size(vec2(44.0, 24.0), Sense::click());
-            // A name and an on/off state, for screen readers.
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, title)
-            });
-            let t = ui.ctx().animate_bool_with_time(response.id, on, 0.15);
-            let fill = if on {
-                PALETTE.switch
-            } else {
-                PALETTE.surface_hover
-            };
-            ui.painter().rect_filled(rect, CornerRadius::same(12), fill);
-            let x = rect.left() + 12.0 + t * (rect.width() - 24.0);
-            ui.painter().circle_filled(
-                pos2(x, rect.center().y),
-                9.0,
-                if on { Color32::BLACK } else { PALETTE.text },
-            );
-            if response.clicked() {
+            // YouTube Music's switch, named for screen readers.
+            if theme::toggle(ui, on, title).clicked() {
                 app.act(Action::Toggle(which));
             }
         });

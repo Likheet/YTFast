@@ -16,7 +16,9 @@ Replies from YouTube Music's internal API, used to test the readers in
 | `artist.json` | Real artist page (May 2026). Trimmed from ytmusicapi's `tests/data/2026_05_get_artist1.json`. |
 | `home_synthetic.json` | Written by hand in the Home layout (carousels of list rows and of cards). Not a real reply. |
 | `search_synthetic.json` | Written by hand in the search layout (top result card, song and album shelves). Not a real reply. |
-| `next_synthetic.json` | Written by hand in the Up next layout ytmusicapi reads (`playlistPanelRenderer`, with a song/video pair and an unplayable row). Not a real reply. |
+| `search.json` | Real search reply (October 2026), signed out, for "coldplay": the top result card (an artist, its three songs and its Shuffle and Mix buttons), then one result per `itemSectionRenderer`. Trimmed to the card and the first six results, with tracking data dropped and at most two sizes of each picture. |
+| `search_suggestions.json` | Real `music/get_search_suggestions` reply (October 2026), signed out, for "coldp": six suggestions, then an artist and a song with pictures. Trimmed to those two rows, with tracking data and the song's menu dropped. |
+| `next_synthetic.json` | Written by hand in the Up next layout ytmusicapi reads (`playlistPanelRenderer`, with a song/video pair and an unplayable row), with a queue header ("Playing from") in the shape the live page shows. Not a real reply. |
 
 Trimming kept the structure the readers walk and dropped tracking blobs,
 long descriptions and all but the first few rows or cards of each list.

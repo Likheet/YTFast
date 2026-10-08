@@ -56,19 +56,27 @@ crates/ytfast/        the app: an egui window on fastframe
   src/audio_thread.rs the player, on a thread of its own
   src/queue.rs        what plays now and next
   src/images.rs       album covers, loaded once and kept for a while
-  src/colors.rs       colours taken from a cover (backdrop, accent)
+  src/colors.rs       a cover shrunk to a few pixels (the blurred cover
+                      behind an album's page)
   src/lyrics.rs       lyrics as the player page shows them
   src/demo.rs         made-up music for `--demo`
   src/theme.rs        colours, fonts, icons, drawing helpers
   src/views/          what the window draws: backdrop, sidebar, top bar,
                       page, player bar, player page (now_playing), Up
                       next, settings, dialogs, sign-in
-  assets/             icons (Lucide, ISC) and the app's own mark
+  assets/             icons (Google's Material Symbols, Apache 2.0), the
+                      Roboto font (OFL) and the app's own mark
   build.rs            the icon and name in the Windows program
 crates/ytfast-check/  step 0: the guided check program
 packaging/            app icon files, the Mac Info.plist and its
                       build-and-install script, the Windows resource file
 docs/                 plan, how to run the app and the check
+docs/look/            the look: how YouTube Music is measured (README),
+                      its sizes (reference.md), and every difference
+                      left, as a checklist (gaps.md)
+tools/look/           measuring YouTube Music in a browser (measure.js),
+                      and driving the demo on Windows by button names
+                      (demo.ps1)
 ```
 
 The app is modelled on [Spotifast](https://github.com/crmne/spotifast) and
@@ -135,18 +143,21 @@ Paolino), as `audio.rs` does.
   player page has the cover on the left and the tabs Up next, Lyrics and
   Related on the right. The owner wants a one-to-one copy of YouTube
   Music's look: when changing a screen, open the real one and measure.
-- An album's or playlist's page is washed at the top with its cover's
-  colour, and the player page lies over the playing song's cover, blurred
-  (`colors.rs`, `views/backdrop.rs`), with lyrics that follow the song in
-  the style of Better Lyrics' Even Better Lyrics Plus theme (recreated,
-  not copied).
+- An album's or playlist's page has its cover, blurred, behind its top,
+  and an artist's page its picture, both under the top bar and the menu
+  (`views/backdrop.rs`, painted in a place `backdrop::paint` keeps under
+  them). The player page is plain, as YouTube Music's, with lyrics that
+  follow the song in the style of Better Lyrics' Even Better Lyrics Plus
+  theme (recreated, not copied).
 - Lyrics: YouTube Music's timed lyrics, else LRCLIB's (lrclib.net, found
   by title, artist, album and length), else YouTube Music's plain ones.
   Asked for only when the player page shows them.
 - Changes to the account (`backend::Edit`) show at once and go to YouTube
   one at a time, in order; a refusal from YouTube (`Event::EditFailed`)
   undoes them (back to what was shown before) and says so.
-- The interface font is Inter. The computer's fonts for other scripts
+- The interface font is Roboto, YouTube Music's own (Roboto Bold stands
+  in for YouTube Sans, which may not be shipped), with Inter behind it for
+  any letter Roboto lacks. The computer's fonts for other scripts
   (Chinese, Japanese, Korean, Arabic, the Indian scripts...; about 60 MB
   on Windows) are read only once some text on screen needs one
   (`theme::ScriptFonts`).
@@ -436,21 +447,47 @@ owner's account (the new decoding with real songs and real dropped
 connections, greyed-out rows, batches of a real library, the artist
 buttons, an episode), Shift+F10 (posted keys carry no Shift), and the Mac.
 
-Where the look still differs from YouTube Music's: the font is Inter, not
-Roboto and YouTube Sans; the icons are Lucide's; there are no like or play
-counts, no descriptions, and no Comments tab; back and forward arrows
-stand before the search box (a browser has its own); History and Settings
-are in the account's menu; the account button shows the name's first
-letter, not the account's photo; and what only a signed-in page shows was
-not seen while measuring. What it does differently: Shuffle mixes the
-songs coming up once (`Action::ShuffleQueue`), and is greyed out with
-fewer than two to mix, where YouTube Music's Shuffle is a mode that stays
-on; disliking the playing song does not skip it; Up next hides the songs
-already played, where YouTube Music lists them above the current one;
-clicking a song in search results or History queues the rest of that
-list, where YouTube Music plays the song and then its radio; and Edit
-playlist only renames, with new playlists always private (no description
-and no privacy choice).
+The next round (version 0.5.0, 8 October 2026) copied YouTube Music's
+look screen by screen, from measurements of music.youtube.com (signed
+out, 1280 wide, in a browser) and its stylesheet. The method, the sizes
+and the checklist of differences (about 250; 200 done, the rest listed
+there) are in `docs/look/`. Roboto and Material Symbols replaced Inter and
+Lucide. Built: the page grid and how many cards fit, by window width; the
+top bar, the menu and its strip of icons; every menu, and Save to
+playlist as a dialog; the player bar; Home's chips and shelves, Explore's
+buttons and moods; album and playlist pages (the blurred cover, two
+columns by YouTube's formula, plays, like, dislike and ⋮ under the
+pointer, greyed-out songs); artist pages (the picture under the bar, the
+description, Subscribe with its count, Top songs in columns with Show
+all); search (the top result card, one mixed list, YouTube's own filter
+buttons, suggestions with pictures, the arrow keys and Enter in them);
+the player page (plain, sliding up, YouTube's spacing and tabs, Up next
+with what it plays from, every song, and the Autoplay switch); Shuffle as
+a mode that stays on; toasts. Read anew from YouTube: descriptions, owner
+pictures, plays, subscriber counts, search's filter buttons, suggestions
+with pictures, and the queue's name. Tested on the owner's Windows laptop:
+the unit tests (184, among them reading a real search and suggestions
+reply, the filter buttons, and shuffle turned off), and every changed
+screen in demo mode beside the real page at 1280 by 820 (some at 1100 and
+1440): 0% processor time when idle, about 120 MB private memory. Not yet
+tested: anything with the owner's account (real pages, covers and
+pictures, and the screens only a signed-in page has, never measured:
+Library, Liked Music, the account's own playlists, the account menu),
+what shows only under the pointer (like, dislike and ⋮ on rows), and the
+Mac.
+
+Where the look still differs from YouTube Music's (the rest is in
+`docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
+there is no Comments tab; back and forward arrows sit beside the account
+(a browser has its own); History and Settings are in the account's menu;
+the account button shows the name's first letter, not the account's
+photo; the playing song's bars do not move (moving ones would keep the
+window drawing); and what only a signed-in page shows was not measured.
+What it does differently: disliking the playing song does not skip it;
+clicking a song in History queues the rest of that list; Edit playlist
+only renames, with new playlists always private (no description and no
+privacy choice); Up next is reordered with Move up and Move down, not by
+dragging, and shows the Autoplay switch for radios too.
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp

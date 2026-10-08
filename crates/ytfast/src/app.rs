@@ -34,6 +34,9 @@ pub struct Settings {
     pub even_loudness: bool,
     /// The menu on the left is closed to its icons.
     pub mini_guide: bool,
+    /// Shuffle is on: every queue plays its songs to come in a random
+    /// order, as YouTube Music's shuffle.
+    pub shuffle: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +49,7 @@ impl Default for Settings {
             autoplay: true,
             even_loudness: true,
             mini_guide: false,
+            shuffle: false,
         }
     }
 }
@@ -57,6 +61,9 @@ pub enum Auth {
     Failed { browser: Browser, message: String },
 }
 
+// A page's header is a few hundred bytes, and at most 24 pages are kept:
+// boxing it would save nothing worth the indirection.
+#[allow(clippy::large_enum_variant)]
 pub enum Loadable {
     Loading,
     Ready(Page),
@@ -150,6 +157,16 @@ pub enum Dialog {
     Delete {
         playlist_id: String,
         title: String,
+    },
+    /// "Save to playlist": the account's playlists, to add `video_id` to
+    /// one, or a new playlist.
+    SaveToPlaylist {
+        video_id: String,
+    },
+    /// An album's or playlist's whole description.
+    Description {
+        title: String,
+        text: String,
     },
 }
 
@@ -254,7 +271,8 @@ pub enum Action {
     NowPlayingTab(NpTab),
     /// Like, dislike, or neither.
     Rate(String, LikeState),
-    /// Put the songs after the current one in a random order.
+    /// Shuffle on or off (a mode): on, the songs after the current one in
+    /// a random order; off, back in the queue's own.
     ShuffleQueue,
     /// Repeat off, the queue, this song.
     CycleRepeat,
@@ -297,8 +315,6 @@ pub struct App {
     warmed: RefCell<std::collections::HashSet<String>>,
     /// The song row under the pointer (see [`App::resting_on`]).
     pointed: RefCell<Option<Pointed>>,
-    /// The playing song's cover, blurred, behind the player page.
-    pub backdrop: RefCell<Backdrop>,
     /// The player page is open, and on which tab.
     pub now_playing: bool,
     pub np_tab: NpTab,
@@ -312,7 +328,7 @@ pub struct App {
     pub subscribed: HashMap<String, bool>,
     pub dialog: RefCell<Option<Dialog>>,
     /// Search suggestions, for the text they were asked for.
-    pub suggestions: (String, Vec<String>),
+    pub suggestions: (String, ytfast_core::read::Suggestions),
     /// The fonts for other scripts, added once some words need them.
     script_fonts: crate::theme::ScriptFonts,
     /// The volume before muting, which unmuting goes back to.
@@ -339,6 +355,19 @@ pub struct App {
     /// The page shown was opened anew (not by Back or Forward): it starts
     /// at its top.
     pub fresh_page: std::cell::Cell<bool>,
+    /// The page is scrolled down from its top (as the page saw it last
+    /// frame): the top bar then turns solid, as YouTube Music's does.
+    pub page_scrolled: std::cell::Cell<bool>,
+    /// How far the page is scrolled (as the page saw it last frame): an
+    /// album's background moves up with its songs.
+    pub page_offset: std::cell::Cell<f32>,
+    /// Where this frame's album background goes: kept under the bars and
+    /// the menu (`backdrop::paint`).
+    pub backdrop_slot: std::cell::Cell<Option<egui::layers::ShapeIdx>>,
+    /// The cover behind an album's or playlist's page: its address, its
+    /// middle band shrunk to a few pixels (drawn stretched, a blur), and
+    /// when it was made (it fades in).
+    pub page_cover: RefCell<Option<(String, egui::TextureHandle, f64)>>,
     /// "/" just opened the search box: its character, arriving in the next
     /// frame, is not typed there.
     drop_slash: bool,
@@ -351,15 +380,6 @@ struct Pointed {
     since: f64,
     /// The frame it was last seen under the pointer in.
     frame: u64,
-}
-
-/// The backdrop's textures: the current song's, and the one fading out.
-#[derive(Default)]
-pub struct Backdrop {
-    pub current: Option<(String, egui::TextureHandle)>,
-    pub previous: Option<(String, egui::TextureHandle)>,
-    /// When the current one came (egui's clock), for the fade.
-    pub since: f64,
 }
 
 fn default_browser() -> Browser {
@@ -452,7 +472,6 @@ impl App {
             actions: RefCell::new(Vec::new()),
             warmed: RefCell::new(std::collections::HashSet::new()),
             pointed: RefCell::new(None),
-            backdrop: RefCell::new(Backdrop::default()),
             now_playing: false,
             np_tab: NpTab::UpNext,
             lyrics: HashMap::new(),
@@ -461,7 +480,7 @@ impl App {
             saved: HashMap::new(),
             subscribed: HashMap::new(),
             dialog: RefCell::new(None),
-            suggestions: (String::new(), Vec::new()),
+            suggestions: (String::new(), Default::default()),
             script_fonts,
             loud_volume,
             edits_in_flight: HashMap::new(),
@@ -472,6 +491,10 @@ impl App {
             suggesting: String::new(),
             seeking: None,
             fresh_page: std::cell::Cell::new(false),
+            page_scrolled: std::cell::Cell::new(false),
+            page_offset: std::cell::Cell::new(0.0),
+            backdrop_slot: std::cell::Cell::new(None),
+            page_cover: RefCell::new(None),
             drop_slash: false,
         }
     }
@@ -519,6 +542,15 @@ impl App {
     /// those naming the account are kept. If none does (a channel named
     /// unlike the account), all are.
     pub fn own_playlists(&self) -> Vec<(String, String)> {
+        self.own_playlist_cards()
+            .into_iter()
+            .map(|(id, card)| (id, card.title))
+            .collect()
+    }
+
+    /// The same playlists with their cards (cover, the line under the
+    /// name), for "Save to playlist".
+    pub fn own_playlist_cards(&self) -> Vec<(String, ytfast_core::read::Card)> {
         let Some(Loadable::Ready(page)) = self.pages.get(&Route::Library) else {
             return Vec::new();
         };
@@ -551,7 +583,7 @@ impl App {
             .into_iter()
             .filter_map(|card| match &card.open {
                 Some(Target::Browse { id, .. }) => {
-                    Some((id.strip_prefix("VL")?.to_string(), card.title.clone()))
+                    Some((id.strip_prefix("VL")?.to_string(), card.clone()))
                 }
                 _ => None,
             })
@@ -636,39 +668,6 @@ impl App {
         }
     }
 
-    /// Makes the player page's backdrop from the playing song's cover.
-    fn update_colors(&mut self, ctx: &egui::Context) {
-        let cover = self
-            .playback
-            .entry
-            .as_ref()
-            .and_then(|e| e.track.thumbnail.as_ref())
-            .map(|t| t.sized(120));
-        let Some(cover) = cover else {
-            // A song with no cover: the last song's colours fade out.
-            let backdrop = self.backdrop.get_mut();
-            if backdrop.current.is_some() && self.playback.entry.is_some() {
-                backdrop.previous = backdrop.current.take();
-                backdrop.since = ctx.input(|i| i.time);
-            }
-            return;
-        };
-        let Some(colors) = self.images.get_mut().summary(&cover, &self.backend) else {
-            return;
-        };
-        let backdrop = self.backdrop.get_mut();
-        if backdrop.current.as_ref().map(|c| &c.0) != Some(&cover) {
-            let texture = ctx.load_texture(
-                format!("backdrop {cover}"),
-                colors.tiny.clone(),
-                egui::TextureOptions::LINEAR,
-            );
-            backdrop.previous = backdrop.current.take();
-            backdrop.current = Some((cover, texture));
-            backdrop.since = ctx.input(|i| i.time);
-        }
-    }
-
     /// How long, in seconds, the pointer has rested on the song row
     /// `video_id` (drawn this frame under the pointer): since the pointer
     /// last moved, and since the row came under it. A list scrolled with
@@ -721,11 +720,34 @@ impl App {
         self.images.borrow_mut().get(url, &self.backend)
     }
 
-    /// A cover's colour (all of it averaged), when it has arrived: what an
-    /// album's or playlist's page is washed with at the top.
-    pub fn cover_color(&self, url: &str) -> Option<egui::Color32> {
+    /// The cover `url` behind an album's or playlist's page, once it has
+    /// arrived: its middle band (the rows a wide window shows of a square
+    /// cover, a third to two thirds down), shrunk to a few pixels, and when
+    /// it was first shown.
+    pub fn page_cover(&self, ctx: &egui::Context, url: &str) -> Option<(egui::TextureId, f64)> {
+        let mut cover = self.page_cover.borrow_mut();
+        if let Some((made_for, texture, since)) = cover.as_ref()
+            && made_for == url
+        {
+            return Some((texture.id(), *since));
+        }
         let summary = self.images.borrow_mut().summary(url, &self.backend)?;
-        Some(crate::colors::shrink(&summary.tiny, 1).pixels[0])
+        let tiny = &summary.tiny;
+        let [width, height] = tiny.size;
+        let band: Vec<egui::Color32> = (height / 3..height - height / 3)
+            .flat_map(|row| tiny.pixels[row * width..(row + 1) * width].iter().copied())
+            .collect();
+        let rows = band.len() / width.max(1);
+        let image = egui::ColorImage::new([width, rows], band);
+        let texture = ctx.load_texture(
+            format!("page cover {url}"),
+            image,
+            egui::TextureOptions::LINEAR,
+        );
+        let since = ctx.input(|i| i.time);
+        let id = texture.id();
+        *cover = Some((url.to_string(), texture, since));
+        Some((id, since))
     }
 
     fn notify(&mut self, text: impl Into<String>) {
@@ -1112,14 +1134,20 @@ impl App {
         video_id: String,
         playlist_id: Option<String>,
         queue: u64,
-        result: Result<Vec<Track>, String>,
+        result: Result<(Vec<Track>, Option<String>), String>,
     ) {
         // Asked for a queue that has been replaced since.
         if queue != self.queue.generation() {
             return;
         }
         let tracks = match result {
-            Ok(tracks) => tracks,
+            Ok((tracks, title)) => {
+                // A radio is named by its first answer ("Yellow Mix").
+                if self.queue.title.is_none() {
+                    self.queue.title = title;
+                }
+                tracks
+            }
             Err(e) => {
                 log::warn!("Up next for {video_id} failed: {e}");
                 // Asked again the next time the queue runs out.
@@ -1209,9 +1237,43 @@ impl App {
         let tracks: Vec<Track> = tracks.into_iter().filter(|t| t.playable).collect();
         // What the user chose last plays: not a playlist still loading.
         self.wanted_playlist = None;
+        let title = self.list_title(source.as_deref());
         if let Some(entry) = self.queue.replace(tracks, start, source).cloned() {
+            self.queue.title = title;
+            // Shuffle stays on from one queue to the next.
+            if self.settings.shuffle {
+                self.queue.shuffle_on();
+            }
             self.playback.asked_more_for = None;
             self.start(entry);
+        }
+    }
+
+    /// What a queue started now plays from, for Up next's "Playing from":
+    /// the playlist `source`'s page when one is kept, else the open page's
+    /// own title (an album's), unless the player page is in front of it.
+    fn list_title(&self, source: Option<&str>) -> Option<String> {
+        let title = |page: &Page| {
+            page.header
+                .as_ref()
+                .map(|h| h.title.clone())
+                .filter(|t| !t.is_empty())
+        };
+        if let Some(source) = source {
+            return self.pages.iter().find_map(|(route, page)| match page {
+                Loadable::Ready(page)
+                    if route.playlist().as_deref() == Some(source)
+                        || page.header.as_ref().and_then(|h| h.library_id.as_deref())
+                            == Some(source) =>
+                {
+                    title(page)
+                }
+                _ => None,
+            });
+        }
+        match self.pages.get(&self.route) {
+            Some(Loadable::Ready(page)) if !self.now_playing => title(page),
+            _ => None,
         }
     }
 
@@ -1489,6 +1551,10 @@ impl App {
         match target {
             Target::Browse { id, params, .. } => self.navigate(Route::browse(id, params)),
             watch @ Target::Watch { .. } => self.play(watch, track),
+            Target::Search { query, params } => self.navigate(match params {
+                Some(params) => Route::SearchOnly(query, params),
+                None => Route::Search(query),
+            }),
         }
     }
 
@@ -1520,7 +1586,7 @@ impl App {
                 self.ask_for_playlist(playlist_id, QueueMode::Play);
             }
             Target::Watch { .. } => {}
-            Target::Browse { id, params, .. } => self.navigate(Route::browse(id, params)),
+            other @ (Target::Browse { .. } | Target::Search { .. }) => self.open(other, None),
         }
     }
 
@@ -1758,9 +1824,13 @@ impl App {
             }
             Action::OpenFullDiskAccess => open_full_disk_access(),
             Action::ShuffleQueue => {
-                self.queue.shuffle_upcoming();
+                self.settings.shuffle = !self.settings.shuffle;
+                if self.settings.shuffle {
+                    self.queue.shuffle_on();
+                } else {
+                    self.queue.shuffle_off();
+                }
                 self.prepare_next();
-                self.notify("Shuffled the songs coming up");
             }
             Action::CycleRepeat => {
                 self.settings.repeat = match self.settings.repeat {
@@ -2008,7 +2078,8 @@ fn words(event: &Event) -> Vec<&str> {
         Event::Page(_, _, Ok(found)) | Event::Related(_, Ok(found)) => page(found, &mut words),
         Event::MoreRows { tracks, .. }
         | Event::UpNext {
-            result: Ok(tracks), ..
+            result: Ok((tracks, _)),
+            ..
         }
         | Event::PlaylistQueue {
             result: Ok(tracks), ..
@@ -2020,7 +2091,15 @@ fn words(event: &Event) -> Vec<&str> {
         Event::Lyrics(_, Some(lyrics)) => {
             words.extend(lyrics.lines.iter().map(|line| line.text.as_str()));
         }
-        Event::Suggestions(_, found) => words.extend(found.iter().map(String::as_str)),
+        Event::Suggestions(_, found) => {
+            words.extend(found.words.iter().map(String::as_str));
+            for item in &found.items {
+                match item {
+                    Item::Track(t) => track(t, &mut words),
+                    Item::Card(c) => words.extend([c.title.as_str(), c.subtitle.as_str()]),
+                }
+            }
+        }
         _ => {}
     }
     words
@@ -2049,8 +2128,8 @@ const MAX_PAGES: usize = 24;
 /// every song has cannot run through the queue.
 const MAX_SKIPS: usize = 5;
 
-/// How long a notice shows.
-const NOTICE_TIME: Duration = Duration::from_secs(4);
+/// How long a notice shows: 3 s, as YouTube Music's, and 0.3 s to go.
+const NOTICE_TIME: Duration = Duration::from_millis(3300);
 
 /// The widest texture egui makes (see `raw_input_hook`). The covers are
 /// far smaller.
@@ -2097,7 +2176,6 @@ impl eframe::App for App {
         self.script_fonts.check();
         self.images.get_mut().begin_frame();
         self.shortcuts(&ctx);
-        self.update_colors(&ctx);
         self.want_song_extras();
 
         views::show(self, ui);
@@ -2469,10 +2547,14 @@ mod tests {
         let mut h = Harness::new();
         h.act(Action::Suggest("fad".into()));
         h.act(Action::Suggest("faded".into()));
-        h.answer(Event::Suggestions("faded".into(), vec!["faded".into()]));
-        h.answer(Event::Suggestions("fad".into(), vec!["fade".into()]));
+        let words = |w: &str| ytfast_core::read::Suggestions {
+            words: vec![w.into()],
+            items: Vec::new(),
+        };
+        h.answer(Event::Suggestions("faded".into(), words("faded")));
+        h.answer(Event::Suggestions("fad".into(), words("fade")));
         assert_eq!(h.app.suggestions.0, "faded");
-        assert_eq!(h.app.suggestions.1, ["faded"]);
+        assert_eq!(h.app.suggestions.1.words, ["faded"]);
     }
 
     #[test]
