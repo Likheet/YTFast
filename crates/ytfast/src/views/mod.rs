@@ -55,24 +55,40 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     dialogs::show(app, ui);
 }
 
-/// "Add to playlist": the account's own playlists, from the Library.
+/// "Add to playlist": a new playlist, then the account's own playlists,
+/// from the Library (a list that scrolls when long).
 pub fn playlists_menu(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::Track) {
-    let own: Vec<(String, String)> = app.own_playlists();
-    if own.is_empty() {
-        return;
-    }
+    use crate::app::{Action, Dialog};
     ui.menu_button("Add to playlist", |ui| {
         theme::menu(ui);
-        for (id, title) in own {
-            if ui.button(&title).clicked() {
-                app.act(crate::app::Action::AddToPlaylist {
-                    playlist_id: id,
-                    title,
-                    video_id: track.video_id.clone(),
-                });
-                ui.close();
-            }
+        if ui.button("New playlist").clicked() {
+            app.act(Action::OpenDialog(Dialog::NewPlaylist {
+                name: String::new(),
+                song: Some(track.video_id.clone()),
+            }));
+            ui.close();
         }
+        let own = app.own_playlists();
+        if own.is_empty() {
+            return;
+        }
+        ui.separator();
+        // About a dozen rows, then it scrolls.
+        egui::ScrollArea::vertical()
+            .id_salt("add-to-playlist")
+            .max_height(480.0)
+            .show(ui, |ui| {
+                for (id, title) in own {
+                    if ui.button(&title).clicked() {
+                        app.act(Action::AddToPlaylist {
+                            playlist_id: id,
+                            title,
+                            video_id: track.video_id.clone(),
+                        });
+                        ui.close();
+                    }
+                }
+            });
     });
 }
 

@@ -11,9 +11,15 @@
 //!   the page model the app draws.
 //! - [`lyrics`]: lyrics, and LRCLIB for songs YouTube has none for.
 //! - [`playreport`]: telling YouTube what was played (History, mixes).
-//! - [`helpers`] and [`ytdlp`]: yt-dlp, which finds each song's audio.
-//! - [`audio`]: downloading and playing that audio.
-//! - [`prepare`]: getting a song ready to play (find, details, download).
+//! - [`direct`] and [`solver`]: finding a song's audio the website's way
+//!   (the fast way), with yt-dlp's challenge solver kept running in Deno.
+//! - [`helpers`] and [`ytdlp`]: yt-dlp and Deno, downloaded on first use.
+//!   yt-dlp reads the browser's sign-in, and finds a song's audio when
+//!   the fast way cannot.
+//! - [`prepare`]: getting a song ready to play: finding its audio (the
+//!   fast way, else yt-dlp), then starting its download.
+//! - [`stream`]: downloading a song while it plays.
+//! - [`audio`]: decoding and playing it.
 //! - [`net`]: the HTTP clients.
 //! - [`redact`]: keeping secrets out of messages.
 

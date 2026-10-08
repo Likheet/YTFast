@@ -25,8 +25,9 @@ pub fn list(app: &App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.add_space(16.0);
-            for (index, entry) in entries.iter().enumerate().skip(current) {
-                let playing = index == current;
+            let upcoming = &entries[current.min(entries.len())..];
+            widgets::rows(ui, Row::QUEUE, upcoming.len(), |ui, index| {
+                let entry = &upcoming[index];
                 let id = entry.id;
                 widgets::track_row_in(
                     app,
@@ -34,11 +35,11 @@ pub fn list(app: &App, ui: &mut egui::Ui) {
                     Row::QUEUE,
                     &entry.track,
                     None,
-                    playing,
-                    Some(id),
+                    index == 0,
+                    widgets::Place::Queue(id),
                     || Action::JumpTo(id),
                 );
-            }
+            });
             ui.add_space(16.0);
             if app.queue.remaining() == 0 && app.settings.autoplay {
                 theme::label(

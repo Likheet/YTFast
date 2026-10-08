@@ -28,6 +28,14 @@ cargo build --release --locked -p ytfast -p ytfast-check   # what CI builds
 - Tests sit beside the code, in a `mod tests` at the foot of each file.
   `crates/ytfast-core/tests/` holds only the saved replies and the test
   tone; there are no separate test programs.
+- The app's own rules are tested in `app.rs` without its threads:
+  `App::with` takes `Backend::for_tests()` and `Audio::for_tests()`, whose
+  receivers show what the app asked for, and `Harness::answer` hands it an
+  `Event` as the next frame would. Add a test there for a new rule about
+  stale answers, the queue or the account.
+- Two checkouts (git worktrees) must not share one `CARGO_TARGET_DIR`:
+  cargo names a workspace's crates the same in each, so one checkout's
+  crates pass as fresh in the other's build.
 - The compiler is pinned (`rust-toolchain.toml`, 1.98.0). CI names the same
   version in `RUST_TOOLCHAIN` (`.github/workflows/ci.yml`): change both.
 - CI builds with `--locked`, so a dependency change must come with its
@@ -69,6 +77,17 @@ nothing then), so whatever keeps the music going belongs there, not in
 - **Give every new button a name** (`response.widget_info`). Screen
   readers need it, and it is how the demo is driven on the owner's laptop
   (see AGENTS.md, "Where things can be tested").
+- **Long lists draw only the rows on screen** (`widgets::rows`). Each row
+  must add exactly one widget of its own, as `track_row_in` does: the rows
+  not drawn are counted as one each, which keeps every row's ID (its open
+  menu, its keyboard focus) the same wherever the list is scrolled.
+- **A song's menu knows where it was opened** (`widgets::Place`): only a
+  row on a playlist's own page offers "Remove from playlist", only Up next
+  edits the queue. Greyed-out songs (`Track::playable` false) stay on
+  their page but are left out of whatever plays.
+- **Every page loading is numbered** (`Request::Page { load }`). An
+  answer or `Event::MoreRows` for an older loading is dropped, and the
+  backend stops following an older loading's batches.
 - **A stale sign-in is mended in one place.** `Session::send` reads the
   browser's sign-in again and repeats the request; `Preparer::prepare`
   does the same when yt-dlp refuses its cookies. Do not add retries or

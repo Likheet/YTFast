@@ -64,15 +64,30 @@ impl PlayReport {
 
     /// The "listened from `start` to `end`" report.
     pub fn listened(&self, start: f64, end: f64) -> Option<String> {
+        self.listened_to(&[(start, end)])
+    }
+
+    /// The "listened to these stretches" report, each from and to, in
+    /// order: after a jump in the song there are several, which YouTube's
+    /// player sends as lists.
+    pub fn listened_to(&self, stretches: &[(f64, f64)]) -> Option<String> {
+        let last = stretches.last()?.1;
+        let list = |pick: fn(&(f64, f64)) -> f64| {
+            stretches
+                .iter()
+                .map(|s| seconds(pick(s)))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         with_params(
             self.watchtime.as_deref()?,
             &[
                 ("ver", "2".into()),
                 ("c", "WEB_REMIX".into()),
                 ("cpn", self.cpn.clone()),
-                ("cmt", seconds(end)),
-                ("st", seconds(start)),
-                ("et", seconds(end)),
+                ("cmt", seconds(last)),
+                ("st", list(|s| s.0)),
+                ("et", list(|s| s.1)),
             ],
         )
     }
@@ -152,6 +167,18 @@ mod tests {
         assert_eq!(get("et"), Some("61.250"));
         assert_eq!(get("cmt"), Some("61.250"));
         assert_eq!(get("el"), Some("detailpage"));
+    }
+
+    #[test]
+    fn stretches_listened_to_after_a_jump() {
+        let report = PlayReport::new(&info());
+        let url = report.listened_to(&[(0.0, 30.0), (90.0, 120.5)]).unwrap();
+        let q = query(&url);
+        let get = |k: &str| q.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("st"), Some("0.000,90.000"));
+        assert_eq!(get("et"), Some("30.000,120.500"));
+        assert_eq!(get("cmt"), Some("120.500"));
+        assert_eq!(report.listened_to(&[]), None);
     }
 
     #[test]

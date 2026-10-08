@@ -60,14 +60,16 @@ impl Browser {
         })
     }
 
-    /// Why this browser cannot work on this computer, if it cannot.
+    /// Why this browser cannot work on this computer, if it cannot. The
+    /// app shows this, and it reads browsers only; the check adds its own
+    /// way round it (a cookies.txt file).
     pub fn problem_here(self) -> Option<&'static str> {
         match self {
             // Chrome-family browsers on Windows encrypt cookies in a way only
             // the browser itself can undo (app-bound encryption), and yt-dlp
             // only reads the older format there.
             Self::Chrome | Self::Edge | Self::Brave if cfg!(windows) => Some(
-                "On Windows, Chrome, Edge and Brave lock their sign-in data so other programs cannot read it. Use Firefox, or a cookies.txt file.",
+                "On Windows, Chrome, Edge and Brave lock their sign-in data so other programs cannot read it. Use Firefox.",
             ),
             Self::Safari if !cfg!(target_os = "macos") => Some("Safari is only on Macs."),
             _ => None,
@@ -512,7 +514,7 @@ fn failure(default: &str, stderr: &[u8]) -> YtDlpError {
     } else if lower.contains("operation not permitted") || lower.contains("permission denied") {
         "This computer did not allow reading that browser's data. On a Mac, reading Safari's needs Full Disk Access: in System Settings, Privacy & Security, Full Disk Access, turn on YtFast (or Terminal, for the check). Or choose another browser"
     } else if lower.contains("keyring") || lower.contains("keychain") || lower.contains("decrypt") {
-        "The browser's sign-in data could not be unlocked. On a Mac, click Allow (or Always Allow) when asked about Chrome Safe Storage"
+        "The browser's sign-in data could not be unlocked. On a Mac, click Always Allow when asked about the browser's Safe Storage: YTFast reads the sign-in again by itself from time to time, and would otherwise ask each time"
     } else if lower.contains("javascript runtime") {
         "yt-dlp could not use Deno to answer YouTube's challenge"
     } else if lower.contains("requested format") {

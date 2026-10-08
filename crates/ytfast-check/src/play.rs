@@ -13,7 +13,7 @@ use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use ytfast_core::audio::{self, Player};
 use ytfast_core::playreport::PlayReport;
-use ytfast_core::prepare::Preparer;
+use ytfast_core::prepare::{PrepareError, Preparer};
 use ytfast_core::read::PlayerInfo;
 use ytfast_core::ytdlp::Resolved;
 
@@ -79,6 +79,7 @@ async fn prepare(
         Ok(p) => p,
         Err(e) => {
             result.problem = Some(e.to_string());
+            result.unavailable = matches!(e, PrepareError::Unavailable(_));
             return Err(Box::new(result));
         }
     };
@@ -194,6 +195,9 @@ pub fn run(
     let mut first = Some(first_resolved);
     let mut report_tasks: Vec<(usize, &'static str, JoinHandle<String>)> = Vec::new();
     let mut played = 0usize;
+    // Songs that cannot be played here (removed, or not offered in this
+    // country): skipped, as the app skips them, not failures.
+    let mut unavailable = 0usize;
     let mut quit = false;
 
     for index in 0..total {
@@ -233,14 +237,19 @@ pub fn run(
         } = match prepared {
             Ok(p) => p,
             Err(result) => {
-                ui::result(
-                    Outcome::Fail,
-                    &format!(
-                        "Song {} could not be prepared: {}",
-                        index + 1,
-                        result.problem.clone().unwrap_or_default()
-                    ),
-                );
+                let problem = result.problem.clone().unwrap_or_default();
+                if result.unavailable {
+                    unavailable += 1;
+                    ui::result(
+                        Outcome::Skip,
+                        &format!("Song {}: {problem}. Skipped.", index + 1),
+                    );
+                } else {
+                    ui::result(
+                        Outcome::Fail,
+                        &format!("Song {} could not be prepared: {problem}", index + 1),
+                    );
+                }
                 report.songs.push(*result);
                 continue;
             }
@@ -320,17 +329,26 @@ pub fn run(
         }
     }
 
-    let outcome = if played == total || (quit && played > 0) {
+    let outcome = if played > 0 && (quit || played + unavailable == total) {
         Outcome::Ok
     } else {
         Outcome::Fail
     };
-    let detail = format!(
-        "{played} of {total} songs played{} on \"{}\"",
-        if quit { " (stopped early)" } else { "" },
-        player.device_name()
+    let mut detail = format!("{played} of {total} songs played");
+    if unavailable > 0 {
+        detail.push_str(&format!(
+            " ({unavailable} not available to this account, skipped)"
+        ));
+    }
+    if quit {
+        detail.push_str(" (stopped early)");
+    }
+    // The device's name stays off the report: headphones are often named
+    // after their owner ("Sam's AirPods").
+    ui::result(
+        outcome,
+        &format!("{detail}, on \"{}\"", player.device_name()),
     );
-    ui::result(outcome, &detail);
     report.step("Playback", outcome, detail);
     reported
 }

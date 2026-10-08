@@ -39,10 +39,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 /// The line along the top edge: red up to where the song is. Click or
 /// drag to move in the song.
 fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
-    let status = &app.audio_status;
-    let length = status.length.max(0.0);
+    let length = app.audio_status.length.max(0.0);
     let fraction = if length > 0.0 {
-        (status.position / length).clamp(0.0, 1.0) as f32
+        (app.shown_position() / length).clamp(0.0, 1.0) as f32
     } else {
         0.0
     };
@@ -252,22 +251,33 @@ fn extras(app: &App, ui: &mut egui::Ui, band: Rect, entry: &Entry, narrow: bool)
     );
     egui::Popup::menu(&more)
         .gap(8.0)
-        .show(|ui| widgets::song_menu(app, ui, &entry.track, None));
+        .show(|ui| widgets::song_menu(app, ui, &entry.track, widgets::Place::Playing));
 
-    volume(app, &mut ui);
+    // The volume bar opens no wider than leaves room for the like pill.
+    let bar_room = ui.available_width() - (32.0 + 8.0) - (8.0 + LIKE_WIDTH);
+    volume(app, &mut ui, bar_room.clamp(0.0, 96.0));
     like_pill(app, &mut ui, &entry.track);
 
     if narrow {
         return;
     }
-    ui.add_space(16.0);
     if app.audio_status.length > 0.0 {
         let time = format!(
             "{} / {}",
-            theme::clock(app.audio_status.position),
+            theme::clock(app.shown_position()),
             theme::clock(app.audio_status.length)
         );
-        theme::label(&mut ui, &time, theme::medium(14.0), PALETTE.dim);
+        // Whole or not at all: in a narrow window the open volume bar
+        // leaves no room for it.
+        let galley = ui
+            .painter()
+            .layout_no_wrap(time.clone(), theme::medium(14.0), PALETTE.dim);
+        if galley.size().x + 16.0 <= ui.available_width() {
+            ui.add_space(16.0);
+            theme::label(&mut ui, &time, theme::medium(14.0), PALETTE.dim);
+        }
+    } else {
+        ui.add_space(16.0);
     }
     if app.demo {
         theme::label(&mut ui, "Demo", theme::medium(12.0), PALETTE.faint);
@@ -277,6 +287,9 @@ fn extras(app: &App, ui: &mut egui::Ui, band: Rect, entry: &Entry, narrow: bool)
     }
 }
 
+/// How wide the like and dislike pill is.
+const LIKE_WIDTH: f32 = 96.0;
+
 /// Like and dislike in one pill, as YouTube Music draws them.
 fn like_pill(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::Track) {
     let state = app
@@ -284,7 +297,7 @@ fn like_pill(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::Track) {
         .get(&track.video_id)
         .copied()
         .unwrap_or(LikeState::Neutral);
-    let (rect, _) = ui.allocate_exact_size(vec2(96.0, 32.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(LIKE_WIDTH, 32.0), Sense::hover());
     let like = Rect::from_min_max(rect.min, pos2(rect.center().x, rect.bottom()));
     let dislike = Rect::from_min_max(pos2(rect.center().x, rect.top()), rect.max);
     let liked = state == LikeState::Liked;
@@ -374,9 +387,9 @@ fn like_pill(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::Track) {
     }
 }
 
-/// The volume button (click to mute), and the bar that opens beside it
-/// while the pointer is over either.
-fn volume(app: &App, ui: &mut egui::Ui) {
+/// The volume button (click to mute), and the bar (up to `bar_width`
+/// wide) that opens beside it while the pointer is over either.
+fn volume(app: &App, ui: &mut egui::Ui, bar_width: f32) {
     let id = ui.id().with("volume");
     let was_open: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
     let open = ui
@@ -398,7 +411,7 @@ fn volume(app: &App, ui: &mut egui::Ui) {
     let mut dragging = false;
     if open > 0.0 {
         let (rect, mut response) =
-            ui.allocate_exact_size(vec2(96.0 * open, 32.0), Sense::click_and_drag());
+            ui.allocate_exact_size(vec2(bar_width * open, 32.0), Sense::click_and_drag());
         region = region.union(rect);
         dragging = response.dragged();
         let rail = Rect::from_center_size(rect.center(), vec2((rect.width() - 12.0).max(1.0), 4.0));

@@ -52,6 +52,8 @@ fn start_log(verbose: bool, demo: bool) {
         builder.target(env_logger::Target::Pipe(Box::new(file)));
     }
     builder.init();
+    // Which build wrote the log, whatever else it holds.
+    log::warn!("{} started", app::VERSION);
     // A crash says why in the log, too.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -86,9 +88,15 @@ fn main() -> eframe::Result<()> {
         persistence_path,
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "YtFast",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, demo)))),
-    )
+    );
+    // On Windows there is no console to see this on.
+    if let Err(e) = &result {
+        log::error!("the window stopped: {e}");
+    }
+    log::info!("closed");
+    result
 }

@@ -377,7 +377,9 @@ fn job(text: &str, font: FontId, color: Color32, width: f32, rows: usize) -> egu
     job.wrap = egui::text::TextWrapping {
         max_width: width.max(0.0),
         max_rows: rows.max(1),
-        break_anywhere: false,
+        // One line is cut right at its end, mid-word, as YouTube Music's
+        // ellipsis is; longer text wraps at words, as its line clamp does.
+        break_anywhere: rows <= 1,
         overflow_character: Some('…'),
     };
     job

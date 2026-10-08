@@ -340,34 +340,21 @@ async fn install(
         .prefix(".download-")
         .tempdir_in(parent)?;
     let archive = work.path().join("archive.zip");
-
-    let actual = download(http, url, &archive, what, progress).await?;
-    if actual != sha256.to_ascii_lowercase() {
-        bail!("the {what} download did not match its published fingerprint, so it was not used");
-    }
+    download(http, url, &archive, what, progress).await?;
 
     progress(Progress::Unpacking(what));
-    let unpacked = work.path().join("unpacked");
-    let (archive_path, unpacked_path) = (archive.clone(), unpacked.clone());
-    tokio::task::spawn_blocking(move || unzip(&archive_path, &unpacked_path)).await??;
-    std::fs::write(unpacked.join(COMPLETE), sha256)?;
-
-    if dest.exists() {
-        std::fs::remove_dir_all(dest)?;
-    }
-    std::fs::rename(&unpacked, dest)
-        .with_context(|| format!("could not move {what} into {}", dest.display()))?;
-    Ok(())
+    let (sha256, dest) = (sha256.to_string(), dest.to_path_buf());
+    tokio::task::spawn_blocking(move || install_archive(&archive, &sha256, &dest, what)).await?
 }
 
-/// Streams `url` to `path`, returning its SHA-256.
+/// Streams `url` to `path`.
 async fn download(
     http: &reqwest::Client,
     url: &str,
     path: &Path,
     what: &'static str,
     progress: &(dyn Fn(Progress) + Sync),
-) -> Result<String> {
+) -> Result<()> {
     let mut response = http
         .get(url)
         .send()
@@ -376,7 +363,6 @@ async fn download(
         .with_context(|| format!("could not download {what}"))?;
     let total = response.content_length();
     let mut file = std::fs::File::create(path)?;
-    let mut hasher = Sha256::new();
     let mut done = 0u64;
     let mut shown = 0u64;
     progress(Progress::Downloading { what, done, total });
@@ -385,7 +371,6 @@ async fn download(
         .await
         .with_context(|| format!("the {what} download was interrupted"))?
     {
-        hasher.update(&chunk);
         file.write_all(&chunk)?;
         done += chunk.len() as u64;
         // A progress update per megabyte is plenty.
@@ -396,6 +381,38 @@ async fn download(
     }
     progress(Progress::Downloading { what, done, total });
     file.sync_all()?;
+    Ok(())
+}
+
+/// Checks the downloaded `archive` against its published `sha256`, then
+/// unpacks it into `dest` and marks it complete. When the fingerprint does
+/// not match, nothing is unpacked and `dest` is left as it was.
+fn install_archive(archive: &Path, sha256: &str, dest: &Path, what: &str) -> Result<()> {
+    let actual = sha256_of(archive)?;
+    if !actual.eq_ignore_ascii_case(sha256) {
+        bail!("the {what} download did not match its published fingerprint, so it was not used");
+    }
+    let parent = dest.parent().ok_or_else(|| anyhow!("no parent folder"))?;
+    let work = tempfile::Builder::new()
+        .prefix(".unpack-")
+        .tempdir_in(parent)?;
+    let unpacked = work.path().join("unpacked");
+    unzip(archive, &unpacked)?;
+    std::fs::write(unpacked.join(COMPLETE), &actual)?;
+
+    if dest.exists() {
+        std::fs::remove_dir_all(dest)?;
+    }
+    std::fs::rename(&unpacked, dest)
+        .with_context(|| format!("could not move {what} into {}", dest.display()))?;
+    Ok(())
+}
+
+/// A file's SHA-256, in lowercase hex.
+fn sha256_of(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
     Ok(hasher
         .finalize()
         .iter()
@@ -524,6 +541,56 @@ mod tests {
         }
         assert!(unzip(&bad, &dir.path().join("out2")).is_err());
         assert!(!dir.path().join("escaped").exists());
+    }
+
+    #[test]
+    fn installs_only_a_download_that_matches_its_fingerprint() {
+        use zip::write::SimpleFileOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("archive.zip");
+        {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            zip.start_file("deno.exe", SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"the program").unwrap();
+            zip.finish().unwrap();
+        }
+        let right = sha256_of(&archive).unwrap();
+        assert_eq!(right.len(), 64);
+        {
+            // Checked against an independent hash of the same bytes.
+            let bytes = std::fs::read(&archive).unwrap();
+            let expected: String = Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(right, expected);
+        }
+        let dest = dir.path().join("deno").join("2.9.7");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+
+        // Another file's fingerprint: refused, and nothing is installed.
+        let wrong = "0".repeat(64);
+        assert_ne!(wrong, right);
+        let refused = install_archive(&archive, &wrong, &dest, "Deno");
+        assert!(refused.is_err());
+        assert!(!dest.exists());
+        assert!(!is_complete(&dest));
+
+        // The right one, as published in capitals: installed and marked
+        // complete.
+        install_archive(&archive, &right.to_ascii_uppercase(), &dest, "Deno").unwrap();
+        assert_eq!(
+            std::fs::read(dest.join("deno.exe")).unwrap(),
+            b"the program"
+        );
+        assert!(usable(&dest, "deno.exe"));
+        // Nothing is left behind beside it.
+        let left: Vec<String> = std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(left, ["2.9.7"]);
     }
 
     #[test]

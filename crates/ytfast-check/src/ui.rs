@@ -10,6 +10,12 @@ pub fn heading(number: usize, total: usize, title: &str) {
     println!("Step {number} of {total}: {title}");
 }
 
+/// A heading for something done after the numbered steps.
+pub fn extra_heading(title: &str) {
+    println!();
+    println!("{title}");
+}
+
 pub fn say(text: &str) {
     for line in text.lines() {
         println!("   {line}");
