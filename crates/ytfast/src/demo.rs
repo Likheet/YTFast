@@ -5,9 +5,10 @@
 //! A demo page's ID says what it is: `demo-album-Postcards`,
 //! `demo-artist-Mara Sol`, `demo-playlist-Road trip`, `demo-mood-Chill`.
 
+use ytfast_core::library::LibraryTab;
 use ytfast_core::read::{
-    Card, CardButton, CardLook, Header, Item, Page, PageKind, Section, Shape, Target, Thumb,
-    TopResult, Track, TrackKind, TrackMore,
+    Card, CardButton, CardLook, Header, Item, Page, PageKind, Section, Shape, SortMenu, SortOrder,
+    Target, Thumb, TopResult, Track, TrackKind, TrackMore,
 };
 
 use crate::backend::Route;
@@ -38,6 +39,16 @@ const SONGS: [(&str, &str, &str); 24] = [
     ("Polaroid Summer", "Mara Sol", "Glass Hearts"),
     ("Harbour Lights", "Coastal Drive", "Low Tide"),
     ("Wildflower Static", "The Wild Orchards", "Harvest"),
+];
+
+/// The made-up account's past searches, newest first (lowercase, as
+/// YouTube keeps them).
+const PAST_SEARCHES: [&str; 5] = [
+    "mara sol",
+    "neon harbour",
+    "road trip songs",
+    "echo room signals",
+    "lemon skies",
 ];
 
 fn seed(text: &str) -> u64 {
@@ -74,7 +85,13 @@ fn song(i: usize) -> Track {
         artist_id: Some(id_for(artist, PageKind::Artist)),
         album_id: Some(id_for(album, PageKind::Album)),
         playable: true,
-        more: None,
+        // Some made-up songs are explicit, as real ones are.
+        more: (i % 5 == 1).then(|| {
+            Box::new(TrackMore {
+                explicit: true,
+                ..TrackMore::default()
+            })
+        }),
     }
 }
 
@@ -92,6 +109,7 @@ fn chart(from: usize, count: usize) -> Vec<Item> {
             track.more = Some(Box::new(TrackMore {
                 rank: Some((place + 1).to_string()),
                 count: Some(format!("{views}M views")),
+                explicit: false,
             }));
             Item::Track(track)
         })
@@ -198,7 +216,12 @@ fn card(title: &str, subtitle: &str, kind: PageKind) -> Item {
 
 fn album_card(album: &str) -> Item {
     let artist = SONGS.iter().find(|s| s.2 == album).map_or("", |s| s.1);
-    card(album, &format!("Album • {artist}"), PageKind::Album)
+    let Item::Card(mut card) = card(album, &format!("Album • {artist}"), PageKind::Album) else {
+        unreachable!("a card")
+    };
+    // Two made-up albums are explicit.
+    card.look.explicit = matches!(album, "Night Ferries" | "Insert Coin");
+    Item::Card(card)
 }
 
 /// A list of songs, or a carousel of cards.
@@ -229,14 +252,74 @@ fn detail(items: &[Item]) -> String {
     format!("{} songs • {} minutes", items.len(), seconds.div_ceil(60))
 }
 
-pub fn page(route: &Route) -> Page {
+/// A page of made-up music; a Library tab with its sort button, in the
+/// order `order` asks for (a demo order's `params`).
+pub fn page(route: &Route, order: Option<&str>) -> Page {
+    let mut page = unsorted(route);
+    if let Some(tab) = route.library_tab() {
+        sort(&mut page, tab, order);
+    }
+    page
+}
+
+/// A Library tab's sort button, as YouTube Music's (the front page's
+/// orders, else the other tabs'), and its items in the order chosen: A to
+/// Z and Z to A by title, "Recently played" the other way round.
+fn sort(page: &mut Page, tab: LibraryTab, order: Option<&str>) {
+    let titles: &[(&str, &str)] = if tab == LibraryTab::Recent {
+        &[
+            ("Recent activity", "demo:recent"),
+            ("Recently saved", "demo:saved"),
+            ("Recently played", "demo:played"),
+        ]
+    } else {
+        &[
+            ("Recently saved", "demo:saved"),
+            ("A to Z", "demo:az"),
+            ("Z to A", "demo:za"),
+        ]
+    };
+    let chosen = titles
+        .iter()
+        .find(|(_, params)| Some(*params) == order)
+        .unwrap_or(&titles[0]);
+    let title = |item: &Item| match item {
+        Item::Track(t) => t.title.to_lowercase(),
+        Item::Card(c) => c.title.to_lowercase(),
+    };
+    if let Some(list) = page.sections.last_mut() {
+        match chosen.1 {
+            "demo:az" => list.items.sort_by_key(title),
+            "demo:za" => {
+                list.items.sort_by_key(title);
+                list.items.reverse();
+            }
+            "demo:played" => list.items.reverse(),
+            _ => {}
+        }
+    }
+    page.sort = Some(SortMenu {
+        chosen: chosen.0.to_string(),
+        orders: titles
+            .iter()
+            .map(|(title, params)| SortOrder {
+                title: (*title).to_string(),
+                browse_id: tab.browse_id().to_string(),
+                params: (*params).to_string(),
+            })
+            .collect(),
+    });
+}
+
+fn unsorted(route: &Route) -> Page {
     match route {
         Route::Home => home(),
         Route::Explore => explore(),
         Route::Library => Page {
+            sort: None,
             header: None,
             sections: vec![shaped(
-                "Playlists",
+                "",
                 vec![
                     card("Liked Music", "Auto playlist", PageKind::Playlist),
                     // Whose each is, then how long, as the Library shows
@@ -253,9 +336,47 @@ pub fn page(route: &Route) -> Page {
                 Shape::Grid,
             )],
         },
+        // The front page: everything, most recently used first.
+        Route::LibraryRecent => Page {
+            sort: None,
+            header: None,
+            sections: vec![shaped(
+                "",
+                vec![
+                    card("Liked Music", "Auto playlist", PageKind::Playlist),
+                    card(
+                        "Road trip",
+                        "Playlist • Demo listener • 14 tracks",
+                        PageKind::Playlist,
+                    ),
+                    album_card("Night Ferries"),
+                    card("Mara Sol", "Artist • 1.2M subscribers", PageKind::Artist),
+                    card(
+                        "Late night",
+                        "Playlist • Demo listener • 14 tracks",
+                        PageKind::Playlist,
+                    ),
+                    album_card("Postcards"),
+                    card("Ivy Lane", "Artist • 850K subscribers", PageKind::Artist),
+                    card(
+                        "Gym",
+                        "Playlist • Demo listener • 14 tracks",
+                        PageKind::Playlist,
+                    ),
+                    album_card("Glass Hearts"),
+                    card(
+                        "Sunday morning",
+                        "Playlist • Demo listener • 14 tracks",
+                        PageKind::Playlist,
+                    ),
+                ],
+                Shape::Grid,
+            )],
+        },
         Route::Liked => {
             let liked = songs(0, SONGS.len());
             Page {
+                sort: None,
                 header: Some(Header {
                     title: "Liked Music".into(),
                     subtitle: "Auto playlist".into(),
@@ -265,17 +386,38 @@ pub fn page(route: &Route) -> Page {
                     round: false,
                     ..Header::default()
                 }),
-                sections: vec![section("", liked)],
+                sections: vec![
+                    // Liked Music's own filters, as YouTube Music has them.
+                    shaped(
+                        "",
+                        [
+                            "Pop",
+                            "Indie",
+                            "Chill",
+                            "Feel good",
+                            "Rock",
+                            "Energize",
+                            "Focus",
+                        ]
+                        .into_iter()
+                        .map(|m| plain(m, CardLook::default()))
+                        .collect(),
+                        Shape::Grid,
+                    ),
+                    section("", liked),
+                ],
             }
         }
         Route::Browse { id, .. } => browse(id),
         Route::Search(query) => search(query),
         Route::SearchOnly(query, params) => search_only(query, params),
         Route::LibrarySongs | Route::History => Page {
+            sort: None,
             header: None,
             sections: vec![section("", songs(3, 16))],
         },
         Route::LibraryAlbums => Page {
+            sort: None,
             header: None,
             sections: vec![shaped(
                 "",
@@ -293,6 +435,7 @@ pub fn page(route: &Route) -> Page {
             )],
         },
         Route::LibraryArtists => Page {
+            sort: None,
             header: None,
             sections: vec![shaped(
                 "",
@@ -300,6 +443,31 @@ pub fn page(route: &Route) -> Page {
                     .into_iter()
                     .map(|a| card(a, "Artist", PageKind::Artist))
                     .collect(),
+                Shape::Grid,
+            )],
+        },
+        // People followed: rows with a round picture, as the artists.
+        Route::LibraryProfiles => Page {
+            sort: None,
+            header: None,
+            sections: vec![shaped(
+                "",
+                ["Demo friend", "Weekend DJ"]
+                    .into_iter()
+                    .map(|p| card(p, "Profile", PageKind::Artist))
+                    .collect(),
+                Shape::Grid,
+            )],
+        },
+        Route::LibraryPodcasts => Page {
+            sort: None,
+            header: None,
+            sections: vec![shaped(
+                "",
+                vec![
+                    card("Studio Stories", "Podcast • Demo radio", PageKind::Playlist),
+                    card("Liner Notes", "Podcast • Demo radio", PageKind::Playlist),
+                ],
                 Shape::Grid,
             )],
         },
@@ -321,22 +489,30 @@ fn home() -> Page {
     .map(|m| plain(m, CardLook::default()))
     .collect();
     Page {
+        sort: None,
         header: None,
         sections: vec![
             shaped("", chips, Shape::Grid),
             shaped("Quick picks", songs(0, 12), Shape::Carousel),
-            section(
-                "Listen again",
-                vec![
-                    album_card("Night Ferries"),
-                    card("Mara Sol", "Artist", PageKind::Artist),
-                    album_card("Postcards"),
-                    album_card("Signals"),
-                    card("Coastal Drive", "Artist", PageKind::Artist),
-                    album_card("Insert Coin"),
-                    album_card("Harvest"),
-                ],
-            ),
+            // As a signed-in Home's: the listener's name above the title,
+            // their photo before it.
+            Section {
+                strapline: "Demo listener".into(),
+                picture: thumb("Demo listener"),
+                round_picture: true,
+                ..section(
+                    "Listen again",
+                    vec![
+                        album_card("Night Ferries"),
+                        card("Mara Sol", "Artist", PageKind::Artist),
+                        album_card("Postcards"),
+                        album_card("Signals"),
+                        card("Coastal Drive", "Artist", PageKind::Artist),
+                        album_card("Insert Coin"),
+                        album_card("Harvest"),
+                    ],
+                )
+            },
             section(
                 "Mixed for you",
                 vec![
@@ -380,6 +556,7 @@ fn explore() -> Page {
         button("Moods & genres", "STICKER_EMOTICON"),
     ];
     Page {
+        sort: None,
         header: None,
         sections: vec![
             shaped("", buttons, Shape::Grid),
@@ -431,11 +608,13 @@ fn browse(id: &str) -> Page {
                     track.more = Some(Box::new(TrackMore {
                         rank: None,
                         count: Some(format!("{plays}M plays")),
+                        explicit: false,
                     }));
                 }
             }
             let artist = SONGS.iter().find(|s| s.2 == name).map_or("", |s| s.1);
             Page {
+                sort: None,
                 header: Some(Header {
                     title: name.into(),
                     subtitle: "Album • 2026".into(),
@@ -478,6 +657,7 @@ fn browse(id: &str) -> Page {
                     track.more = Some(Box::new(TrackMore {
                         rank: None,
                         count: Some(format!("{}M plays", 20 + seed(&track.video_id) % 900)),
+                        explicit: false,
                     }));
                 }
             }
@@ -493,6 +673,7 @@ fn browse(id: &str) -> Page {
                 section
             };
             Page {
+                sort: None,
                 header: Some(Header {
                     title: name.into(),
                     subtitle: monthly_audience(name),
@@ -529,6 +710,7 @@ fn browse(id: &str) -> Page {
             }
         }
         "mood" => Page {
+            sort: None,
             header: Some(Header {
                 title: name.into(),
                 ..Header::default()
@@ -562,6 +744,7 @@ fn browse(id: &str) -> Page {
                 }
             }
             Page {
+                sort: None,
                 header: Some(Header {
                     title: name.into(),
                     subtitle: if mix { "Mix" } else { "Playlist • 2026" }.into(),
@@ -662,6 +845,7 @@ fn search(query: &str) -> Page {
         }
     }
     Page {
+        sort: None,
         header: None,
         sections: vec![
             search_chips(&query, None),
@@ -711,13 +895,32 @@ fn search_chips(query: &str, chosen: Option<&str>) -> Section {
 /// What the search box suggests for `text`: names that hold it, then (as
 /// YouTube Music) an artist and a few songs, with their pictures.
 pub fn suggestions(text: &str) -> ytfast_core::read::Suggestions {
+    use ytfast_core::read::SuggestedWords;
     let lower = text.to_lowercase();
     let holds = |s: &str| s.to_lowercase().contains(&lower);
-    let mut words: Vec<String> = Vec::new();
+    // Made-up past searches: all of them with nothing typed, else those
+    // beginning as typed, first (as YouTube Music lists them).
+    let mut words: Vec<SuggestedWords> = PAST_SEARCHES
+        .iter()
+        .filter(|past| past.starts_with(&lower))
+        .map(|past| SuggestedWords {
+            text: (*past).to_string(),
+            forget: Some(format!("demo:{past}")),
+        })
+        .collect();
+    if text.is_empty() {
+        return ytfast_core::read::Suggestions {
+            words,
+            items: Vec::new(),
+        };
+    }
     for (title, artist, album) in SONGS {
         for name in [title, artist, album] {
-            if holds(name) && !words.iter().any(|w| w == &name.to_lowercase()) {
-                words.push(name.to_lowercase());
+            if holds(name) && !words.iter().any(|w| w.text == name.to_lowercase()) {
+                words.push(SuggestedWords {
+                    text: name.to_lowercase(),
+                    forget: None,
+                });
             }
         }
     }
@@ -738,6 +941,7 @@ pub fn suggestions(text: &str) -> ytfast_core::read::Suggestions {
         track.more = Some(Box::new(TrackMore {
             rank: None,
             count: Some(format!("{}M plays", 20 + seed(&track.video_id) % 900)),
+            explicit: false,
         }));
         items.push(Item::Track(track));
     }
@@ -808,6 +1012,7 @@ fn search_only(query: &str, params: &str) -> Page {
     }
     sections.insert(0, search_chips(query, Some(kind)));
     Page {
+        sort: None,
         header: None,
         sections,
     }
@@ -823,7 +1028,7 @@ pub fn playlist_songs(playlist_id: &str) -> Vec<Track> {
             params: None,
         }
     };
-    page(&route).tracks()
+    page(&route, None).tracks()
 }
 
 /// A made-up Up next list.
@@ -841,6 +1046,7 @@ pub fn related(video_id: &str) -> Page {
     albums.dedup();
     let likes: Vec<Item> = (at + 1..at + 13).map(|i| Item::Track(song(i))).collect();
     Page {
+        sort: None,
         header: None,
         sections: vec![
             shaped("You might also like", likes, Shape::Carousel),
@@ -960,7 +1166,7 @@ mod tests {
         ];
         // Every card on those pages opens a page with something on it.
         for route in routes.clone() {
-            for section in page(&route).sections {
+            for section in page(&route, None).sections {
                 for item in section.items {
                     if let Item::Card(Card {
                         open: Some(Target::Browse { id, params, .. }),
@@ -973,7 +1179,7 @@ mod tests {
             }
         }
         for route in routes {
-            assert!(!page(&route).is_empty(), "{route:?} is empty");
+            assert!(!page(&route, None).is_empty(), "{route:?} is empty");
         }
     }
 
@@ -995,7 +1201,12 @@ mod tests {
 
     #[test]
     fn filtered_search_shows_only_its_kind() {
-        let only = |kind: &str| page(&Route::SearchOnly("glass".into(), format!("demo:{kind}")));
+        let only = |kind: &str| {
+            page(
+                &Route::SearchOnly("glass".into(), format!("demo:{kind}")),
+                None,
+            )
+        };
         // The filter buttons first, the chosen one marked; then the results.
         let songs = only("Songs");
         let Item::Card(chip) = &songs.sections[0].items[0] else {
@@ -1014,5 +1225,34 @@ mod tests {
             assert!(page.tracks().is_empty(), "{kind} has no songs");
             assert!(page.sections.len() > 1, "{kind} finds something");
         }
+    }
+
+    #[test]
+    fn library_tabs_sort() {
+        let titles = |order| -> Vec<String> {
+            let page = page(&Route::Library, order);
+            page.sections[0]
+                .items
+                .iter()
+                .map(|i| match i {
+                    Item::Card(c) => c.title.clone(),
+                    Item::Track(t) => t.title.clone(),
+                })
+                .collect()
+        };
+        let mut sorted = titles(None);
+        sorted.sort_by_key(|t| t.to_lowercase());
+        assert_eq!(titles(Some("demo:az")), sorted);
+        let menu = page(&Route::Library, Some("demo:az"))
+            .sort
+            .expect("a sort button");
+        assert_eq!(menu.chosen, "A to Z");
+        assert_eq!(menu.orders[0].browse_id, "FEmusic_liked_playlists");
+        // The front page has orders of its own.
+        let front = page(&Route::LibraryRecent, None)
+            .sort
+            .expect("a sort button");
+        assert_eq!(front.chosen, "Recent activity");
+        assert!(page(&Route::Home, None).sort.is_none());
     }
 }

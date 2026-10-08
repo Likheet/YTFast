@@ -27,8 +27,10 @@ use crate::{colors, demo};
 pub enum Route {
     Home,
     Explore,
-    /// Saved playlists.
+    /// Saved playlists (the Library's Playlists).
     Library,
+    /// The Library's front page: everything, most recently used first.
+    LibraryRecent,
     Liked,
     /// Any other page: an album, playlist, artist, mood.
     Browse {
@@ -43,6 +45,8 @@ pub enum Route {
     LibrarySongs,
     LibraryAlbums,
     LibraryArtists,
+    LibraryProfiles,
+    LibraryPodcasts,
     History,
     /// YTFast's own settings (not loaded from YouTube).
     Settings,
@@ -73,6 +77,32 @@ impl Route {
             Self::Browse { id, params }
         }
     }
+
+    /// The Library's pages, the front page first.
+    pub const LIBRARY: [Route; 7] = [
+        Route::LibraryRecent,
+        Route::Library,
+        Route::LibrarySongs,
+        Route::LibraryAlbums,
+        Route::LibraryArtists,
+        Route::LibraryProfiles,
+        Route::LibraryPodcasts,
+    ];
+
+    /// The Library's tab this page is, if it is one (each has a sort
+    /// button of its own).
+    pub fn library_tab(&self) -> Option<LibraryTab> {
+        match self {
+            Self::Library => Some(LibraryTab::Playlists),
+            Self::LibraryRecent => Some(LibraryTab::Recent),
+            Self::LibrarySongs => Some(LibraryTab::Songs),
+            Self::LibraryAlbums => Some(LibraryTab::Albums),
+            Self::LibraryArtists => Some(LibraryTab::Artists),
+            Self::LibraryProfiles => Some(LibraryTab::Profiles),
+            Self::LibraryPodcasts => Some(LibraryTab::Podcasts),
+            _ => None,
+        }
+    }
 }
 
 pub enum Request {
@@ -83,10 +113,13 @@ pub enum Request {
         last_report: Option<String>,
     },
     /// A page; `load` numbers this loading of it, given back with the
-    /// answer and the rest of a long list, so an older one is known.
+    /// answer and the rest of a long list, so an older one is known. A
+    /// Library tab comes in `order` (its sort button's `params`) when one
+    /// was chosen.
     Page {
         route: Route,
         load: u64,
+        order: Option<String>,
     },
     /// Get a song ready. With `play`, the window gets [`Event::Prepared`];
     /// without, the song is only made ready ahead of time.
@@ -167,6 +200,7 @@ impl Edit {
             | Self::Save { playlist_id, .. } => playlist_id,
             Self::CreatePlaylist { title, .. } => title,
             Self::Subscribe { channel_id, .. } => channel_id,
+            Self::ForgetSearch { token, .. } => token,
         }
     }
 }
@@ -189,11 +223,15 @@ pub enum Edit {
     },
     CreatePlaylist {
         title: String,
+        description: String,
+        privacy: Privacy,
         video_ids: Vec<String>,
     },
     RenamePlaylist {
         playlist_id: String,
         name: String,
+        description: String,
+        privacy: Privacy,
     },
     DeletePlaylist {
         playlist_id: String,
@@ -206,6 +244,11 @@ pub enum Edit {
     Subscribe {
         channel_id: String,
         subscribe: bool,
+    },
+    /// Remove a past search from the account's search history.
+    ForgetSearch {
+        words: String,
+        token: String,
     },
 }
 
@@ -239,6 +282,9 @@ pub enum Event {
     Progress(String),
     SignedIn {
         name: String,
+        /// "@handle", and the account's photo's address.
+        handle: Option<String>,
+        photo: Option<String>,
     },
     SignInFailed(String),
     /// YouTube treated a request as signed out.
@@ -626,7 +672,7 @@ async fn serve(
                     // What the old account thought of songs (its likes).
                     shared.details.lock().await.clear();
                 }
-                Request::Page { route, load } => page(&shared, route, load).await,
+                Request::Page { route, load, order } => page(&shared, route, load, order).await,
                 Request::Prepare {
                     entry,
                     video_id,
@@ -694,7 +740,7 @@ fn failure_for(request: &Request) -> Option<Event> {
     };
     Some(match request {
         Request::SignIn(_) => Event::SignInFailed(failed()),
-        Request::Page { route, load } => Event::Page(route.clone(), *load, Err(failed())),
+        Request::Page { route, load, .. } => Event::Page(route.clone(), *load, Err(failed())),
         Request::Prepare {
             entry, play: true, ..
         } => Event::Prepared {
@@ -737,16 +783,25 @@ async fn sign_in(shared: &Shared, browser: Browser) {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         shared.send(Event::SignedIn {
             name: "Demo listener".into(),
+            handle: Some("@demolistener".into()),
+            photo: None,
         });
         return;
     }
     match try_sign_in(shared, browser).await {
-        Ok(name) => shared.send(Event::SignedIn { name }),
+        Ok(account) => shared.send(Event::SignedIn {
+            name: account.name,
+            handle: account.handle,
+            photo: account.photo.map(|p| p.url),
+        }),
         Err(message) => shared.send(Event::SignInFailed(message)),
     }
 }
 
-async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String> {
+async fn try_sign_in(
+    shared: &Shared,
+    browser: Browser,
+) -> Result<ytfast_core::read::Account, String> {
     let progress = |p: Progress| {
         let line = match p {
             Progress::Checking => "Checking the helper programs...".to_string(),
@@ -801,9 +856,11 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
     if flags.logged_in == Some(false) {
         return Err(signed_out().into());
     }
-    let name = account
-        .map(|a| a.name)
-        .unwrap_or_else(|| "your account".into());
+    let account = account.unwrap_or_else(|| ytfast_core::read::Account {
+        name: "your account".into(),
+        handle: None,
+        photo: None,
+    });
     // yt-dlp's copy, kept only once the sign-in is known to work (a failed
     // sign-in leaves none behind).
     let cookies_file = shared.folders.session.join("youtube-cookies.txt");
@@ -827,7 +884,7 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
         cookies_file,
         direct,
     });
-    Ok(name)
+    Ok(account)
 }
 
 /// What a session needs to read the sign-in again (see [`renewer`]).
@@ -975,13 +1032,14 @@ fn plain(error: &ApiError) -> &'static str {
     }
 }
 
-async fn page(shared: &Shared, route: Route, load: u64) {
+async fn page(shared: &Shared, route: Route, load: u64, order: Option<String>) {
     if let Ok(mut loads) = shared.loads.lock() {
         loads.insert(route.clone(), load);
     }
     if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        shared.send(Event::Page(route.clone(), load, Ok(demo::page(&route))));
+        let page = demo::page(&route, order.as_deref());
+        shared.send(Event::Page(route.clone(), load, Ok(page)));
         return;
     }
     let Some(preparer) = shared.preparer().await else {
@@ -995,7 +1053,14 @@ async fn page(shared: &Shared, route: Route, load: u64) {
             .page("FEmusic_explore", None)
             .await
             .map(|p| (p, None)),
-        Route::Library => session.library_playlists().await.map(|p| (p, None)),
+        Route::Library => session
+            .library_playlists(order.as_deref())
+            .await
+            .map(|p| (p, None)),
+        Route::LibraryRecent => session
+            .library(LibraryTab::Recent, order.as_deref())
+            .await
+            .map(|p| (p, None)),
         Route::Liked => session.long_page("VLLM", None).await,
         Route::Browse { id, params } => session.long_page(id, params.as_deref()).await,
         Route::Search(query) => session.search(query).await.map(|p| (p, None)),
@@ -1003,10 +1068,25 @@ async fn page(shared: &Shared, route: Route, load: u64) {
             .search_filtered(query, params)
             .await
             .map(|p| (p, None)),
-        Route::LibrarySongs => session.long_page(LibraryTab::Songs.browse_id(), None).await,
-        Route::LibraryAlbums => session.library(LibraryTab::Albums).await.map(|p| (p, None)),
+        Route::LibrarySongs => {
+            session
+                .long_page(LibraryTab::Songs.browse_id(), order.as_deref())
+                .await
+        }
+        Route::LibraryAlbums => session
+            .library(LibraryTab::Albums, order.as_deref())
+            .await
+            .map(|p| (p, None)),
+        Route::LibraryProfiles => session
+            .library(LibraryTab::Profiles, order.as_deref())
+            .await
+            .map(|p| (p, None)),
+        Route::LibraryPodcasts => session
+            .library(LibraryTab::Podcasts, order.as_deref())
+            .await
+            .map(|p| (p, None)),
         Route::LibraryArtists => session
-            .library(LibraryTab::Artists)
+            .library(LibraryTab::Artists, order.as_deref())
             .await
             .map(|p| (p, None)),
         Route::History => session.history_page().await.map(|p| (p, None)),
@@ -1014,14 +1094,9 @@ async fn page(shared: &Shared, route: Route, load: u64) {
     };
     let more = match result {
         Ok((mut page, more)) => {
-            if matches!(
-                route,
-                Route::Library
-                    | Route::LibrarySongs
-                    | Route::LibraryAlbums
-                    | Route::LibraryArtists
-                    | Route::History
-            ) {
+            // The Library's tabs draw their own chips.
+            let tab = route.library_tab();
+            if tab.is_some_and(|t| t != LibraryTab::Recent) || route == Route::History {
                 drop_chips(&mut page);
             }
             shared.send(Event::Page(route.clone(), load, Ok(page)));
@@ -1471,12 +1546,24 @@ async fn edit(shared: &Shared, change: Edit) {
                 .remove_from_playlist(playlist_id, &[(video_id.clone(), set_video_id.clone())])
                 .await
         }
-        Edit::CreatePlaylist { title, video_ids } => session
-            .create_playlist(title, "", Privacy::Private, video_ids)
+        Edit::CreatePlaylist {
+            title,
+            description,
+            privacy,
+            video_ids,
+        } => session
+            .create_playlist(title, description, *privacy, video_ids)
             .await
             .map(|_| ()),
-        Edit::RenamePlaylist { playlist_id, name } => {
-            session.rename_playlist(playlist_id, name).await
+        Edit::RenamePlaylist {
+            playlist_id,
+            name,
+            description,
+            privacy,
+        } => {
+            session
+                .edit_playlist_details(playlist_id, name, description, *privacy)
+                .await
         }
         Edit::DeletePlaylist { playlist_id } => session.delete_playlist(playlist_id).await,
         Edit::Save { playlist_id, save } => session.save_to_library(playlist_id, *save).await,
@@ -1484,6 +1571,7 @@ async fn edit(shared: &Shared, change: Edit) {
             channel_id,
             subscribe,
         } => session.subscribe(channel_id, *subscribe).await,
+        Edit::ForgetSearch { token, .. } => session.forget_search(token).await,
     };
     match result {
         Ok(()) => shared.send(Event::Edited(change)),

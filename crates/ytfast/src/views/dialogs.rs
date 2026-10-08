@@ -2,8 +2,10 @@
 //! or "really delete?".
 
 use crate::app::{Action, App, Dialog};
+use ytfast_core::library::Privacy;
+
 use crate::backend::Edit;
-use crate::theme::{self, PALETTE};
+use crate::theme::{self, Icon, PALETTE};
 
 pub fn show(app: &App, ui: &egui::Ui) {
     let mut dialog = app.dialog.borrow_mut();
@@ -11,121 +13,524 @@ pub fn show(app: &App, ui: &egui::Ui) {
         return;
     };
     let mut close = false;
-    let frame = if matches!(current, Dialog::SaveToPlaylist { .. }) {
+    let window = ui.ctx().content_rect().width();
+    // The first field takes the keyboard once, as the dialog opens.
+    let fresh = app.dialog_fresh.replace(false);
+    let frame = match current {
         // `ytmusic-add-to-playlist-renderer`.
-        egui::Frame::new()
+        Dialog::SaveToPlaylist { .. } => egui::Frame::new()
             .fill(PALETTE.panel)
             .stroke(egui::Stroke::new(1.0, PALETTE.outline))
+            .corner_radius(egui::CornerRadius::same(2)),
+        // A confirmation (`yt-confirm-dialog-renderer`): `#282828`, an
+        // outline of `#4e4e4e`.
+        Dialog::Delete { .. } => egui::Frame::new()
+            .fill(egui::Color32::from_rgb(0x28, 0x28, 0x28))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(0x4e, 0x4e, 0x4e),
+            ))
             .corner_radius(egui::CornerRadius::same(2))
-    } else {
-        egui::Frame::new()
-            .fill(egui::Color32::from_rgba_premultiplied(24, 24, 28, 250))
+            .shadow(SHADOW),
+        // `ytmusic-dialog` around a form: `#212121`, a white@0.10 border,
+        // r 3; its parts set their own padding.
+        _ => egui::Frame::new()
+            .fill(PALETTE.panel)
             .stroke(egui::Stroke::new(1.0, PALETTE.outline))
-            .corner_radius(egui::CornerRadius::same(14))
-            .inner_margin(egui::Margin::same(22))
+            .corner_radius(egui::CornerRadius::same(3))
+            .shadow(SHADOW),
     };
     let modal = egui::Modal::new(egui::Id::new("dialog"))
         .frame(frame)
-        // YouTube Music dims the window behind a dialog by half.
-        .backdrop_color(egui::Color32::from_black_alpha(128))
+        // YouTube Music dims the window behind a dialog by 30% (measured
+        // signed in).
+        .backdrop_color(egui::Color32::from_black_alpha(77))
         .show(ui.ctx(), |ui| {
-            if let Dialog::SaveToPlaylist { video_id } = current {
-                close = save_to_playlist(app, ui, video_id);
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    close = true;
-                }
-                return;
-            }
-            ui.set_width(360.0);
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             match current {
-                Dialog::NewPlaylist { name, song } => {
-                    theme::label(ui, "New playlist", theme::bold(20.0), PALETTE.text);
-                    ui.add_space(12.0);
-                    let field = ui.add(
-                        egui::TextEdit::singleline(name)
-                            .hint_text("Name")
-                            .font(theme::regular(15.0))
-                            .desired_width(f32::INFINITY),
-                    );
-                    // Asked before the field takes the focus back, which
-                    // would hide that Enter just took it away.
-                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    field.request_focus();
-                    ui.add_space(16.0);
-                    if buttons(ui, "Make it") || (enter && !name.trim().is_empty()) {
-                        if !name.trim().is_empty() {
-                            app.act(Action::Edit(Edit::CreatePlaylist {
-                                title: name.trim().to_string(),
-                                video_ids: song.iter().cloned().collect(),
-                            }));
-                        }
-                        close = true;
-                    }
+                Dialog::SaveToPlaylist { video_id } => {
+                    close = save_to_playlist(app, ui, video_id);
                 }
-                Dialog::Rename { playlist_id, name } => {
-                    theme::label(ui, "Rename playlist", theme::bold(20.0), PALETTE.text);
-                    ui.add_space(12.0);
-                    let field = ui.add(
-                        egui::TextEdit::singleline(name)
-                            .font(theme::regular(15.0))
-                            .desired_width(f32::INFINITY),
+                Dialog::NewPlaylist {
+                    name,
+                    description,
+                    privacy,
+                    song,
+                } => {
+                    let done = form(
+                        ui,
+                        (window, fresh),
+                        "New playlist",
+                        (name, description, privacy),
+                        "Create",
                     );
-                    // As above: asked before the field takes the focus back.
-                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    field.request_focus();
-                    ui.add_space(16.0);
-                    if (buttons(ui, "Rename") || enter) && !name.trim().is_empty() {
+                    if done == Some(true) && !name.trim().is_empty() {
+                        app.act(Action::Edit(Edit::CreatePlaylist {
+                            title: name.trim().to_string(),
+                            description: description.trim().to_string(),
+                            privacy: *privacy,
+                            video_ids: song.iter().cloned().collect(),
+                        }));
+                    }
+                    close = done.is_some();
+                }
+                Dialog::Rename {
+                    playlist_id,
+                    name,
+                    description,
+                    privacy,
+                } => {
+                    let done = form(
+                        ui,
+                        (window, fresh),
+                        "Edit playlist",
+                        (name, description, privacy),
+                        "Save",
+                    );
+                    if done == Some(true) && !name.trim().is_empty() {
                         app.act(Action::RenamePlaylist {
                             playlist_id: playlist_id.clone(),
                             name: name.trim().to_string(),
+                            description: description.trim().to_string(),
+                            privacy: *privacy,
                         });
-                        close = true;
                     }
+                    close = done.is_some();
                 }
                 Dialog::Delete { playlist_id, title } => {
-                    theme::label(ui, "Delete this playlist?", theme::bold(20.0), PALETTE.text);
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(format!("\u{201c}{title}\u{201d} will be deleted from your account. This cannot be undone."))
-                            .font(theme::regular(14.0))
-                            .color(PALETTE.secondary),
+                    let text = format!(
+                        "\u{201c}{title}\u{201d} will be deleted from your account. This cannot be undone."
                     );
-                    ui.add_space(16.0);
-                    if buttons(ui, "Delete") {
-                        app.act(Action::DeletePlaylist(playlist_id.clone()));
-                        close = true;
+                    match confirm(ui, "Delete this playlist?", &text, "Delete") {
+                        Some(true) => {
+                            app.act(Action::DeletePlaylist(playlist_id.clone()));
+                            close = true;
+                        }
+                        Some(false) => close = true,
+                        None => {}
                     }
                 }
-                Dialog::SaveToPlaylist { .. } => {}
+                Dialog::Shortcuts => close = shortcuts(ui, window),
                 // The whole description (its look is not measured yet).
                 Dialog::Description { title, text } => {
-                    theme::label(ui, title, theme::bold(20.0), PALETTE.text);
-                    ui.add_space(12.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(ui.ctx().content_rect().height() * 0.6)
+                    ui.set_width(dialog_width(window));
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::same(24))
                         .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(text.as_str())
-                                    .font(theme::regular(14.0))
-                                    .color(PALETTE.secondary),
+                            theme::label(ui, title, theme::bold(24.0), PALETTE.text);
+                            ui.add_space(16.0);
+                            egui::ScrollArea::vertical()
+                                .max_height(ui.ctx().content_rect().height() * 0.6)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(text.as_str())
+                                            .font(theme::regular(14.0))
+                                            .color(PALETTE.secondary)
+                                            .line_height(Some(19.6)),
+                                    );
+                                });
+                            ui.add_space(16.0);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if theme::pill(ui, None, "Close", theme::Pill::Filled)
+                                        .clicked()
+                                    {
+                                        close = true;
+                                    }
+                                },
                             );
                         });
-                    ui.add_space(16.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::pill_button(ui, "Close", false).clicked() {
-                            ui.data_mut(|d| d.insert_temp(egui::Id::new("dialog-cancel"), true));
-                        }
-                    });
                 }
             }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) || ui.data(|d| d.get_temp::<bool>(egui::Id::new("dialog-cancel"))) == Some(true) {
-                ui.data_mut(|d| d.remove::<bool>(egui::Id::new("dialog-cancel")));
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 close = true;
             }
         });
     if modal.should_close() || close {
         *dialog = None;
     }
+}
+
+/// The keyboard's shortcuts, as YouTube Music lists them ("?"), and
+/// YTFast's own. True when closed.
+fn shortcuts(ui: &mut egui::Ui, window: f32) -> bool {
+    const KEYS: [(&str, &str); 19] = [
+        ("Play or pause", "Space or ;"),
+        ("Next song", "j or Shift+N"),
+        ("Previous song", "k or Shift+P"),
+        ("Forward 10 seconds", "l, → or Shift+→"),
+        ("Back 10 seconds", "h, ← or Shift+←"),
+        ("Forward 1 second", "Shift+L or Ctrl+Shift+→"),
+        ("Back 1 second", "Shift+H or Ctrl+Shift+←"),
+        ("Shuffle on or off", "s"),
+        ("Repeat", "r"),
+        ("Volume up or down", "= or ↑ / - or ↓"),
+        ("Mute", "m"),
+        ("Open or close the player page", "q (Esc closes)"),
+        ("Like or dislike the song playing", "+ / _"),
+        ("Home", "g then h"),
+        ("Explore", "g then e"),
+        ("Library", "g then l"),
+        ("Settings", "g then ,"),
+        ("Search", "/ or Ctrl+F"),
+        ("This list", "?"),
+    ];
+    let mut close = false;
+    ui.set_width(dialog_width(window));
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(24))
+        .show(ui, |ui| {
+            theme::label(ui, "Keyboard shortcuts", theme::bold(24.0), PALETTE.text);
+            ui.add_space(16.0);
+            egui::ScrollArea::vertical()
+                .max_height(ui.ctx().content_rect().height() * 0.6)
+                .show(ui, |ui| {
+                    for (does, keys) in KEYS {
+                        let (row, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 32.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().text(
+                            egui::pos2(row.left(), row.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            does,
+                            theme::regular(14.0),
+                            PALETTE.text,
+                        );
+                        ui.painter().text(
+                            egui::pos2(row.right(), row.center().y),
+                            egui::Align2::RIGHT_CENTER,
+                            keys,
+                            theme::medium(14.0),
+                            PALETTE.dim,
+                        );
+                    }
+                });
+            ui.add_space(16.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 36.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if theme::pill(ui, None, "Close", theme::Pill::Filled).clicked() {
+                        close = true;
+                    }
+                },
+            );
+        });
+    close
+}
+
+/// A dialog's shadow: YouTube Music's three layers
+/// (`0 16px 24px 2px`, `0 6px 30px 5px`, `0 8px 10px -5px`), as one.
+const SHADOW: egui::Shadow = egui::Shadow {
+    offset: [0, 12],
+    blur: 28,
+    spread: 3,
+    color: egui::Color32::from_black_alpha(90),
+};
+
+/// A form dialog's width (`--ytmusic-dialog-width`): 560, 640 from a window
+/// 1364 wide.
+fn dialog_width(window: f32) -> f32 {
+    if window >= 1364.0 { 640.0 } else { 560.0 }
+}
+
+/// A playlist's form, as YouTube Music's (`ytmusic-playlist-form`, measured
+/// signed in): the title (bold 24, 20 under 1150) 24 in; 32 under it the
+/// Title field, 32 under that the Description, 40 under that the Privacy;
+/// at the right Cancel (words) and `main` (white), 8 apart, 16 24 24 around
+/// them. Enter in the Title takes it. `Some(true)` when taken, `Some(false)`
+/// when cancelled. (Its Collaborate switch is left out.)
+fn form(
+    ui: &mut egui::Ui,
+    (window, fresh): (f32, bool),
+    heading: &str,
+    fields: (&mut String, &mut String, &mut Privacy),
+    main: &str,
+) -> Option<bool> {
+    let (name, description, privacy) = fields;
+    let width = dialog_width(window);
+    ui.set_width(width);
+    let mut done = None;
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 24,
+            right: 24,
+            top: 24,
+            bottom: 0,
+        })
+        .show(ui, |ui| {
+            let size = if window >= 1150.0 { 24.0 } else { 20.0 };
+            theme::label(ui, heading, theme::bold(size), PALETTE.text);
+        });
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(24, 32))
+        .show(ui, |ui| {
+            ui.set_width(width - 48.0);
+            if field(ui, "Title", name, false, fresh) {
+                done = Some(true);
+            }
+            ui.add_space(32.0);
+            field(ui, "Description", description, true, false);
+            ui.add_space(40.0);
+            privacy_menu(ui, privacy);
+        });
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 24,
+            right: 24,
+            top: 16,
+            bottom: 24,
+        })
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 36.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let ready = !name.trim().is_empty();
+                    ui.add_enabled_ui(ready, |ui| {
+                        if theme::pill(ui, None, main, theme::Pill::Filled).clicked() {
+                            done = Some(true);
+                        }
+                    });
+                    if theme::pill(ui, None, "Cancel", theme::Pill::Plain).clicked() {
+                        done = Some(false);
+                    }
+                },
+            );
+        });
+    if done == Some(true) && name.trim().is_empty() {
+        done = None;
+    }
+    done
+}
+
+/// A text field as YouTube Music's (`tp-yt-paper-input`): its label 14
+/// white@0.70 where the words go until there are some, then 12 above them
+/// (`#aaa`, blue while focused); the words 14 on 19.6 lines, 20 down; a line
+/// 42.6 down, `#606060`, blue and 2 thick while focused; a blue caret.
+/// `first` takes the keyboard (as the dialog opens). True when Enter is
+/// pressed in a one-line field.
+fn field(ui: &mut egui::Ui, label: &str, text: &mut String, lines: bool, first: bool) -> bool {
+    use egui::{Sense, pos2, vec2};
+    let width = ui.available_width();
+    let shown_rows = if lines {
+        text.lines().count().clamp(1, 5) as f32
+    } else {
+        1.0
+    };
+    let height = 20.0 + 19.6 * shown_rows;
+    let (block, _) = ui.allocate_exact_size(vec2(width, height + 3.0), Sense::hover());
+    let input = egui::Rect::from_min_size(
+        pos2(block.left(), block.top() + 20.0),
+        vec2(width, 19.6 * shown_rows),
+    );
+    let mut field_ui = ui.new_child(egui::UiBuilder::new().max_rect(input));
+    field_ui.visuals_mut().text_cursor.stroke.color = PALETTE.switch;
+    field_ui.visuals_mut().selection.bg_fill = PALETTE.switch.gamma_multiply(0.4);
+    let edit = if lines {
+        egui::TextEdit::multiline(text).desired_rows(1)
+    } else {
+        egui::TextEdit::singleline(text)
+    };
+    let response = field_ui.add(
+        edit.frame(egui::Frame::NONE)
+            .font(theme::regular(14.0))
+            .text_color(PALETTE.text)
+            .margin(egui::Margin::ZERO)
+            .desired_width(width),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label));
+    // Asked before anything takes the focus back.
+    let enter = !lines && response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if first {
+        response.request_focus();
+    }
+    let focused = response.has_focus();
+    let risen = ui
+        .ctx()
+        .animate_bool_with_time(response.id.with("label"), !text.is_empty(), 0.15);
+    let size = 14.0 - 2.0 * risen;
+    let y = input.top() + (2.0 - 20.0) * risen;
+    let color = if risen > 0.0 && focused {
+        PALETTE.switch
+    } else if risen > 0.0 {
+        PALETTE.dim
+    } else {
+        PALETTE.secondary
+    };
+    ui.painter().text(
+        pos2(block.left(), y),
+        egui::Align2::LEFT_TOP,
+        label,
+        theme::regular(size),
+        color,
+    );
+    let (line, thick) = if focused {
+        (PALETTE.switch, 2.0)
+    } else {
+        (PALETTE.thumb, 1.0)
+    };
+    ui.painter().line_segment(
+        [
+            pos2(block.left(), input.bottom() + 3.0),
+            pos2(block.right(), input.bottom() + 3.0),
+        ],
+        egui::Stroke::new(thick, line),
+    );
+    enter
+}
+
+/// The Privacy choice, as YouTube Music's (`ytmusic-dropdown-renderer`):
+/// "Privacy" small `#aaa` above; its icon 24 (a globe, a link, a lock),
+/// the choice 14/500 white, an arrow at the right, a `#606060` line under,
+/// 183 wide; a click lists the three with what each means.
+fn privacy_menu(ui: &mut egui::Ui, privacy: &mut Privacy) {
+    use egui::{Sense, pos2, vec2};
+    let icon = |p: Privacy| match p {
+        Privacy::Public => Icon::Public,
+        Privacy::Unlisted => Icon::Link,
+        Privacy::Private => Icon::Lock,
+    };
+    let (block, response) = ui.allocate_exact_size(vec2(183.3, 46.0), Sense::click());
+    let (name, _) = privacy.words();
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("Privacy: {name}"))
+    });
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(
+        block.left_top(),
+        egui::Align2::LEFT_TOP,
+        "Privacy",
+        theme::regular(12.0),
+        PALETTE.dim,
+    );
+    let row = egui::Rect::from_min_size(pos2(block.left(), block.top() + 20.0), vec2(183.3, 24.0));
+    let mark = egui::Rect::from_min_size(row.left_top() + vec2(4.0, 0.0), egui::Vec2::splat(24.0));
+    theme::paint_icon(ui, icon(*privacy), mark, 24.0, PALETTE.text);
+    theme::paint_line(
+        ui,
+        pos2(row.left() + 35.0, row.center().y - 8.4),
+        name,
+        theme::medium(14.0),
+        PALETTE.text,
+        110.0,
+    );
+    let arrow =
+        egui::Rect::from_min_size(pos2(row.right() - 24.0, row.top()), egui::Vec2::splat(24.0));
+    theme::paint_icon(ui, Icon::DropDown, arrow, 24.0, PALETTE.text);
+    ui.painter().hline(
+        block.x_range(),
+        block.bottom() - 1.0,
+        egui::Stroke::new(1.0, PALETTE.thumb),
+    );
+    theme::menu_popup(&response).width(288.0).show(|ui| {
+        theme::menu(ui);
+        for choice in Privacy::ALL {
+            let (title, meaning) = choice.words();
+            let (spot, pick) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+            pick.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Button,
+                    true,
+                    choice == *privacy,
+                    title,
+                )
+            });
+            if pick.hovered() || choice == *privacy {
+                ui.painter().rect_filled(spot, 0.0, PALETTE.surface);
+            }
+            let mark = egui::Rect::from_min_size(
+                pos2(spot.left() + 16.0, spot.center().y - 12.0),
+                egui::Vec2::splat(24.0),
+            );
+            theme::paint_icon(ui, icon(choice), mark, 24.0, PALETTE.text);
+            theme::paint_line(
+                ui,
+                pos2(spot.left() + 56.0, spot.top() + 10.0),
+                title,
+                theme::regular(14.0),
+                PALETTE.text,
+                spot.width() - 72.0,
+            );
+            theme::paint_line(
+                ui,
+                pos2(spot.left() + 56.0, spot.top() + 29.0),
+                meaning,
+                theme::regular(12.0),
+                PALETTE.secondary,
+                spot.width() - 72.0,
+            );
+            if pick.clicked() {
+                *privacy = choice;
+                ui.close();
+            }
+        }
+    });
+}
+
+/// A confirmation, as YouTube Music's (`yt-confirm-dialog-renderer`): the
+/// question 16/400 white 24 from the top and 24 in, 16 under it the words
+/// 14 `#aaa`, then Cancel and `main` as blue words at the right (8 8 8 24
+/// around them). `Some(true)` when confirmed, `Some(false)` when cancelled.
+fn confirm(ui: &mut egui::Ui, question: &str, text: &str, main: &str) -> Option<bool> {
+    let mut done = None;
+    ui.set_max_width(400.0);
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 24,
+            right: 24,
+            top: 24,
+            bottom: 0,
+        })
+        .show(ui, |ui| {
+            ui.set_width(352.0);
+            ui.label(
+                egui::RichText::new(question)
+                    .font(theme::regular(16.0))
+                    .color(PALETTE.text)
+                    .line_height(Some(22.0)),
+            );
+            ui.add_space(16.0);
+            ui.label(
+                egui::RichText::new(text)
+                    .font(theme::regular(14.0))
+                    .color(PALETTE.dim)
+                    .line_height(Some(20.0)),
+            );
+        });
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 24,
+            right: 8,
+            top: 8,
+            bottom: 8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(368.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 36.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::pill(ui, None, main, theme::Pill::Link).clicked() {
+                        done = Some(true);
+                    }
+                    if theme::pill(ui, None, "Cancel", theme::Pill::Link).clicked() {
+                        done = Some(false);
+                    }
+                },
+            );
+        });
+    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        done = Some(true);
+    }
+    done
 }
 
 /// "Save to playlist", as YouTube Music's (`ytmusic-add-to-playlist-renderer`):
@@ -235,6 +640,8 @@ fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_id: &str) -> bool {
     {
         app.act(Action::OpenDialog(Dialog::NewPlaylist {
             name: String::new(),
+            description: String::new(),
+            privacy: Privacy::default(),
             song: Some(video_id.to_string()),
         }));
         done = true;
@@ -291,16 +698,4 @@ fn playlist_row(app: &App, ui: &mut egui::Ui, card: &ytfast_core::read::Card) ->
         );
     }
     response.clicked()
-}
-
-/// Cancel and the main button; true when the main one is pressed.
-fn buttons(ui: &mut egui::Ui, main: &str) -> bool {
-    let mut pressed = false;
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        pressed = theme::pill_button(ui, main, true).clicked();
-        if theme::pill_button(ui, "Cancel", false).clicked() {
-            ui.data_mut(|d| d.insert_temp(egui::Id::new("dialog-cancel"), true));
-        }
-    });
-    pressed
 }

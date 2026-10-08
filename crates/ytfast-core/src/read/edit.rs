@@ -1,4 +1,5 @@
-//! What YouTube answers to changes in the account (playlist edits).
+//! What YouTube answers to changes in the account (playlist edits, a
+//! past search removed).
 
 use serde_json::Value;
 
@@ -9,6 +10,19 @@ pub fn edit_status(reply: &Value) -> Option<String> {
         .get("status")
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/// Whether a `feedback` request (a past search removed) was carried out:
+/// every `feedbackResponses[].isProcessed`. `None` when the reply does not
+/// say.
+pub fn feedback_processed(reply: &Value) -> Option<bool> {
+    let responses = reply.get("feedbackResponses")?.as_array()?;
+    Some(
+        !responses.is_empty()
+            && responses
+                .iter()
+                .all(|r| r.get("isProcessed").and_then(Value::as_bool) == Some(true)),
+    )
 }
 
 /// The ID of a playlist just made (`playlist/create`), without `VL`.
@@ -39,5 +53,9 @@ mod tests {
         );
         assert_eq!(created_playlist_id(&json!({"playlistId": ""})), None);
         assert_eq!(created_playlist_id(&Value::Null), None);
+        let processed = |done: bool| json!({"feedbackResponses": [{"isProcessed": done}]});
+        assert_eq!(feedback_processed(&processed(true)), Some(true));
+        assert_eq!(feedback_processed(&processed(false)), Some(false));
+        assert_eq!(feedback_processed(&json!({})), None);
     }
 }

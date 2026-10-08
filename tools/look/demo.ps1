@@ -7,6 +7,7 @@
 #   .\tools\look\demo.ps1 press -Names "Explore"          # ";" between several; "Name#2" = the second
 #   .\tools\look\demo.ps1 search -Text "mara"             # types in the search box and searches
 #   .\tools\look\demo.ps1 key -Key Escape
+#   .\tools\look\demo.ps1 type -Text "gl"                 # letters as shortcuts (no Shift)
 #   .\tools\look\demo.ps1 rclick -X 400 -Y 300             # a right-click there, in points
 #   .\tools\look\demo.ps1 shot -Name explore              # saves target\look\app\explore.png
 #   .\tools\look\demo.ps1 list                            # every named thing on screen, in points
@@ -20,7 +21,7 @@
 # git ignores.
 param(
     [Parameter(Mandatory, Position = 0)]
-    [ValidateSet('start', 'press', 'search', 'key', 'rclick', 'shot', 'list', 'size', 'tour', 'cost', 'stop')]
+    [ValidateSet('start', 'press', 'search', 'type', 'key', 'rclick', 'shot', 'list', 'size', 'tour', 'cost', 'stop')]
     [string]$Action,
     [string]$Exe,
     [string]$Names,
@@ -187,6 +188,12 @@ switch ($Action) {
     'press' { Invoke-Named (Get-Demo) $Names }
     'search' { Search-For (Get-Demo) $Text }
     'key' { Send-Key (Get-Demo) $keys[$Key]; "pressed key $Key" }
+    # Letters to whatever has the keyboard (shortcuts), without Shift.
+    'type' {
+        $demo = Get-Demo
+        foreach ($c in $Text.ToCharArray()) { Send-Key $demo ([uint32]([LookWin2]::VkKeyScan($c) -band 0xFF)) }
+        "typed: $Text"
+    }
     'rclick' {
         # The pointer is posted there, then the right button pressed and
         # let go (the real pointer does not move).

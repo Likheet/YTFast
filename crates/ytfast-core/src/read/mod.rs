@@ -15,15 +15,17 @@ mod formats;
 mod page;
 mod search;
 mod song;
+mod sort;
 
-pub use edit::{created_playlist_id, edit_status};
+pub use edit::{created_playlist_id, edit_status, feedback_processed};
 pub use formats::{StreamFormat, best_stream, stream_formats};
 pub use page::{
     Card, CardButton, CardLook, Header, HeaderButtons, Item, Page, PageKind, Section, Shape,
     Target, Thumb, TopResult, more_items, page, queue_continuation, queue_title, up_next,
 };
-pub use search::{Suggestions, search_suggestions};
+pub use search::{SuggestedWords, Suggestions, search_suggestions};
 pub use song::{Rating, SongDetails, lyrics, song_details};
+pub use sort::{SortMenu, SortOrder};
 
 /// Where a browse link says what kind of page it opens.
 const PAGE_TYPE: &str =
@@ -74,6 +76,8 @@ pub fn account_flags(reply: &Value) -> AccountFlags {
 pub struct Account {
     pub name: String,
     pub handle: Option<String>,
+    /// The account's photo, as the top bar shows it.
+    pub photo: Option<Thumb>,
 }
 
 pub fn account(reply: &Value) -> Option<Account> {
@@ -83,7 +87,12 @@ pub fn account(reply: &Value) -> Option<Account> {
         .get("channelHandle")
         .and_then(text)
         .filter(|s| !s.is_empty());
-    Some(Account { name, handle })
+    let photo = header.get("accountPhoto").and_then(Thumb::best);
+    Some(Account {
+        name,
+        handle,
+        photo,
+    })
 }
 
 /// What kind of video a row plays. YouTube Music's "songs" are audio tracks
@@ -144,9 +153,16 @@ pub struct TrackMore {
     pub rank: Option<String>,
     /// "53M plays" or "28M views", as YouTube writes it.
     pub count: Option<String>,
+    /// Marked explicit (YouTube's "E").
+    pub explicit: bool,
 }
 
 impl Track {
+    /// Whether YouTube marks it explicit.
+    pub fn explicit(&self) -> bool {
+        self.more.as_ref().is_some_and(|m| m.explicit)
+    }
+
     /// Its place in a chart, when it has one.
     pub fn rank(&self) -> Option<&str> {
         self.more.as_ref()?.rank.as_deref()
@@ -290,7 +306,14 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         .flat_map(|c| c.split(" \u{2022} "))
         .find(|part| is_count(part))
         .map(str::to_string);
-    let more = (rank.is_some() || count.is_some()).then(|| Box::new(TrackMore { rank, count }));
+    let explicit = row.get("badges").is_some_and(is_explicit);
+    let more = (rank.is_some() || count.is_some() || explicit).then(|| {
+        Box::new(TrackMore {
+            rank,
+            count,
+            explicit,
+        })
+    });
     Some(Track {
         video_id,
         set_video_id,
@@ -457,6 +480,17 @@ impl Byline {
 
 /// "1.2M plays", "35K views": not an artist or an album. The words are
 /// English: requests ask YouTube for English (`Session::context`).
+/// Whether badges (`badges`, `subtitleBadges`) hold YouTube's explicit "E".
+fn is_explicit(badges: &Value) -> bool {
+    badges.as_array().is_some_and(|all| {
+        all.iter().any(|b| {
+            b.pointer("/musicInlineBadgeRenderer/icon/iconType")
+                .and_then(Value::as_str)
+                == Some("MUSIC_EXPLICIT_BADGE")
+        })
+    })
+}
+
 fn is_count(part: &str) -> bool {
     let lower = part.to_ascii_lowercase();
     lower.ends_with(" plays")
@@ -976,7 +1010,11 @@ mod tests {
             account(&reply),
             Some(Account {
                 name: "Sample Listener".into(),
-                handle: Some("@samplelistener".into())
+                handle: Some("@samplelistener".into()),
+                photo: Some(Thumb {
+                    url: "https://yt3.ggpht.com/sample".into(),
+                    width: 88
+                })
             })
         );
         assert_eq!(account(&Value::Null), None);

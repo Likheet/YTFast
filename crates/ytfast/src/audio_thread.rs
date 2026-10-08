@@ -248,6 +248,12 @@ impl Engine {
         }
     }
 
+    fn prepare_spare(&mut self) {
+        if let Self::Real(player) = self {
+            player.prepare_spare();
+        }
+    }
+
     fn maintain(&mut self) -> Option<String> {
         match self {
             Self::Real(player) => player.maintain(),
@@ -396,7 +402,8 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                     }
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            // Nothing waits: time to open a spare stream, if one is due.
+            Err(RecvTimeoutError::Timeout) => engine.prepare_spare(),
             Err(RecvTimeoutError::Disconnected) => break,
         }
         if let Some(to) = pending_jump
