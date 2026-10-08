@@ -23,6 +23,15 @@ pub struct Queue {
     /// Where more songs come from when the queue runs out: the playlist or
     /// album being played, else a radio of the last song.
     pub source: Option<String>,
+    /// The queue was played shuffled: songs of its playlist that arrive
+    /// later go in among the songs to come, not at the end.
+    shuffled: bool,
+    /// What it plays from, as Up next names it ("Playing from"): the
+    /// album's or playlist's name, or the radio's ("Yellow Mix").
+    pub title: Option<String>,
+    /// With shuffle on: the queue's own order (its entries' IDs), to go
+    /// back to when shuffle is turned off.
+    unshuffled: Option<Vec<u64>>,
 }
 
 impl Queue {
@@ -51,8 +60,46 @@ impl Queue {
         self.current = (!entries.is_empty()).then(|| start.min(entries.len() - 1));
         self.entries = entries;
         self.source = source;
+        self.shuffled = false;
+        self.title = None;
+        self.unshuffled = None;
         self.generation += 1;
         self.current()
+    }
+
+    /// Marks the queue as played shuffled (see [`Queue::insert_shuffled`]).
+    pub fn set_shuffled(&mut self) {
+        self.shuffled = true;
+    }
+
+    pub fn shuffled(&self) -> bool {
+        self.shuffled
+    }
+
+    /// Puts songs at random places among the songs still to come, skipping
+    /// any already in the queue (more of a playlist being played shuffled).
+    /// Returns how many were added.
+    pub fn insert_shuffled(&mut self, tracks: Vec<Track>) -> usize {
+        use rand::Rng;
+        let mut added = 0;
+        for track in tracks {
+            if self
+                .entries
+                .iter()
+                .any(|e| e.track.video_id == track.video_id)
+            {
+                continue;
+            }
+            let first = self.current.map_or(0, |i| i + 1);
+            let at = rand::rng().random_range(first..=self.entries.len());
+            let entry = self.entry(track);
+            self.entries.insert(at, entry);
+            added += 1;
+        }
+        if self.current.is_none() && !self.entries.is_empty() {
+            self.current = Some(0);
+        }
+        added
     }
 
     pub fn current(&self) -> Option<&Entry> {
@@ -165,6 +212,34 @@ impl Queue {
         }
     }
 
+    /// Shuffle on (a mode, as YouTube Music's): the songs to come in a
+    /// random order, the queue's own order kept to go back to.
+    pub fn shuffle_on(&mut self) {
+        if self.unshuffled.is_none() {
+            self.unshuffled = Some(self.entries.iter().map(|e| e.id).collect());
+        }
+        self.shuffle_upcoming();
+    }
+
+    /// Shuffle off: the songs to come back in the queue's own order, those
+    /// added since after them, in the order they came.
+    pub fn shuffle_off(&mut self) {
+        let Some(order) = self.unshuffled.take() else {
+            return;
+        };
+        let place: std::collections::HashMap<u64, usize> = order
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| (id, i))
+            .collect();
+        let from = self.current.map_or(0, |i| i + 1);
+        if from < self.entries.len() {
+            // Later entries have higher IDs.
+            self.entries[from..]
+                .sort_by_key(|e| place.get(&e.id).map_or((1, e.id), |&i| (0, i as u64)));
+        }
+    }
+
     /// Takes a coming song out of the queue (not the one playing).
     pub fn remove(&mut self, id: u64) {
         let Some(i) = self.entries.iter().position(|e| e.id == id) else {
@@ -213,6 +288,8 @@ impl Queue {
         self.entries.clear();
         self.current = None;
         self.source = None;
+        self.shuffled = false;
+        self.unshuffled = None;
         self.generation += 1;
     }
 }
@@ -307,6 +384,24 @@ mod tests {
     }
 
     #[test]
+    fn songs_arriving_for_a_shuffle_go_among_those_to_come() {
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("b"), song("c")], 1, Some("PL".into()));
+        q.set_shuffled();
+        let added = q.insert_shuffled(vec![song("c"), song("d"), song("e")]);
+        assert_eq!(added, 2, "a song already queued is not added again");
+        // Nothing goes before the song playing.
+        assert_eq!(&ids(&q)[..2], ["a", "b"]);
+        assert_eq!(q.current().unwrap().track.video_id, "b");
+        let mut after: Vec<&str> = ids(&q)[2..].to_vec();
+        after.sort_unstable();
+        assert_eq!(after, ["c", "d", "e"]);
+        // A new queue is not a shuffle.
+        q.replace(vec![song("x")], 0, None);
+        assert!(!q.shuffled());
+    }
+
+    #[test]
     fn a_new_queue_is_a_new_generation() {
         let mut q = Queue::default();
         let first = q.generation();
@@ -354,6 +449,35 @@ mod tests {
         let mut expected: Vec<String> = (5..30).map(|i| format!("s{i}")).collect();
         expected.sort();
         assert_eq!(after, expected);
+    }
+
+    #[test]
+    fn shuffle_off_puts_the_coming_songs_back_in_order() {
+        let mut q = Queue::default();
+        let songs: Vec<Track> = (0..20).map(|i| song(&format!("s{i}"))).collect();
+        q.replace(songs, 2, None);
+        q.shuffle_on();
+        // Two songs on, and one more arrives.
+        q.advance();
+        q.advance();
+        let playing = q.current().unwrap().track.video_id.clone();
+        q.append(vec![song("late")]);
+        q.shuffle_off();
+        let order = ids(&q);
+        let at = order.iter().position(|v| *v == playing).unwrap();
+        assert_eq!(at, 4, "the playing song stays where it is");
+        // What comes after it is in the queue's own order, the late song
+        // last.
+        let coming: Vec<&str> = order[at + 1..].to_vec();
+        let mut own: Vec<&str> = coming[..coming.len() - 1].to_vec();
+        own.sort_by_key(|v| v[1..].parse::<u32>().unwrap());
+        assert_eq!(&coming[..coming.len() - 1], own.as_slice());
+        assert_eq!(*coming.last().unwrap(), "late");
+        // Off again does nothing more; a new queue starts unshuffled.
+        q.shuffle_off();
+        q.replace(vec![song("a"), song("b")], 0, None);
+        q.shuffle_off();
+        assert_eq!(ids(&q), ["a", "b"]);
     }
 
     #[test]

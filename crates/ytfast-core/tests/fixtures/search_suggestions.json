@@ -1,0 +1,55 @@
+{
+  "contents": [
+    {
+      "searchSuggestionsSectionRenderer": {
+        "contents": [
+          {"searchSuggestionRenderer": {"suggestion": {"runs": [{"text": "coldp", "bold": true}, {"text": "lay"}]}, "navigationEndpoint": {"searchEndpoint": {"query": "coldplay"}}, "icon": {"iconType": "SEARCH"}}},
+          {"searchSuggestionRenderer": {"suggestion": {"runs": [{"text": "coldp", "bold": true}, {"text": "lay songs"}]}, "navigationEndpoint": {"searchEndpoint": {"query": "coldplay songs"}}, "icon": {"iconType": "SEARCH"}}},
+          {"searchSuggestionRenderer": {"suggestion": {"runs": [{"text": "coldp", "bold": true}, {"text": "lay yellow"}]}, "navigationEndpoint": {"searchEndpoint": {"query": "coldplay yellow"}}, "icon": {"iconType": "SEARCH"}}},
+          {"searchSuggestionRenderer": {"suggestion": {"runs": [{"text": "coldp", "bold": true}, {"text": "lay viva la vida"}]}, "navigationEndpoint": {"searchEndpoint": {"query": "coldplay viva la vida"}}, "icon": {"iconType": "SEARCH"}}},
+          {"searchSuggestionRenderer": {"suggestion": {"runs": [{"text": "coldp", "bold": true}, {"text": "lay fix you"}]}, "navigationEndpoint": {"searchEndpoint": {"query": "coldplay fix you"}}, "icon": {"iconType": "SEARCH"}}},
+          {"searchSuggestionRenderer": {"suggestion": {"runs": [{"text": "coldp", "bold": true}, {"text": "lay sky full of stars"}]}, "navigationEndpoint": {"searchEndpoint": {"query": "coldplay sky full of stars"}}, "icon": {"iconType": "SEARCH"}}}
+        ]
+      }
+    },
+    {
+      "searchSuggestionsSectionRenderer": {
+        "contents": [
+          {
+            "musicResponsiveListItemRenderer": {
+              "thumbnail": {"musicThumbnailRenderer": {"thumbnail": {"thumbnails": [
+                {"url": "https://lh3.googleusercontent.com/IOKuXtp8PCQ_Fc-vaRKm3sKIXBxFV51gZheLTH5br-YGnWHFQf_Jywcuk7wbprYRoEbQyS_XZY6-nMJX=w60-h60-p-l90-rj", "width": 60, "height": 60},
+                {"url": "https://lh3.googleusercontent.com/IOKuXtp8PCQ_Fc-vaRKm3sKIXBxFV51gZheLTH5br-YGnWHFQf_Jywcuk7wbprYRoEbQyS_XZY6-nMJX=w120-h120-p-l90-rj", "width": 120, "height": 120}
+              ]}, "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_CIRCLE", "thumbnailScale": "MUSIC_THUMBNAIL_SCALE_ASPECT_FILL"}},
+              "flexColumns": [
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Coldplay"}]}, "displayPriority": "MUSIC_RESPONSIVE_LIST_ITEM_COLUMN_DISPLAY_PRIORITY_HIGH"}},
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "332M monthly audience"}]}, "displayPriority": "MUSIC_RESPONSIVE_LIST_ITEM_COLUMN_DISPLAY_PRIORITY_HIGH"}}
+              ],
+              "menu": {"menuRenderer": {"items": [
+                {"menuNavigationItemRenderer": {"text": {"runs": [{"text": "Shuffle play"}]}, "icon": {"iconType": "MUSIC_SHUFFLE"}, "navigationEndpoint": {"watchPlaylistEndpoint": {"playlistId": "RDAOuf6htoZivPnz-ZIwGU0dDA", "params": "wAEB8gECGAE%3D"}}}},
+                {"menuNavigationItemRenderer": {"text": {"runs": [{"text": "Start mix"}]}, "icon": {"iconType": "MIX"}, "navigationEndpoint": {"watchPlaylistEndpoint": {"playlistId": "RDEMuf6htoZivPnz-ZIwGU0dDA", "params": "wAEB"}}}}
+              ]}},
+              "flexColumnDisplayStyle": "MUSIC_RESPONSIVE_LIST_ITEM_FLEX_COLUMN_DISPLAY_STYLE_TWO_LINE_STACK",
+              "navigationEndpoint": {"browseEndpoint": {"browseId": "UCIaFw5VBEK8qaW6nRpx_qnw", "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": "MUSIC_PAGE_TYPE_ARTIST"}}}},
+              "itemHeight": "MUSIC_RESPONSIVE_LIST_ITEM_HEIGHT_MEDIUM"
+            }
+          },
+          {
+            "musicResponsiveListItemRenderer": {
+              "thumbnail": {"musicThumbnailRenderer": {"thumbnail": {"thumbnails": [
+                {"url": "https://yt3.googleusercontent.com/7RK5kFu8RjjulsxsPCJ55wmJLchKaaIRAYih0ldj--RGbnOOdA0U2vmLWyVfjPW82nR-Dwm2r8PhEi61=w60-h60-l90-rj", "width": 60, "height": 60},
+                {"url": "https://yt3.googleusercontent.com/7RK5kFu8RjjulsxsPCJ55wmJLchKaaIRAYih0ldj--RGbnOOdA0U2vmLWyVfjPW82nR-Dwm2r8PhEi61=w120-h120-l90-rj", "width": 120, "height": 120}
+              ]}, "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_UNSPECIFIED", "thumbnailScale": "MUSIC_THUMBNAIL_SCALE_ASPECT_FIT"}},
+              "overlay": {"musicItemThumbnailOverlayRenderer": {"background": {"verticalGradient": {"gradientLayerColors": ["3422552064", "3422552064"]}}, "content": {"musicPlayButtonRenderer": {"playNavigationEndpoint": {"watchEndpoint": {"videoId": "9qnqYL0eNNI", "watchEndpointMusicSupportedConfigs": {"watchEndpointMusicConfig": {"musicVideoType": "MUSIC_VIDEO_TYPE_ATV"}}}}, "playIcon": {"iconType": "PLAY_ARROW"}, "pauseIcon": {"iconType": "PAUSE"}, "buttonSize": "MUSIC_PLAY_BUTTON_SIZE_SMALL", "accessibilityPlayData": {"accessibilityData": {"label": "Play Yellow - Coldplay"}}}}, "contentPosition": "MUSIC_ITEM_THUMBNAIL_OVERLAY_CONTENT_POSITION_CENTERED", "displayStyle": "MUSIC_ITEM_THUMBNAIL_OVERLAY_DISPLAY_STYLE_PERSISTENT"}},
+              "flexColumns": [
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Yellow", "navigationEndpoint": {"watchEndpoint": {"videoId": "9qnqYL0eNNI", "watchEndpointMusicSupportedConfigs": {"watchEndpointMusicConfig": {"musicVideoType": "MUSIC_VIDEO_TYPE_ATV"}}}}}]}, "displayPriority": "MUSIC_RESPONSIVE_LIST_ITEM_COLUMN_DISPLAY_PRIORITY_HIGH"}},
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Song"}, {"text": " • "}, {"text": "Coldplay", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCIaFw5VBEK8qaW6nRpx_qnw", "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": "MUSIC_PAGE_TYPE_ARTIST"}}}}}, {"text": " • "}, {"text": "2.4B plays"}], "accessibility": {"accessibilityData": {"label": "Song • Coldplay • 2.4 billion plays"}}}, "displayPriority": "MUSIC_RESPONSIVE_LIST_ITEM_COLUMN_DISPLAY_PRIORITY_HIGH"}},
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Parachutes", "navigationEndpoint": {"browseEndpoint": {"browseId": "MPREb_oBucXyijinj", "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": "MUSIC_PAGE_TYPE_ALBUM"}}}}}]}, "displayPriority": "MUSIC_RESPONSIVE_LIST_ITEM_COLUMN_DISPLAY_PRIORITY_MEDIUM"}}
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

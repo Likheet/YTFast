@@ -1,6 +1,7 @@
 //! The results of a check: shown at the end and saved as a text file the
 //! user can share. Nothing personal goes in it: no account name, no song
-//! titles, no cookies, no stream addresses.
+//! titles, no cookies, no stream addresses, no sound device's name, and
+//! no home folder (it holds the computer's user name).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -45,6 +46,9 @@ pub struct SongResult {
     pub started_report: Option<String>,
     pub listened_report: Option<String>,
     pub problem: Option<String>,
+    /// Only this song cannot be played here (removed, or not offered in
+    /// this country): it is skipped, which is not a failure.
+    pub unavailable: bool,
 }
 
 #[derive(Default)]
@@ -67,8 +71,28 @@ impl Report {
         self.facts.push((name.to_string(), value.into()));
     }
 
+    /// No step failed. Skipped steps were not checked: see
+    /// [`Report::skipped`].
     pub fn passed(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|s| s.outcome != Outcome::Fail)
+    }
+
+    /// How many steps were skipped.
+    pub fn skipped(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| s.outcome == Outcome::Skip)
+            .count()
+    }
+
+    /// "PASSED", "PASSED (2 steps skipped)" or "NOT PASSED".
+    pub fn verdict(&self) -> String {
+        match (self.passed(), self.skipped()) {
+            (false, _) => "NOT PASSED".into(),
+            (true, 0) => "PASSED".into(),
+            (true, 1) => "PASSED (1 step skipped)".into(),
+            (true, n) => format!("PASSED ({n} steps skipped)"),
+        }
     }
 
     pub fn render(&self) -> String {
@@ -86,12 +110,7 @@ impl Report {
             let _ = writeln!(out, "{name}: {value}");
         }
         let _ = writeln!(out);
-        let verdict = if self.passed() {
-            "PASSED"
-        } else {
-            "NOT PASSED"
-        };
-        let _ = writeln!(out, "Result: {verdict}");
+        let _ = writeln!(out, "Result: {}", self.verdict());
         let _ = writeln!(out);
         let _ = writeln!(out, "Steps:");
         for step in &self.steps {
@@ -151,7 +170,8 @@ impl Report {
                 }
             }
         }
-        out
+        // Error messages can name files in the home folder.
+        crate::scrub::without_home(&out)
     }
 
     /// Saves the report in the current folder, or the home folder when the
@@ -223,8 +243,14 @@ mod tests {
         let mut report = Report::default();
         assert!(!report.passed());
         report.step("A", Outcome::Ok, "fine");
+        assert_eq!(report.verdict(), "PASSED");
         report.step("B", Outcome::Skip, "not run");
         assert!(report.passed());
+        // A skipped step was not checked: the verdict says so.
+        assert_eq!(report.skipped(), 1);
+        assert!(report.render().contains("Result: PASSED (1 step skipped)"));
+        report.step("D", Outcome::Skip, "not run");
+        assert_eq!(report.verdict(), "PASSED (2 steps skipped)");
         report.step("C", Outcome::Fail, "broken");
         assert!(!report.passed());
         let text = report.render();

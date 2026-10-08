@@ -1,6 +1,6 @@
-//! Colours from album art: the soft backdrop behind the player page, as
-//! Even Better Lyrics Plus takes it from the cover, and the wash behind
-//! the top of an album's or playlist's page.
+//! Colours from album art: the cover shrunk to a few pixels, which drawn
+//! stretched is the blurred cover behind the top of an album's or
+//! playlist's page.
 
 use egui::{Color32, ColorImage};
 

@@ -1,16 +1,19 @@
 //! Playing a song's audio.
 //!
 //! A song plays from its first bytes while the rest downloads
-//! ([`crate::stream`]); once all of it has arrived it stays in memory, so
-//! pausing for hours, closing the laptop lid or changing Wi-Fi cannot break
-//! it.
+//! ([`crate::stream`]); once all of it has arrived it stays, so pausing for
+//! hours, closing the laptop lid or changing Wi-Fi cannot break it.
 //!
 //! Output goes through `fastframe-audio`, the device stream Spotifast uses:
 //! it costs no CPU while paused, follows the default output when headphones
 //! come and go, and reopens after a failure. symphonia decodes (AAC in MP4)
-//! and rodio's mixer converts to the device's rate.
+//! on a thread of its own per song, a little ahead of the device, and
+//! rodio's mixer converts to the device's rate. The device never waits for
+//! the download: when the decoder is behind, it plays silence.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use fastframe_audio::{Buffer, BufferSize, Maintained, OutputOptions, Render};
@@ -44,7 +47,8 @@ pub fn gain_for_loudness(loudness_db: Option<f64>) -> f32 {
     }
 }
 
-/// A song decoded as it plays, as a rodio source.
+/// A song's decoder: its samples, one after another, waiting for the
+/// download when it gets ahead. [`Playing`] runs it on a thread of its own.
 ///
 /// symphonia is used directly: rodio's own decoder reads a fragmented MP4's
 /// length as zero and so cannot seek in YouTube's streams. Seeking happens
@@ -174,6 +178,19 @@ impl SongSource {
             }
         }
     }
+
+    /// The samples of the next packet (or what is left of the current
+    /// one). `None` at the end of the song.
+    fn next_chunk(&mut self) -> Option<Vec<f32>> {
+        let len = self.samples.as_ref().map_or(0, |b| b.samples().len());
+        if self.position >= len && !self.refill() {
+            return None;
+        }
+        let samples = self.samples.as_ref()?.samples();
+        let chunk = samples[self.position..].to_vec();
+        self.position = samples.len();
+        Some(chunk)
+    }
 }
 
 impl Iterator for SongSource {
@@ -190,7 +207,218 @@ impl Iterator for SongSource {
     }
 }
 
-impl rodio::Source for SongSource {
+/// Seconds of sound decoded ahead of the device.
+const AHEAD_SECONDS: usize = 2;
+/// Silence is played in blocks of this many frames while the decoder waits
+/// for the download.
+const SILENCE_FRAMES: usize = 256;
+
+/// Decoded sound on its way from a song's decoder to the device.
+#[derive(Default)]
+struct Queue {
+    chunks: VecDeque<Vec<f32>>,
+    /// Samples in `chunks`.
+    samples: usize,
+    /// Decoding has ended: at the end of the song, or where it broke off.
+    ended: bool,
+    /// Nobody plays the song any more: decoding stops.
+    let_go: bool,
+}
+
+impl Queue {
+    fn push(&mut self, chunk: Vec<f32>) {
+        self.samples += chunk.len();
+        self.chunks.push_back(chunk);
+    }
+}
+
+/// What a song's decoder and the device share.
+struct Feed {
+    queue: Mutex<Queue>,
+    /// Woken when the device takes sound, or the song is let go.
+    room: Condvar,
+    /// Samples of silence played while the decoder waited for the download.
+    silent: AtomicU64,
+    /// Samples per second (all channels).
+    per_second: u64,
+}
+
+/// What the device gets from a [`Feed`].
+enum Taken {
+    Sound(Vec<f32>),
+    /// Nothing decoded yet: the download is behind.
+    Waiting,
+    End,
+}
+
+impl Feed {
+    fn lock(&self) -> MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The next decoded sound. Never waits: the lock is only ever held to
+    /// add or take a chunk.
+    fn take(&self) -> Taken {
+        let mut queue = self.lock();
+        match queue.chunks.pop_front() {
+            Some(chunk) => {
+                queue.samples -= chunk.len();
+                drop(queue);
+                self.room.notify_one();
+                Taken::Sound(chunk)
+            }
+            None if queue.ended || queue.let_go => Taken::End,
+            None => Taken::Waiting,
+        }
+    }
+
+    /// Stops the decoder: the song is no longer played. What it decoded
+    /// goes too: a song let go while paused may stay in the player until
+    /// Play, and seeking while paused lets go of one each time.
+    fn let_go(&self) {
+        let mut queue = self.lock();
+        queue.let_go = true;
+        queue.chunks = VecDeque::new();
+        queue.samples = 0;
+        drop(queue);
+        self.room.notify_all();
+    }
+
+    /// How long the silence played while waiting for the download lasted.
+    fn silence(&self) -> Duration {
+        let samples = self.silent.load(Ordering::Relaxed);
+        Duration::from_secs_f64(samples as f64 / self.per_second.max(1) as f64)
+    }
+}
+
+/// Decodes `song` into `feed`, keeping at most `ahead` samples ready, until
+/// the song ends or is let go.
+fn decode_ahead(mut song: SongSource, feed: &Feed, ahead: usize) {
+    // However decoding stops (a panic in the decoder too), the device
+    // hears that it has, so the song ends rather than playing silence for
+    // ever.
+    struct Ended<'a>(&'a Feed);
+    impl Drop for Ended<'_> {
+        fn drop(&mut self) {
+            self.0.lock().ended = true;
+        }
+    }
+    let _ended = Ended(feed);
+    while let Some(chunk) = song.next_chunk() {
+        let mut queue = feed.lock();
+        while queue.samples >= ahead && !queue.let_go {
+            queue = feed
+                .room
+                .wait(queue)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        if queue.let_go {
+            return;
+        }
+        queue.push(chunk);
+    }
+}
+
+/// A song as the device plays it, as a rodio source.
+///
+/// The device must never wait (the sound would stop, and pausing or moving
+/// to other headphones would wait too), so the song is decoded on a thread
+/// of its own ([`decode_ahead`]), a little ahead. When the decoder is
+/// behind, because the download is, silence plays, and is counted so the
+/// song's position (and the lyrics) do not run ahead. Dropping it ends the
+/// decoding thread.
+struct Playing {
+    feed: Arc<Feed>,
+    chunk: Vec<f32>,
+    at: usize,
+    /// Samples of silence still to play.
+    silence: usize,
+    channels: u16,
+    rate: u32,
+}
+
+impl Playing {
+    /// Starts playing `song`: its first moments are decoded here, so the
+    /// device's first request is answered with sound, and the rest on a
+    /// thread of its own.
+    fn start(mut song: SongSource) -> Result<(Self, Arc<Feed>), AudioError> {
+        let (channels, rate) = (song.channels, song.rate);
+        let per_second = rate as usize * usize::from(channels);
+        let mut queue = Queue::default();
+        while queue.samples < per_second / 2 {
+            match song.next_chunk() {
+                Some(chunk) => queue.push(chunk),
+                None => {
+                    queue.ended = true;
+                    break;
+                }
+            }
+        }
+        let ended = queue.ended;
+        let feed = Arc::new(Feed {
+            queue: Mutex::new(queue),
+            room: Condvar::new(),
+            silent: AtomicU64::new(0),
+            per_second: per_second as u64,
+        });
+        if !ended {
+            let decoding = Arc::clone(&feed);
+            std::thread::Builder::new()
+                .name("ytfast-decoder".into())
+                .spawn(move || decode_ahead(song, &decoding, per_second * AHEAD_SECONDS))
+                .map_err(|e| AudioError::Device(format!("could not start decoding: {e}")))?;
+        }
+        let playing = Self {
+            feed: Arc::clone(&feed),
+            chunk: Vec::new(),
+            at: 0,
+            silence: 0,
+            channels,
+            rate,
+        };
+        Ok((playing, feed))
+    }
+}
+
+impl Drop for Playing {
+    fn drop(&mut self) {
+        self.feed.let_go();
+    }
+}
+
+impl Iterator for Playing {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        loop {
+            if let Some(&sample) = self.chunk.get(self.at) {
+                self.at += 1;
+                return Some(sample);
+            }
+            if self.silence > 0 {
+                self.silence -= 1;
+                return Some(0.0);
+            }
+            match self.feed.take() {
+                Taken::Sound(chunk) => {
+                    self.chunk = chunk;
+                    self.at = 0;
+                }
+                Taken::Waiting => {
+                    // Whole frames, so the channels stay in step.
+                    let samples = SILENCE_FRAMES * usize::from(self.channels);
+                    self.feed
+                        .silent
+                        .fetch_add(samples as u64, Ordering::Relaxed);
+                    self.silence = samples;
+                }
+                Taken::End => return None,
+            }
+        }
+    }
+}
+
+impl rodio::Source for Playing {
     fn current_span_len(&self) -> Option<usize> {
         // One format for the whole song.
         None
@@ -273,6 +501,9 @@ pub struct Player {
     mixer: rodio::mixer::Mixer,
     sink: rodio::Sink,
     song: Option<Loaded>,
+    /// What the current sink plays from: its silence is taken off the
+    /// position.
+    feed: Option<Arc<Feed>>,
     /// Where the current sink started in the song.
     offset: Duration,
     paused: bool,
@@ -313,6 +544,7 @@ impl Player {
             mixer,
             sink,
             song: None,
+            feed: None,
             offset: Duration::ZERO,
             paused: false,
             volume: 1.0,
@@ -336,7 +568,7 @@ impl Player {
         let Some(song) = &self.song else {
             return Ok(());
         };
-        let source = SongSource::open(&song.data, at)?;
+        let (source, feed) = Playing::start(SongSource::open(&song.data, at)?)?;
         // A fresh sink; dropping the old one stops it on the audio thread
         // without waiting.
         let sink = rodio::Sink::connect_new(&self.mixer);
@@ -346,6 +578,11 @@ impl Player {
         }
         sink.append(source);
         self.sink = sink;
+        // The old source may wait in the mixer until the device next plays
+        // (it rests while paused); its decoder stops now.
+        if let Some(old) = self.feed.replace(feed) {
+            old.let_go();
+        }
         self.offset = at;
         Ok(())
     }
@@ -392,9 +629,11 @@ impl Player {
         to.is_zero() || self.song.as_ref().is_none_or(|s| s.data.is_complete())
     }
 
-    /// How far into the song playback is.
+    /// How far into the song playback is. Silence played while the download
+    /// caught up does not count.
     pub fn position(&self) -> Duration {
-        self.offset + self.sink.get_pos()
+        let silent = self.feed.as_ref().map_or(Duration::ZERO, |f| f.silence());
+        self.offset + self.sink.get_pos().saturating_sub(silent)
     }
 
     /// The current song has stopped sounding: played to its end, or broken
@@ -421,6 +660,9 @@ impl Player {
     pub fn stop(&mut self) {
         self.song = None;
         self.sink = rodio::Sink::connect_new(&self.mixer);
+        if let Some(old) = self.feed.take() {
+            old.let_go();
+        }
         self.offset = Duration::ZERO;
         // Nothing to play: the device rests (no callbacks, no CPU, and it
         // does not keep the computer awake) until the next song.
@@ -541,5 +783,80 @@ mod tests {
         let streamed = SongSource::open(&arriving, Duration::ZERO).unwrap().count();
         feeder.join().unwrap();
         assert_eq!(streamed, whole);
+    }
+
+    #[test]
+    fn the_device_never_waits_for_the_download() {
+        // Half the song arrives, then nothing for a second, then the rest.
+        // The device gets sound, then silence (counted) instead of waiting,
+        // then the rest of the sound: every sample, the same as from the
+        // whole file.
+        let bytes = tone();
+        let whole = SongSource::open(&SongData::complete(bytes.clone()), Duration::ZERO)
+            .unwrap()
+            .count() as u64;
+        let arriving = SongData::new(Some(bytes.len() as u64));
+        let (first, rest) = bytes.split_at(bytes.len() / 2);
+        arriving.push_for_test(first);
+        let source = SongSource::open(&arriving, Duration::ZERO).unwrap();
+        let (mut playing, feed) = Playing::start(source).unwrap();
+        let feeder = {
+            let data = Arc::clone(&arriving);
+            let rest = rest.to_vec();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(1));
+                for part in rest.chunks(997) {
+                    data.push_for_test(part);
+                }
+                data.finish_for_test();
+            })
+        };
+        let mut played = 0u64;
+        let mut slowest = Duration::ZERO;
+        let mut silent_before = 0;
+        loop {
+            let asked = std::time::Instant::now();
+            let sample = playing.next();
+            slowest = slowest.max(asked.elapsed());
+            if sample.is_none() {
+                break;
+            }
+            played += 1;
+            let silent = feed.silent.load(Ordering::Relaxed);
+            if silent != silent_before {
+                // Silence: as a device would, come back a moment later.
+                silent_before = silent;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        feeder.join().unwrap();
+        let silent = feed.silent.load(Ordering::Relaxed);
+        assert!(silent > 0, "it played silence while the song arrived");
+        assert_eq!(played - silent, whole);
+        assert!(
+            slowest < Duration::from_millis(500),
+            "the device waited {slowest:?}"
+        );
+        // The silence is taken off the position.
+        let per_second = f64::from(playing.rate) * f64::from(playing.channels);
+        assert!((feed.silence().as_secs_f64() - silent as f64 / per_second).abs() < 1e-9);
+    }
+
+    #[test]
+    fn letting_a_song_go_ends_its_decoding() {
+        let data = SongData::complete(tone());
+        let source = SongSource::open(&data, Duration::ZERO).unwrap();
+        let (mut playing, _feed) = Playing::start(source).unwrap();
+        assert!(playing.next().is_some());
+        // The four-second song is decoded two seconds ahead, then the
+        // decoder waits for room, holding the song.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(Arc::strong_count(&data), 2);
+        drop(playing);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&data) > 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(Arc::strong_count(&data), 1, "the decoder let the song go");
     }
 }

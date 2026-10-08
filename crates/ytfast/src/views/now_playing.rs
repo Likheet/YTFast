@@ -1,9 +1,8 @@
 //! The player page, laid out as YouTube Music's: the playing song's cover
 //! large on the left, and on the right a panel with the tabs Up next,
-//! Lyrics and Related. The page lies over the cover's own colours, and
-//! lyrics follow the song in the Even Better Lyrics Plus way: the line
-//! being sung lit, the rest dimmed, scrolling smoothly; click a line to
-//! jump there.
+//! Lyrics and Related, on the window's own near-black. Lyrics follow the
+//! song in the Even Better Lyrics Plus way: the line being sung lit, the
+//! rest dimmed, scrolling smoothly; click a line to jump there.
 
 use egui::{
     Align, Align2, Color32, CornerRadius, Layout, Rect, Sense, UiBuilder, Vec2, pos2, vec2,
@@ -12,12 +11,11 @@ use egui::{
 use crate::app::{Action, App, NpTab, PlayState};
 use crate::lyrics::{Lyrics, State};
 use crate::queue::Entry;
-use crate::theme::{self, PALETTE};
-use crate::views::{backdrop, page, queue_panel, widgets};
+use crate::theme::{self, Icon, PALETTE};
+use crate::views::{page, queue_panel, widgets};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     let area = ui.max_rect();
-    backdrop::cover(app, ui, area);
     let Some(entry) = &app.playback.entry else {
         ui.painter().text(
             area.center(),
@@ -29,42 +27,42 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         return;
     };
 
-    // YouTube Music's own spacing: 56 at the sides, 32 above, and 56
-    // between the cover and the panel.
-    let wide = area.width() >= 840.0;
-    let side = if wide { 56.0 } else { 24.0 };
+    // YouTube Music's spacing, by the window's width: above, at the sides,
+    // between the cover and the panel, and the panel's share of the rest
+    // (at most 800).
+    let window = ui.ctx().content_rect().width();
+    let (top, side, gap, share) = if window >= 1800.0 {
+        (64.0, 96.0, 96.0, 0.36)
+    } else if window >= 1578.0 {
+        (48.0, 64.0, 64.0, 0.36)
+    } else if window >= 1364.0 {
+        (40.0, 56.0, 56.0, 0.36)
+    } else if window >= 1150.0 {
+        (32.0, 56.0, 56.0, 0.36)
+    } else {
+        (24.0, 48.0, 48.0, 0.40)
+    };
     let inner = Rect::from_min_max(
-        pos2(area.left() + side, area.top() + 32.0),
+        pos2(area.left() + side, area.top() + top),
         pos2(area.right() - side, area.bottom()),
     );
-    let panel_width = if wide {
-        (inner.width() * 0.36).clamp(320.0, 480.0)
-    } else {
-        inner.width()
-    };
+    let panel_width = (inner.width() * share).min(800.0);
     let panel = Rect::from_min_max(pos2(inner.right() - panel_width, inner.top()), inner.max);
-    if wide {
-        let main = Rect::from_min_max(inner.min, pos2(panel.left() - 56.0, inner.bottom() - 32.0));
-        let side = main.width().min(main.height()).max(120.0);
-        let art = Rect::from_center_size(main.center(), Vec2::splat(side));
-        widgets::cover_with(
-            app,
-            ui,
-            art,
-            entry.track.thumbnail.as_ref(),
-            CornerRadius::same(8),
-        );
-        // A click on the cover pauses and plays again, as on YouTube Music.
-        let sounding = app.playback.state == PlayState::Playing && !app.audio_status.paused;
-        let response = ui.interact(art, ui.id().with("cover"), Sense::click());
-        response.widget_info(|| {
-            let name = if sounding { "Pause" } else { "Play" };
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name)
-        });
-        if response.clicked() {
-            app.act(Action::TogglePause);
-        }
-    }
+    // The cover: square, at most 800, centred in what is left (with the
+    // space above kept under it too); `#606060` while it loads.
+    let main = Rect::from_min_max(inner.min, pos2(panel.left() - gap, inner.bottom() - top));
+    let length = main.width().min(main.height()).clamp(0.0, 800.0);
+    let art = Rect::from_center_size(main.center(), Vec2::splat(length));
+    ui.painter()
+        .rect_filled(art, CornerRadius::same(8), PALETTE.thumb);
+    widgets::picture(
+        app,
+        ui,
+        art,
+        entry.track.thumbnail.as_ref(),
+        CornerRadius::same(8),
+    );
+    cover_click(app, ui, art);
 
     let mut ui = ui.new_child(
         UiBuilder::new()
@@ -72,7 +70,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             .layout(Layout::top_down(Align::Min)),
     );
     ui.spacing_mut().item_spacing.y = 0.0;
-    tabs(app, &mut ui);
+    tabs(app, &mut ui, entry);
     match app.np_tab {
         NpTab::UpNext => queue_panel::list(app, &mut ui),
         NpTab::Lyrics => lyrics(app, &mut ui, entry),
@@ -80,54 +78,112 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     }
 }
 
-/// UP NEXT, LYRICS, RELATED: words in capitals over a hairline, the
-/// chosen one white with a line under it.
-fn tabs(app: &App, ui: &mut egui::Ui) {
-    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+/// A click on the cover pauses and plays again, as on YouTube Music, and
+/// shows what it did: a 52 circle of black@0.30 with a 36 icon, growing to
+/// twice its size as it fades over 0.5 s (`#bezel`).
+fn cover_click(app: &App, ui: &egui::Ui, art: Rect) {
+    let sounding = app.playback.state == PlayState::Playing && !app.audio_status.paused;
+    let id = ui.id().with("cover");
+    let response = ui.interact(art, id, Sense::click());
+    response.widget_info(|| {
+        let name = if sounding { "Pause" } else { "Play" };
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name)
+    });
+    let now = ui.input(|i| i.time);
+    if response.clicked() {
+        app.act(Action::TogglePause);
+        // What the click does: pause what sounds, or play.
+        ui.data_mut(|d| d.insert_temp(id.with("bezel"), (now, sounding)));
+    }
+    let Some((since, paused)) = ui.data(|d| d.get_temp::<(f64, bool)>(id.with("bezel"))) else {
+        return;
+    };
+    let t = ((now - since) / 0.5) as f32;
+    if t >= 1.0 {
+        ui.data_mut(|d| d.remove::<(f64, bool)>(id.with("bezel")));
+        return;
+    }
+    ui.ctx().request_repaint();
+    let grow = 1.0 + t;
+    let fade = 1.0 - t;
+    let disc = Rect::from_center_size(art.center(), Vec2::splat(52.0 * grow));
+    ui.painter().circle_filled(
+        disc.center(),
+        26.0 * grow,
+        Color32::from_black_alpha((77.0 * fade) as u8),
+    );
+    let icon = if paused { Icon::Pause } else { Icon::Play };
+    theme::paint_icon(
+        ui,
+        icon,
+        disc,
+        36.0 * grow,
+        Color32::from_white_alpha((255.0 * fade) as u8),
+    );
+}
+
+/// UP NEXT, LYRICS, RELATED: words in capitals in a row 48 high over a
+/// hairline, the chosen one white with a white line 1 thick under it that
+/// slides to the tab chosen (0.15 s); the others white@0.56 (0.70 seen at
+/// 0.8), LYRICS at 0.30 and not to be chosen when the song has none.
+fn tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
+    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 49.0), Sense::hover());
     ui.painter().hline(
         bar.x_range(),
-        bar.bottom() - 0.5,
+        bar.top() + 48.5,
         egui::Stroke::new(1.0, PALETTE.outline),
     );
+    let no_lyrics = matches!(app.lyrics.get(&entry.track.video_id), Some(State::Missing));
     let mut x = bar.left();
+    let mut line = None;
     for (tab, name) in [
         (NpTab::UpNext, "UP NEXT"),
         (NpTab::Lyrics, "LYRICS"),
         (NpTab::Related, "RELATED"),
     ] {
         let chosen = app.np_tab == tab;
+        let enabled = !(tab == NpTab::Lyrics && no_lyrics) || chosen;
         let color = if chosen {
             PALETTE.text
+        } else if enabled {
+            Color32::from_white_alpha(143)
         } else {
-            PALETTE.secondary
+            Color32::from_white_alpha(77)
         };
         let words = ui
             .painter()
             .layout_no_wrap(name.to_string(), theme::medium(14.0), color);
         let rect = Rect::from_min_size(pos2(x, bar.top()), vec2(words.size().x + 24.0, 48.0));
         x = rect.right();
-        let response = ui.interact(rect, ui.id().with(("tab", name)), Sense::click());
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, name)
-        });
-        let color = if response.hovered() {
-            PALETTE.text
+        let sense = if enabled {
+            Sense::click()
         } else {
-            color
+            Sense::hover()
         };
+        let response = ui.interact(rect, ui.id().with(("tab", name)), sense);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, chosen, name)
+        });
         let at = rect.center() - words.size() / 2.0;
         ui.painter()
             .galley_with_override_text_color(at, words, color);
         if chosen {
-            ui.painter().hline(
-                rect.x_range(),
-                bar.bottom() - 1.0,
-                egui::Stroke::new(2.0, PALETTE.text),
-            );
+            line = Some(rect.x_range());
         }
-        if response.clicked() {
+        if enabled && response.clicked() {
             app.act(Action::NowPlayingTab(tab));
         }
+    }
+    if let Some(range) = line {
+        let ctx = ui.ctx();
+        let id = ui.id().with("tab-line");
+        let left = ctx.animate_value_with_time(id.with("left"), range.min, 0.15);
+        let right = ctx.animate_value_with_time(id.with("right"), range.max, 0.15);
+        ui.painter().hline(
+            left..=right,
+            bar.top() + 47.5,
+            egui::Stroke::new(1.0, PALETTE.text),
+        );
     }
 }
 
@@ -201,11 +257,11 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         let mut new_tops = Vec::with_capacity(lyrics.lines.len());
         let width = ui.available_width() - 16.0;
         // Lines that follow the song are large and bold; plain ones are
-        // set as YouTube Music sets them.
-        let (font, gap) = if lyrics.synced {
-            (theme::bold(24.0), 16.0)
+        // set as YouTube Music sets them (14 on lines 19.6 apart).
+        let (font, gap, line_height) = if lyrics.synced {
+            (theme::bold(24.0), 16.0, None)
         } else {
-            (theme::regular(14.0), 3.0)
+            (theme::regular(14.0), 0.0, Some(19.6))
         };
         for (i, line) in lyrics.lines.iter().enumerate() {
             let goal = match current {
@@ -225,14 +281,19 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
             let color = Color32::from_white_alpha((bright * 255.0) as u8);
             ui.set_max_width(width);
             let response = ui.add(
-                egui::Label::new(egui::RichText::new(text).font(font.clone()).color(color))
-                    .wrap()
-                    .selectable(false)
-                    .sense(if line.start.is_some() {
-                        Sense::click()
-                    } else {
-                        Sense::hover()
-                    }),
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .font(font.clone())
+                        .color(color)
+                        .line_height(line_height),
+                )
+                .wrap()
+                .selectable(false)
+                .sense(if line.start.is_some() {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                }),
             );
             new_tops.push(response.rect.top() - origin);
             if let Some(start) = line.start {

@@ -178,24 +178,41 @@ pub async fn lrclib(
     if let Some(seconds) = duration_secs.filter(|s| s.is_finite() && *s > 0.0) {
         query.push(("duration", (seconds.round() as u64).to_string()));
     }
+    // The exact record, if it is timed (or a song without words). Plain
+    // words are kept while the search looks for a timed record: LRCLIB
+    // often holds the same song more than once (under other album names),
+    // and only some are timed.
+    let mut plain = None;
     match lrclib_get(http, "get", &query).await? {
-        (200, Some(record)) => {
-            if let Some(lyrics) = from_lrclib(&record) {
-                return Ok(Some(lyrics));
-            }
-        }
+        (200, Some(record)) => match from_lrclib(&record) {
+            Some(lyrics) if lyrics.synced || is_instrumental(&lyrics) => return Ok(Some(lyrics)),
+            found => plain = found,
+        },
         // Not found, or not enough to look it up by: search instead.
         (200 | 400 | 404, _) => {}
         (status, _) => return Err(format!("LRCLIB answered with HTTP {status}")),
     }
     query.retain(|(name, _)| matches!(*name, "track_name" | "artist_name"));
-    match lrclib_get(http, "search", &query).await? {
-        (200, results) => Ok(results
+    let found = match lrclib_get(http, "search", &query).await {
+        Ok((200, results)) => results
             .as_ref()
             .and_then(|r| best_match(r, duration_secs))
-            .and_then(from_lrclib)),
-        (status, _) => Err(format!("LRCLIB answered with HTTP {status}")),
-    }
+            .and_then(from_lrclib),
+        // The exact record's words are better than nothing.
+        Ok(_) | Err(_) if plain.is_some() => None,
+        Ok((status, _)) => return Err(format!("LRCLIB answered with HTTP {status}")),
+        Err(e) => return Err(e),
+    };
+    Ok(match found {
+        Some(lyrics) if lyrics.synced || plain.is_none() => Some(lyrics),
+        _ => plain,
+    })
+}
+
+/// Whether `lyrics` is the one line LRCLIB's lyrics are for a song
+/// without words.
+fn is_instrumental(lyrics: &Lyrics) -> bool {
+    matches!(&lyrics.lines[..], [line] if line.text == INSTRUMENTAL)
 }
 
 /// One LRCLIB request: its HTTP status, and its JSON when it succeeded.

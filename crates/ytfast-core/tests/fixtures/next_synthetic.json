@@ -8,6 +8,12 @@
        "tabRenderer": {
         "content": {
          "musicQueueRenderer": {
+          "header": {
+           "musicQueueHeaderRenderer": {
+            "title": {"runs": [{"text": "Playing from"}]},
+            "subtitle": {"runs": [{"text": "Pop Mix"}]}
+           }
+          },
           "content": {
            "playlistPanelRenderer": {
             "contents": [

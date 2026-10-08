@@ -24,7 +24,8 @@ use crate::theme::{self, PALETTE};
 pub const SEARCH_BOX: &str = "ytfast-search-box";
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
-    backdrop::paint(ui, ui.max_rect());
+    app.backdrop_slot
+        .set(Some(backdrop::paint(ui, ui.max_rect())));
     if !matches!(app.auth, Auth::SignedIn { .. }) {
         // Signed out by YouTube while a song plays: it can still be paused.
         if app.playback.entry.is_some() {
@@ -45,61 +46,86 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(Frame::new())
         .show(ui, |ui| {
-            if app.now_playing {
-                now_playing::show(app, ui);
-            } else {
+            // The player page slides up over the page, and back down, in
+            // 0.3 s (`cubic-bezier(.2,0,.6,1)`, as YouTube Music's).
+            let open = ui.ctx().animate_bool_with_time(
+                egui::Id::new("player-page-open"),
+                app.now_playing,
+                0.3,
+            );
+            if open < 1.0 {
                 page::show(app, ui);
+            }
+            if open > 0.0 {
+                let area = ui.max_rect();
+                let down = area.height() * (1.0 - theme::bezier(0.2, 0.0, 0.6, 1.0, open));
+                let rect = area.translate(egui::vec2(0.0, down));
+                let mut player = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                player.set_clip_rect(area);
+                player.painter().rect_filled(rect, 0.0, PALETTE.window);
+                now_playing::show(app, &mut player);
             }
         });
     notice(app, ui);
     dialogs::show(app, ui);
 }
 
-/// "Add to playlist": the account's own playlists, from the Library.
-pub fn playlists_menu(app: &App, ui: &mut egui::Ui, track: &ytfast_core::read::Track) {
-    let own: Vec<(String, String)> = app.own_playlists();
-    if own.is_empty() {
-        return;
-    }
-    ui.menu_button("Add to playlist", |ui| {
-        theme::menu(ui);
-        for (id, title) in own {
-            if ui.button(&title).clicked() {
-                app.act(crate::app::Action::AddToPlaylist {
-                    playlist_id: id,
-                    title,
-                    video_id: track.video_id.clone(),
-                });
-                ui.close();
-            }
-        }
-    });
-}
-
 /// A short message ("Added to the queue") at the bottom left, just above
 /// the player bar, as YouTube Music shows its own.
 fn notice(app: &App, ui: &egui::Ui) {
-    let Some((text, _)) = &app.notice else { return };
-    let bar = if app.playback.entry.is_some() {
+    let Some((text, at)) = &app.notice else {
+        return;
+    };
+    // In over 0.3 s (rising 100 as it fades in), 3 s in all, out the same
+    // way; drawn again only while it moves.
+    let elapsed = at.elapsed().as_secs_f32();
+    let coming = (elapsed / 0.3).min(1.0);
+    let going = ((elapsed - 3.0) / 0.3).clamp(0.0, 1.0);
+    if elapsed < 0.3 || elapsed > 3.0 {
+        ui.ctx().request_repaint();
+    } else {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f32(3.0 - elapsed));
+    }
+    let shown = theme::bezier(0.25, 0.1, 0.25, 1.0, coming) * (1.0 - going);
+    if shown <= 0.0 {
+        return;
+    }
+    // On the player bar's top edge (12 above the window's foot without
+    // one), 12 from the left.
+    let lift = if app.playback.entry.is_some() {
         theme::PLAYER_BAR_HEIGHT
     } else {
-        0.0
+        12.0
     };
+    let drop = 100.0 * (1.0 - shown);
     egui::Area::new(egui::Id::new("notice"))
         .order(egui::Order::Foreground)
-        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(24.0, -(bar + 24.0)))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(12.0, -lift + drop))
         .interactable(false)
         .show(ui.ctx(), |ui| {
+            ui.set_opacity(shown);
+            // YouTube Music's toast: `#f1f1f1`, words `#030303` 14,
+            // padding 16 24, r 8, 288 wide, one line.
             Frame::new()
-                .fill(PALETTE.panel)
-                .corner_radius(egui::CornerRadius::same(4))
-                .inner_margin(Margin::symmetric(24, 14))
+                .fill(PALETTE.button)
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(24, 16))
+                .shadow(egui::Shadow {
+                    offset: [0, 2],
+                    blur: 5,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(66),
+                })
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .font(theme::regular(14.0))
-                            .color(PALETTE.text),
+                    ui.set_width(240.0);
+                    let words =
+                        theme::fit(ui, text, theme::regular(14.0), PALETTE.window, 240.0, 1);
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(240.0, words.size().y.max(16.8)),
+                        egui::Sense::hover(),
                     );
+                    ui.painter().galley(rect.min, words, PALETTE.window);
                 });
         });
 }
