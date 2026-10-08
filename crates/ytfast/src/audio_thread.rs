@@ -2,8 +2,9 @@
 //! between threads on every platform, and nothing the window does should
 //! make the music stutter. The window sends commands and reads a status.
 //!
-//! Without a sound device (or in demo mode) a silent clock stands in, so
-//! the window behaves the same.
+//! In demo mode a silent clock stands in, so the window behaves the same.
+//! Without a sound device, songs do not play: each Play looks for one
+//! again, and says so while there is none.
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -82,6 +83,21 @@ impl Audio {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// A player with nothing behind it, for the app's tests: the commands
+    /// come out of the receiver, and [`Audio::set_status`] answers.
+    #[cfg(test)]
+    pub fn for_tests() -> (Self, Receiver<Command>) {
+        let (commands, receiver) = mpsc::channel();
+        let status = Arc::new(Mutex::new(Status::default()));
+        (Self { commands, status }, receiver)
+    }
+
+    /// Changes the status, as the audio thread would.
+    #[cfg(test)]
+    pub fn set_status(&self, change: impl FnOnce(&mut Status)) {
+        change(&mut self.status.lock().unwrap_or_else(PoisonError::into_inner));
     }
 
     /// The entry that ended, once.
@@ -247,6 +263,10 @@ impl Engine {
     }
 }
 
+/// What a Play says while no sound device can be found.
+const NO_DEVICE: &str =
+    "No sound output was found. Connect speakers or headphones, then press Play.";
+
 /// Jumps to `to` seconds into the song.
 fn jump(engine: &mut Engine, to: f64, ended_sent: &mut bool, problem: &mut Option<String>) {
     match engine.seek(to) {
@@ -259,6 +279,8 @@ fn jump(engine: &mut Engine, to: f64, ended_sent: &mut bool, problem: &mut Optio
 
 fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(), silent: bool) {
     let mut problem = None;
+    // No sound device was found: the silent clock only holds the place.
+    let mut no_device = false;
     let mut engine = if silent {
         Engine::Silent(Silent::default())
     } else {
@@ -266,10 +288,13 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
             Ok(player) => Engine::Real(Box::new(player)),
             Err(e) => {
                 problem = Some(format!("No sound output: {e}"));
+                no_device = true;
                 Engine::Silent(Silent::default())
             }
         }
     };
+    // The last volume asked for, for a device found later.
+    let mut volume: Option<f32> = None;
     let mut entry: Option<u64> = None;
     let mut length = 0.0;
     let mut ended_sent = false;
@@ -303,24 +328,47 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                         length: song_length,
                     } => {
                         pending_jump = None;
-                        match engine.play(data, gain, song_length) {
+                        // Speakers or headphones may have been connected
+                        // since: look again rather than play to nobody.
+                        if no_device {
+                            match Player::open() {
+                                Ok(mut player) => {
+                                    if let Some(v) = volume {
+                                        player.set_volume(v);
+                                    }
+                                    engine = Engine::Real(Box::new(player));
+                                    no_device = false;
+                                }
+                                Err(e) => problem = Some(format!("No sound output: {e}")),
+                            }
+                        }
+                        let played = if no_device {
+                            Err(NO_DEVICE.to_string())
+                        } else {
+                            engine
+                                .play(data, gain, song_length)
+                                .map_err(|e| format!("This song could not be played: {e}"))
+                        };
+                        match played {
                             Ok(()) => {
                                 entry = Some(id);
                                 length = song_length;
                                 ended_sent = false;
                                 problem = None;
                             }
-                            Err(e) => {
+                            Err(message) => {
                                 // The song cannot be played: the window
-                                // decides whether to move on.
+                                // decides whether to move on. Without a
+                                // device, the next song could not either.
                                 update(&mut |s| {
                                     s.failed = Some(PlayFailure {
                                         entry: id,
-                                        message: format!("This song could not be played: {e}"),
-                                        song_only: true,
+                                        message: message.clone(),
+                                        song_only: !no_device,
                                     });
                                 });
                                 entry = None;
+                                length = 0.0;
                             }
                         }
                     }
@@ -342,7 +390,10 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                         // Not the next song's length.
                         length = 0.0;
                     }
-                    Command::Volume(v) => engine.set_volume(v),
+                    Command::Volume(v) => {
+                        volume = Some(v);
+                        engine.set_volume(v);
+                    }
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}

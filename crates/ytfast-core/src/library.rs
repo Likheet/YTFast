@@ -201,20 +201,17 @@ impl Session {
     /// What to suggest while `text` is typed into search: past searches
     /// and YouTube Music's suggestions. With nothing typed yet, the past
     /// searches.
-    pub async fn search_suggestions(&self, text: &str) -> Result<Vec<String>, ApiError> {
+    pub async fn search_suggestions(&self, text: &str) -> Result<read::Suggestions, ApiError> {
         let reply = self
             .call("music/get_search_suggestions", suggestions_body(text))
             .await?;
         Ok(read::search_suggestions(&reply))
     }
 
-    /// Search results of one kind only (songs, albums...).
-    pub async fn search_filtered(
-        &self,
-        query: &str,
-        filter: SearchFilter,
-    ) -> Result<Page, ApiError> {
-        let reply = self.call("search", search_body(query, filter)).await?;
+    /// Search results of one kind only (songs, albums...): `params` as a
+    /// filter button gives them ([`SearchFilter`] has some).
+    pub async fn search_filtered(&self, query: &str, params: &str) -> Result<Page, ApiError> {
+        let reply = self.call("search", search_body(query, params)).await?;
         Ok(read::page(&reply))
     }
 
@@ -257,9 +254,11 @@ impl Session {
         Ok(read::lyrics(&reply))
     }
 
-    /// One part of the library (its first rows, for long lists).
+    /// One part of the library, with the rest of a long list up to a
+    /// limit (see `Session::library_page`). The whole of the library's
+    /// songs comes from [`Session::long_page`] instead.
     pub async fn library(&self, tab: LibraryTab) -> Result<Page, ApiError> {
-        self.page(tab.browse_id(), None).await
+        self.library_page(tab.browse_id()).await
     }
 
     /// Listening History as a page, grouped by when (Today, Yesterday...).
@@ -357,8 +356,8 @@ fn suggestions_body(text: &str) -> Value {
     json!({ "input": text })
 }
 
-fn search_body(query: &str, filter: SearchFilter) -> Value {
-    json!({ "query": query, "params": filter.params() })
+fn search_body(query: &str, params: &str) -> Value {
+    json!({ "query": query, "params": params })
 }
 
 fn browse_body(browse_id: &str) -> Value {
@@ -477,7 +476,7 @@ mod tests {
     fn searching() {
         assert_eq!(suggestions_body("fad"), json!({"input": "fad"}));
         assert_eq!(
-            search_body("daft punk", SearchFilter::Songs),
+            search_body("daft punk", SearchFilter::Songs.params()),
             json!({"query": "daft punk", "params": "EgWKAQIIAWoMEA4QChADEAQQCRAF"})
         );
         assert_eq!(

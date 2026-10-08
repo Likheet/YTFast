@@ -16,7 +16,7 @@ use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
@@ -101,11 +101,91 @@ pub struct Answers {
     pub sig: HashMap<String, String>,
 }
 
+/// Why a request to the solver failed.
+#[derive(Debug, PartialEq, Eq)]
+enum Failure {
+    /// The program answered with an error (a player it cannot read, say).
+    /// It carries on, with the player it had.
+    Refused(String),
+    /// The program stopped, said something unreadable or took too long. It
+    /// is started afresh next time.
+    Broken(String),
+}
+
+impl From<Failure> for String {
+    fn from(failure: Failure) -> Self {
+        match failure {
+            Failure::Refused(message) | Failure::Broken(message) => message,
+        }
+    }
+}
+
+/// The two ends of the solver's pipe: each request goes in as one line,
+/// and each answer comes back as one line carrying the request's number.
+struct Pipe<W, R> {
+    input: W,
+    output: R,
+    next_id: u64,
+}
+
+impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Pipe<W, R> {
+    /// Sends one request and reads its answer.
+    async fn ask(&mut self, mut request: Value, timeout: Duration) -> Result<Value, Failure> {
+        self.next_id += 1;
+        let id = self.next_id;
+        request["id"] = json!(id);
+        let mut line = request.to_string();
+        line.push('\n');
+        let exchange = async {
+            self.input
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| Failure::Broken(format!("the solver stopped: {e}")))?;
+            self.input
+                .flush()
+                .await
+                .map_err(|e| Failure::Broken(e.to_string()))?;
+            loop {
+                let mut answer = String::new();
+                let read = self
+                    .output
+                    .read_line(&mut answer)
+                    .await
+                    .map_err(|e| Failure::Broken(e.to_string()))?;
+                if read == 0 {
+                    return Err(Failure::Broken("the solver stopped".to_string()));
+                }
+                let answer: Value = serde_json::from_str(&answer).map_err(|e| {
+                    Failure::Broken(format!("the solver said something unreadable: {e}"))
+                })?;
+                // Answers to earlier, timed-out requests are skipped.
+                if answer.get("id").and_then(Value::as_u64) == Some(id) {
+                    return Ok(answer);
+                }
+            }
+        };
+        let answer = tokio::time::timeout(timeout, exchange)
+            .await
+            .map_err(|_| Failure::Broken("the solver took too long".to_string()))??;
+        if answer.get("ok").and_then(Value::as_bool) == Some(true) {
+            Ok(answer)
+        } else {
+            Err(Failure::Refused(
+                answer
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the solver failed")
+                    .chars()
+                    .take(300)
+                    .collect(),
+            ))
+        }
+    }
+}
+
 struct Running {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    next_id: u64,
+    pipe: Pipe<ChildStdin, BufReader<ChildStdout>>,
     /// The player loaded, by ID.
     loaded: Option<String>,
 }
@@ -177,67 +257,20 @@ impl Solver {
         let stdout = child.stdout.take().ok_or("no output from Deno")?;
         Ok(Running {
             child,
-            stdin,
-            stdout: BufReader::with_capacity(1 << 20, stdout),
-            next_id: 0,
+            pipe: Pipe {
+                input: stdin,
+                output: BufReader::with_capacity(1 << 20, stdout),
+                next_id: 0,
+            },
             loaded: None,
         })
     }
 
-    /// Sends one request and reads its answer.
-    async fn ask(
-        running: &mut Running,
-        mut request: Value,
-        timeout: Duration,
-    ) -> Result<Value, String> {
-        running.next_id += 1;
-        let id = running.next_id;
-        request["id"] = json!(id);
-        let mut line = request.to_string();
-        line.push('\n');
-        let exchange = async {
-            running
-                .stdin
-                .write_all(line.as_bytes())
-                .await
-                .map_err(|e| format!("the solver stopped: {e}"))?;
-            running.stdin.flush().await.map_err(|e| e.to_string())?;
-            loop {
-                let mut answer = String::new();
-                let read = running
-                    .stdout
-                    .read_line(&mut answer)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if read == 0 {
-                    return Err("the solver stopped".to_string());
-                }
-                let answer: Value = serde_json::from_str(&answer)
-                    .map_err(|e| format!("the solver said something unreadable: {e}"))?;
-                // Answers to earlier, timed-out requests are skipped.
-                if answer.get("id").and_then(Value::as_u64) == Some(id) {
-                    return Ok(answer);
-                }
-            }
-        };
-        let answer = tokio::time::timeout(timeout, exchange)
-            .await
-            .map_err(|_| "the solver took too long".to_string())??;
-        if answer.get("ok").and_then(Value::as_bool) == Some(true) {
-            Ok(answer)
-        } else {
-            Err(answer
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("the solver failed")
-                .chars()
-                .take(300)
-                .collect())
-        }
-    }
-
-    /// The player loaded now, if any.
+    /// The player loaded now, if any. Asking counts as using the solver:
+    /// a solve follows, and the program must not be stopped for idleness
+    /// meanwhile (while the song's `player` request is answered, say).
     pub async fn loaded(&self) -> Option<String> {
+        self.touch();
         self.running
             .lock()
             .await
@@ -258,7 +291,7 @@ impl Solver {
             PlayerCode::Code(code) => json!({ "op": "load", "player": code }),
             PlayerCode::Preprocessed(pre) => json!({ "op": "load", "preprocessed": pre }),
         };
-        match Self::ask(running, request, LOAD_TIMEOUT).await {
+        match running.pipe.ask(request, LOAD_TIMEOUT).await {
             Ok(answer) => {
                 running.loaded = Some(id.to_string());
                 Ok(answer
@@ -266,7 +299,9 @@ impl Solver {
                     .and_then(Value::as_str)
                     .map(str::to_string))
             }
-            Err(e) => {
+            // The program keeps the player it had.
+            Err(Failure::Refused(e)) => Err(e),
+            Err(Failure::Broken(e)) => {
                 // Start afresh next time.
                 *guard = None;
                 Err(e)
@@ -282,15 +317,15 @@ impl Solver {
         let Some(running) = guard.as_mut().filter(|r| r.loaded.as_deref() == Some(id)) else {
             return Err("the solver has not loaded this player".into());
         };
-        let answer = match Self::ask(
-            running,
-            json!({ "op": "solve", "n": n, "sig": sig }),
-            SOLVE_TIMEOUT,
-        )
-        .await
+        let answer = match running
+            .pipe
+            .ask(json!({ "op": "solve", "n": n, "sig": sig }), SOLVE_TIMEOUT)
+            .await
         {
             Ok(answer) => answer,
-            Err(e) => {
+            // A clean error from the player's code: the program is fine.
+            Err(Failure::Refused(e)) => return Err(e),
+            Err(Failure::Broken(e)) => {
                 *guard = None;
                 return Err(e);
             }
@@ -312,8 +347,6 @@ impl Solver {
         })
     }
 
-    /// Stops the program when unused for `idle`, to give back its memory.
-    /// It starts again when next needed.
     /// Stops the solver now; the next request starts it afresh.
     pub async fn stop(&self) {
         if let Some(mut running) = self.running.lock().await.take() {
@@ -321,6 +354,8 @@ impl Solver {
         }
     }
 
+    /// Stops the program when unused for `idle`, to give back its memory.
+    /// It starts again when next needed.
     pub async fn stop_if_idle(&self, idle: Duration) {
         let unused = self
             .last_used
@@ -364,6 +399,7 @@ pub fn find_ejs(yt_dlp: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 
     /// Runs the real solver program with Deno and yt-dlp's scripts when
     /// `YTFAST_TEST_DENO` and `YTFAST_TEST_EJS` say where they are;
@@ -399,6 +435,21 @@ mod tests {
             .unwrap();
         assert_eq!(answers.n["abc"], "cba");
         assert_eq!(answers.sig["s"], "s!");
+        // A player it cannot read is refused, and the one loaded stays.
+        assert!(
+            solver
+                .load(
+                    "p3",
+                    PlayerCode::Preprocessed("throw new Error('no')".into())
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(solver.loaded().await.as_deref(), Some("p1"));
+        assert_eq!(
+            solver.solve("p1", &["xyz".into()], &[]).await.unwrap().n["xyz"],
+            "zyx"
+        );
         // A big request (a player is megabytes) gets through too.
         let big = format!("{stand_in} var filler = '{}';", "x".repeat(3_000_000));
         solver
@@ -428,6 +479,87 @@ mod tests {
         assert_eq!(
             solver.solve("p1", &[], &["t".into()]).await.unwrap().sig["t"],
             "t!"
+        );
+    }
+
+    type FakePipe = Pipe<WriteHalf<DuplexStream>, BufReader<ReadHalf<DuplexStream>>>;
+
+    /// A stand-in for the solver program, at the other end of an in-memory
+    /// pipe. What it does with a request depends on the request's `op`.
+    fn fake_solver() -> FakePipe {
+        let (ours, theirs) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let (from_us, mut to_us) = tokio::io::split(theirs);
+            let mut lines = BufReader::new(from_us).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let id = request["id"].as_u64().unwrap();
+                let answer = match request["op"].as_str().unwrap() {
+                    // An answer to an earlier request that timed out comes
+                    // first, then this one's.
+                    "late" => format!(
+                        "{}\n{}\n",
+                        json!({ "id": id - 1, "ok": true, "which": "earlier" }),
+                        json!({ "id": id, "ok": true, "which": "this" })
+                    ),
+                    "fail" => format!(
+                        "{}\n",
+                        json!({ "id": id, "ok": false, "error": "no player loaded" })
+                    ),
+                    "garble" => "not an answer\n".to_string(),
+                    "silent" => continue,
+                    // Stops, as a program that crashed.
+                    _ => return,
+                };
+                to_us.write_all(answer.as_bytes()).await.unwrap();
+            }
+        });
+        let (from_them, to_them) = tokio::io::split(ours);
+        Pipe {
+            input: to_them,
+            output: BufReader::new(from_them),
+            next_id: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn answers_are_matched_to_their_request() {
+        let mut pipe = fake_solver();
+        let wait = Duration::from_secs(5);
+        // Each time, the answer to the request before comes first and is
+        // skipped.
+        pipe.ask(json!({ "op": "late" }), wait).await.unwrap();
+        let answer = pipe.ask(json!({ "op": "late" }), wait).await.unwrap();
+        assert_eq!(answer["which"], "this");
+        assert_eq!(answer["id"], 2);
+    }
+
+    #[tokio::test]
+    async fn the_solvers_errors_are_told_apart() {
+        let mut pipe = fake_solver();
+        let wait = Duration::from_secs(5);
+        // An error from the player's code: the program carries on.
+        assert_eq!(
+            pipe.ask(json!({ "op": "fail" }), wait).await,
+            Err(Failure::Refused("no player loaded".into()))
+        );
+        assert!(pipe.ask(json!({ "op": "late" }), wait).await.is_ok());
+        // No answer in time.
+        assert_eq!(
+            pipe.ask(json!({ "op": "silent" }), Duration::from_millis(100))
+                .await,
+            Err(Failure::Broken("the solver took too long".into()))
+        );
+        // Something that is not an answer.
+        let garbled = pipe.ask(json!({ "op": "garble" }), wait).await;
+        assert!(
+            matches!(&garbled, Err(Failure::Broken(m)) if m.contains("unreadable")),
+            "{garbled:?}"
+        );
+        // The program stopped.
+        assert_eq!(
+            pipe.ask(json!({ "op": "stop" }), wait).await,
+            Err(Failure::Broken("the solver stopped".into()))
         );
     }
 

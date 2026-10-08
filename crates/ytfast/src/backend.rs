@@ -12,7 +12,7 @@ use ytfast_core::cookies::CookieJar;
 use ytfast_core::direct::Direct;
 use ytfast_core::helpers::{self, Progress};
 use ytfast_core::innertube::{ApiError, Renewer, Renewing, Session};
-use ytfast_core::library::{LibraryTab, Privacy, SearchFilter};
+use ytfast_core::library::{LibraryTab, Privacy};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
 use ytfast_core::read::{Item, Page, PlayerInfo, Rating, Shape, SongDetails, Track};
@@ -36,8 +36,9 @@ pub enum Route {
         params: Option<String>,
     },
     Search(String),
-    /// Search results of one kind only.
-    SearchOnly(String, SearchKind),
+    /// Search results of one kind only: the query, and what YouTube's
+    /// filter button for that kind sends (its `params`).
+    SearchOnly(String, String),
     /// The library's other tabs.
     LibrarySongs,
     LibraryAlbums,
@@ -47,41 +48,20 @@ pub enum Route {
     Settings,
 }
 
-/// The kinds search results can be narrowed to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SearchKind {
-    Songs,
-    Albums,
-    Artists,
-    Playlists,
-}
-
-impl SearchKind {
-    pub const ALL: [Self; 4] = [Self::Songs, Self::Albums, Self::Artists, Self::Playlists];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Songs => "Songs",
-            Self::Albums => "Albums",
-            Self::Artists => "Artists",
-            Self::Playlists => "Playlists",
-        }
-    }
-
-    fn filter(self) -> SearchFilter {
-        match self {
-            Self::Songs => SearchFilter::Songs,
-            Self::Albums => SearchFilter::Albums,
-            Self::Artists => SearchFilter::Artists,
-            Self::Playlists => SearchFilter::Playlists,
-        }
-    }
-}
-
 impl Route {
     /// Pages that are not loaded from YouTube.
     pub fn is_local(&self) -> bool {
         matches!(self, Self::Settings)
+    }
+
+    /// The playlist a page lists (its ID without `VL`; Liked Music's is
+    /// `LM`), for more songs when its songs run out.
+    pub fn playlist(&self) -> Option<String> {
+        match self {
+            Self::Liked => Some("LM".into()),
+            Self::Browse { id, .. } => id.strip_prefix("VL").map(str::to_string),
+            _ => None,
+        }
     }
 
     /// The route for a page ID. Liked Music has a route of its own, so it
@@ -97,9 +77,17 @@ impl Route {
 
 pub enum Request {
     SignIn(Browser),
-    /// Forget the sign-in (the browser keeps its own).
-    SignOut,
-    Page(Route),
+    /// Forget the sign-in (the browser keeps its own), after sending
+    /// `last_report` (how long the song playing was listened to) with it.
+    SignOut {
+        last_report: Option<String>,
+    },
+    /// A page; `load` numbers this loading of it, given back with the
+    /// answer and the rest of a long list, so an older one is known.
+    Page {
+        route: Route,
+        load: u64,
+    },
     /// Get a song ready. With `play`, the window gets [`Event::Prepared`];
     /// without, the song is only made ready ahead of time.
     Prepare {
@@ -145,6 +133,9 @@ pub enum Request {
     FastWay(bool),
     /// A History report (see `playreport`).
     Report(String),
+    /// The last History report as the window closes: told on `done` once
+    /// it has gone.
+    LastReport(String, mpsc::Sender<()>),
     /// A picture, by address.
     Image(String),
 }
@@ -252,7 +243,8 @@ pub enum Event {
     SignInFailed(String),
     /// YouTube treated a request as signed out.
     SignedOut,
-    Page(Route, Result<Page, String>),
+    /// A page, for the `load` that asked for it ([`Request::Page`]).
+    Page(Route, u64, Result<Page, String>),
     Prepared {
         entry: u64,
         result: Result<Ready, Failure>,
@@ -261,7 +253,8 @@ pub enum Event {
         video_id: String,
         playlist_id: Option<String>,
         queue: u64,
-        result: Result<Vec<Track>, String>,
+        /// The songs, and what they play from ("Playing from").
+        result: Result<(Vec<Track>, Option<String>), String>,
     },
     PlaylistQueue {
         playlist_id: String,
@@ -269,14 +262,18 @@ pub enum Event {
         ticket: u64,
         result: Result<Vec<Track>, String>,
     },
-    Suggestions(String, Vec<String>),
+    Suggestions(String, ytfast_core::read::Suggestions),
     /// More songs of a long list already shown (a playlist, Liked
     /// Music), loaded after its first ones.
     MoreRows {
         route: Route,
+        load: u64,
         tracks: Vec<Track>,
     },
     Image(String, Option<Picture>),
+    /// A picture not fetched, because it was no longer wanted (it scrolled
+    /// past): it is asked for again when it next shows.
+    ImageSkipped(String),
     Lyrics(String, Option<crate::lyrics::Lyrics>),
     Related(String, Result<Page, String>),
     /// What the account thinks of a song, as YouTube says.
@@ -333,6 +330,33 @@ impl Backend {
         self.events.try_recv().ok()
     }
 
+    /// Sends the last listening report and waits until it has gone (two
+    /// seconds at most): the backend stops with the window.
+    pub fn report_before_closing(&self, url: String) {
+        let (done, gone) = mpsc::channel();
+        self.send(Request::LastReport(url, done));
+        let _ = gone.recv_timeout(std::time::Duration::from_secs(2));
+    }
+
+    /// A backend with nothing behind it, for the app's tests: what the app
+    /// asks for comes out of the receiver, and events go in by the sender.
+    #[cfg(test)]
+    pub fn for_tests() -> (
+        Self,
+        tokio::sync::mpsc::UnboundedReceiver<Request>,
+        mpsc::Sender<Event>,
+    ) {
+        let (requests, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, events) = mpsc::channel();
+        let backend = Self {
+            requests,
+            events,
+            session_dir: PathBuf::new(),
+            session_lock: None,
+        };
+        (backend, receiver, sender)
+    }
+
     /// Removes this run's sign-in copy. Called when the window closes.
     pub fn forget_sign_in(&mut self) {
         // Let go of the folder's lock first: Windows keeps a file in use.
@@ -371,21 +395,35 @@ struct Folders {
 }
 
 impl Folders {
+    /// YtFast's own folders, or, when they cannot be made (no home folder,
+    /// a full disk, security software), a temporary one, so the window
+    /// still opens.
     fn new(demo: bool) -> std::io::Result<Self> {
-        let dirs = directories::ProjectDirs::from("", "", "YtFast")
-            .ok_or_else(|| std::io::Error::other("no home folder"))?;
-        let cache = dirs.cache_dir().to_path_buf();
+        let own = directories::ProjectDirs::from("", "", "YtFast")
+            .ok_or_else(|| std::io::Error::other("no home folder"))
+            .and_then(|dirs| Self::under(dirs.cache_dir(), dirs.data_local_dir(), demo));
+        own.or_else(|e| {
+            log::warn!("YtFast's folders could not be made ({e}); using a temporary folder");
+            let base = std::env::temp_dir().join("YtFast");
+            Self::under(&base.join("cache"), &base.join("data"), demo)
+        })
+    }
+
+    fn under(cache: &Path, data: &Path, demo: bool) -> std::io::Result<Self> {
         // Left over from a run that did not close properly. A run still
         // open (YTFast opened twice) keeps its folder: its sign-in is in
         // use. The demo leaves them all be: it may be open beside YTFast in
         // real use, whose sign-in is in one of them.
         let sessions = cache.join("app-sessions");
-        if !demo && let Ok(entries) = std::fs::read_dir(&sessions) {
-            for entry in entries.flatten() {
-                if !still_open(&entry.path()) {
-                    let _ = std::fs::remove_dir_all(entry.path());
+        if !demo {
+            if let Ok(entries) = std::fs::read_dir(&sessions) {
+                for entry in entries.flatten() {
+                    if !still_open(&entry.path()) {
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
                 }
             }
+            forget_old_check_sessions(&cache.join("sessions"));
         }
         let session = sessions.join(std::process::id().to_string());
         std::fs::create_dir_all(&session)?;
@@ -395,12 +433,33 @@ impl Folders {
             std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o700))?;
         }
         Ok(Self {
-            helpers: dirs.data_local_dir().join("helpers"),
+            helpers: data.join("helpers"),
             yt_dlp_cache: cache.join("yt-dlp"),
             player: cache.join("player"),
             solver: cache.join("solver"),
             session,
         })
+    }
+}
+
+/// The check program (ytfast-check) keeps its sign-in copy in `sessions`,
+/// and a check closed part way can leave it behind. Those not touched for
+/// half a day are surely not in use: they go.
+fn forget_old_check_sessions(sessions: &Path) {
+    const OLD: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+    let Ok(entries) = std::fs::read_dir(sessions) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > OLD);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 
@@ -445,6 +504,15 @@ struct Shared {
     /// What YouTube said about songs played (likes, lyrics, related),
     /// asked once per song.
     details: Mutex<HashMap<String, Arc<OnceCell<SongDetails>>>>,
+    /// The latest loading of each page ([`Request::Page`]): an older one
+    /// stops fetching the rest of its long list.
+    loads: std::sync::Mutex<HashMap<Route, u64>>,
+    /// Counts the pictures asked for, so one asked for long ago (it
+    /// scrolled past while others waited) is skipped.
+    pictures_asked: std::sync::atomic::AtomicU64,
+    /// Counts sign-ins and sign-outs: a session's renewer reads the
+    /// browser again only while its sign-in is the current one.
+    sign_ins: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Shared {
@@ -480,6 +548,9 @@ async fn serve(
         download: net::download_client(),
         fast_way: std::sync::atomic::AtomicBool::new(true),
         details: Mutex::new(HashMap::new()),
+        loads: std::sync::Mutex::new(HashMap::new()),
+        pictures_asked: std::sync::atomic::AtomicU64::new(0),
+        sign_ins: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     });
     // Rest the solver when YtFast is not being used.
     {
@@ -501,12 +572,22 @@ async fn serve(
     }
     // Changes to the account go to YouTube one at a time, in the order they
     // were made: a quick like and unlike must end unliked.
-    let (edits, mut queued_edits) = tokio::sync::mpsc::unbounded_channel();
+    let (edits, mut queued_edits) = tokio::sync::mpsc::unbounded_channel::<Edit>();
     {
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
             while let Some(change) = queued_edits.recv().await {
-                edit(&shared, change).await;
+                // One that stops part way does not stop the ones after it.
+                let on_failure = failure_for(&Request::Edit(change.clone()));
+                let worker = Arc::clone(&shared);
+                if let Err(e) = tokio::spawn(async move { edit(&worker, change).await }).await
+                    && e.is_panic()
+                {
+                    log::error!("a change to the account stopped part way: {e}");
+                    if let Some(event) = on_failure {
+                        shared.send(event);
+                    }
+                }
             }
         });
     }
@@ -515,11 +596,25 @@ async fn serve(
             let _ = edits.send(change);
             continue;
         }
+        // Should the work stop part way (a panic), the window is still
+        // told, so no screen waits for ever.
+        let on_failure = failure_for(&request);
+        let watcher = Arc::clone(&shared);
         let shared = Arc::clone(&shared);
-        tokio::spawn(async move {
+        let work = tokio::spawn(async move {
             match request {
                 Request::SignIn(browser) => sign_in(&shared, browser).await,
-                Request::SignOut => {
+                Request::SignOut { last_report } => {
+                    // The last song's listening time goes with the old
+                    // sign-in, before it is let go.
+                    if let Some(url) = last_report {
+                        report(&shared, url).await;
+                    }
+                    // The old session must not read the browser again
+                    // (and write its sign-in back) from work still going.
+                    shared
+                        .sign_ins
+                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     *shared.signed_in.write().await = None;
                     let _ =
                         std::fs::remove_file(shared.folders.session.join("youtube-cookies.txt"));
@@ -531,7 +626,7 @@ async fn serve(
                     // What the old account thought of songs (its likes).
                     shared.details.lock().await.clear();
                 }
-                Request::Page(route) => page(&shared, route).await,
+                Request::Page { route, load } => page(&shared, route, load).await,
                 Request::Prepare {
                     entry,
                     video_id,
@@ -570,10 +665,71 @@ async fn serve(
                     .fast_way
                     .store(on, std::sync::atomic::Ordering::Relaxed),
                 Request::Report(url) => report(&shared, url).await,
+                Request::LastReport(url, done) => {
+                    report(&shared, url).await;
+                    let _ = done.send(());
+                }
                 Request::Image(url) => image(&shared, url).await,
             }
         });
+        tokio::spawn(async move {
+            if let Err(e) = work.await
+                && e.is_panic()
+            {
+                log::error!("work for the window stopped part way: {e}");
+                if let Some(event) = on_failure {
+                    watcher.send(event);
+                }
+            }
+        });
     }
+}
+
+/// What the window waits for after `request`, as a failure: sent when the
+/// work for it stops part way.
+fn failure_for(request: &Request) -> Option<Event> {
+    let failed = || {
+        "Something went wrong in YTFast. Try again; if it keeps happening, send ytfast.log."
+            .to_string()
+    };
+    Some(match request {
+        Request::SignIn(_) => Event::SignInFailed(failed()),
+        Request::Page { route, load } => Event::Page(route.clone(), *load, Err(failed())),
+        Request::Prepare {
+            entry, play: true, ..
+        } => Event::Prepared {
+            entry: *entry,
+            result: Err(Failure {
+                message: failed(),
+                song_only: false,
+            }),
+        },
+        Request::UpNext {
+            video_id,
+            playlist_id,
+            queue,
+        } => Event::UpNext {
+            video_id: video_id.clone(),
+            playlist_id: playlist_id.clone(),
+            queue: *queue,
+            result: Err(failed()),
+        },
+        Request::PlaylistQueue {
+            playlist_id,
+            mode,
+            ticket,
+        } => Event::PlaylistQueue {
+            playlist_id: playlist_id.clone(),
+            mode: *mode,
+            ticket: *ticket,
+            result: Err(failed()),
+        },
+        Request::Lyrics { video_id, .. } => Event::Lyrics(video_id.clone(), None),
+        Request::Related(video_id) => Event::Related(video_id.clone(), Err(failed())),
+        Request::Image(url) => Event::Image(url.clone(), None),
+        Request::Edit(change) => Event::EditFailed(change.clone(), failed()),
+        _ => return None,
+    })
 }
 
 async fn sign_in(shared: &Shared, browser: Browser) {
@@ -631,10 +787,6 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
             browser.label()
         ));
     }
-    let cookies_file = shared.folders.session.join("youtube-cookies.txt");
-    write_private(&cookies_file, &jar.to_netscape())
-        .map_err(|e| format!("Could not keep the sign-in: {e}"))?;
-
     shared.send(Event::Progress("Opening YouTube Music...".into()));
     let session = Session::start(net::api_client(), &jar)
         .await
@@ -652,13 +804,21 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
     let name = account
         .map(|a| a.name)
         .unwrap_or_else(|| "your account".into());
+    // yt-dlp's copy, kept only once the sign-in is known to work (a failed
+    // sign-in leaves none behind).
+    let cookies_file = shared.folders.session.join("youtube-cookies.txt");
+    write_private(&cookies_file, &jar.to_netscape())
+        .map_err(|e| format!("Could not keep the sign-in: {e}"))?;
     let session = Arc::new(session);
-    session.renew_with(renewer(
-        yt_dlp.clone(),
+    session.renew_with(renewer(Renewal {
+        yt_dlp: yt_dlp.clone(),
         browser,
-        shared.folders.session.clone(),
-        cookies_file.clone(),
-    ));
+        scratch: shared.folders.session.clone(),
+        cookies_file: cookies_file.clone(),
+        account: session.config().user_session_id.clone(),
+        sign_ins: Arc::clone(&shared.sign_ins),
+        sign_in: shared.sign_ins.load(std::sync::atomic::Ordering::Acquire),
+    }));
     let direct = fast_way(shared, &helpers, &session);
     *shared.signed_in.write().await = Some(Preparer {
         session,
@@ -670,16 +830,45 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
     Ok(name)
 }
 
+/// What a session needs to read the sign-in again (see [`renewer`]).
+#[derive(Clone)]
+struct Renewal {
+    yt_dlp: YtDlp,
+    browser: Browser,
+    scratch: PathBuf,
+    cookies_file: PathBuf,
+    /// The account signed in (the page's user session ID), when known.
+    account: Option<String>,
+    /// [`Shared::sign_ins`], and its value at this sign-in.
+    sign_ins: Arc<std::sync::atomic::AtomicU64>,
+    sign_in: u64,
+}
+
+impl Renewal {
+    /// This sign-in is still the current one (not signed out since).
+    fn current(&self) -> bool {
+        self.sign_ins.load(std::sync::atomic::Ordering::Acquire) == self.sign_in
+    }
+}
+
 /// How the session reads the sign-in again when YouTube stops accepting
 /// its copy. A browser renews its sign-in as it goes, which ends a copy
 /// taken earlier (within the hour, with YouTube open in the browser);
-/// reading the browser's again mends it, without asking the user.
-fn renewer(yt_dlp: YtDlp, browser: Browser, scratch: PathBuf, cookies_file: PathBuf) -> Renewer {
+/// reading the browser's again mends it, without asking the user. Only
+/// the same account is taken, and nothing once signed out.
+fn renewer(renewal: Renewal) -> Renewer {
     Arc::new(move || -> Renewing {
-        let (yt_dlp, scratch, cookies_file) =
-            (yt_dlp.clone(), scratch.clone(), cookies_file.clone());
+        let renewal = renewal.clone();
         Box::pin(async move {
-            let jar = match yt_dlp.read_browser_sign_in(browser, None, &scratch).await {
+            let browser = renewal.browser;
+            if !renewal.current() {
+                return None;
+            }
+            let read = renewal
+                .yt_dlp
+                .read_browser_sign_in(browser, None, &renewal.scratch)
+                .await;
+            let jar = match read {
                 Ok(jar) => jar,
                 Err(e) => {
                     log::warn!("the sign-in could not be read again: {e}");
@@ -690,8 +879,28 @@ fn renewer(yt_dlp: YtDlp, browser: Browser, scratch: PathBuf, cookies_file: Path
                 log::warn!("{} is no longer signed in to YouTube", browser.label());
                 return None;
             }
+            // The browser may now be signed in to another Google account:
+            // that one is not taken over without asking.
+            if let Some(account) = &renewal.account {
+                match Session::start(net::api_client(), &jar).await {
+                    Ok(check) => {
+                        let now = check.config().user_session_id.as_ref();
+                        if now.is_some_and(|now| now != account) {
+                            log::warn!(
+                                "{} is now signed in to another account; not taking it",
+                                browser.label()
+                            );
+                            return None;
+                        }
+                    }
+                    Err(e) => log::info!("could not check the account read again: {e}"),
+                }
+            }
+            if !renewal.current() {
+                return None;
+            }
             // yt-dlp's copy, too.
-            if let Err(e) = write_private(&cookies_file, &jar.to_netscape()) {
+            if let Err(e) = write_private(&renewal.cookies_file, &jar.to_netscape()) {
                 log::warn!("the sign-in read again could not be kept for yt-dlp: {e}");
             }
             // Not a fault, but worth knowing how often it happens.
@@ -746,21 +955,37 @@ fn fast_way(
 /// memory. It starts again in about a second when needed.
 const SOLVER_IDLE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
+/// A failure to talk to YouTube, in words for the window; the details go
+/// to the log. A refused sign-in also shows the sign-in screen.
 fn api_error(shared: &Shared, error: ApiError) -> String {
+    log::warn!("YouTube Music: {error}");
     if matches!(error, ApiError::SignedOut) {
         shared.send(Event::SignedOut);
     }
-    error.to_string()
+    plain(&error).to_string()
 }
 
-async fn page(shared: &Shared, route: Route) {
+fn plain(error: &ApiError) -> &'static str {
+    match error {
+        ApiError::SignedOut => "YouTube no longer accepts the sign-in.",
+        ApiError::Network(_) => "YouTube could not be reached. Check the internet connection.",
+        ApiError::Http { .. } | ApiError::Unexpected(_) => {
+            "YouTube Music did not answer as expected. Try again in a moment."
+        }
+    }
+}
+
+async fn page(shared: &Shared, route: Route, load: u64) {
+    if let Ok(mut loads) = shared.loads.lock() {
+        loads.insert(route.clone(), load);
+    }
     if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        shared.send(Event::Page(route.clone(), Ok(demo::page(&route))));
+        shared.send(Event::Page(route.clone(), load, Ok(demo::page(&route))));
         return;
     }
     let Some(preparer) = shared.preparer().await else {
-        shared.send(Event::Page(route, Err("Not signed in.".into())));
+        shared.send(Event::Page(route, load, Err("Not signed in.".into())));
         return;
     };
     let session = &preparer.session;
@@ -774,8 +999,8 @@ async fn page(shared: &Shared, route: Route) {
         Route::Liked => session.long_page("VLLM", None).await,
         Route::Browse { id, params } => session.long_page(id, params.as_deref()).await,
         Route::Search(query) => session.search(query).await.map(|p| (p, None)),
-        Route::SearchOnly(query, kind) => session
-            .search_filtered(query, kind.filter())
+        Route::SearchOnly(query, params) => session
+            .search_filtered(query, params)
             .await
             .map(|p| (p, None)),
         Route::LibrarySongs => session.long_page(LibraryTab::Songs.browse_id(), None).await,
@@ -799,34 +1024,43 @@ async fn page(shared: &Shared, route: Route) {
             ) {
                 drop_chips(&mut page);
             }
-            shared.send(Event::Page(route.clone(), Ok(page)));
+            shared.send(Event::Page(route.clone(), load, Ok(page)));
             more
         }
         Err(e) => {
             let message = api_error(shared, e);
-            shared.send(Event::Page(route, Err(message)));
+            shared.send(Event::Page(route, load, Err(message)));
             return;
         }
     };
-    // The rest of a long list, a hundred or so songs at a time.
+    // The rest of a long list, a hundred or so songs at a time, while this
+    // is still the page's latest loading (a reload takes over).
+    let latest = || {
+        shared
+            .loads
+            .lock()
+            .map_or(true, |loads| loads.get(&route) == Some(&load))
+    };
     let mut next = more;
     let mut batches = 0;
     while let Some(from) = next.take() {
         batches += 1;
-        if batches > MAX_BATCHES {
+        if batches > MAX_BATCHES || !latest() {
             break;
         }
         match session.more_tracks(&from).await {
             Ok((tracks, after)) if !tracks.is_empty() => {
                 shared.send(Event::MoreRows {
                     route: route.clone(),
+                    load,
                     tracks,
                 });
                 next = after;
             }
             Ok(_) => break,
             Err(e) => {
-                log::warn!("the rest of a list did not load: {}", api_error(shared, e));
+                log::warn!("the rest of a list did not load");
+                api_error(shared, e);
                 break;
             }
         }
@@ -984,29 +1218,17 @@ async fn up_next(shared: &Shared, video_id: String, playlist_id: Option<String>,
 
 async fn suggest(shared: &Shared, text: String) {
     let found = if shared.demo {
-        let lower = text.to_lowercase();
-        [
-            "Glass Hearts",
-            "Mara Sol",
-            "Midnight Arcade",
-            "Night Ferries",
-            "Low Tide",
-            "Lemon Skies",
-        ]
-        .iter()
-        .filter(|s| s.to_lowercase().contains(&lower))
-        .map(|s| s.to_string())
-        .collect()
+        demo::suggestions(&text)
     } else if let Some(p) = shared.preparer().await {
         p.session
             .search_suggestions(&text)
             .await
             .unwrap_or_else(|e| {
                 log::info!("search suggestions did not load: {e}");
-                Vec::new()
+                Default::default()
             })
     } else {
-        Vec::new()
+        Default::default()
     };
     shared.send(Event::Suggestions(text, found));
 }
@@ -1049,6 +1271,10 @@ async fn report(shared: &Shared, url: String) {
         }
     }
 }
+
+/// How many pictures may be asked for after one, while it waits, before it
+/// is taken for scrolled past: more than a window shows at once.
+const STALE_PICTURES: u64 = 40;
 
 /// The largest side a picture is kept at. Covers are drawn at most this
 /// big (the player page's); larger pictures only cost memory.
@@ -1194,7 +1420,7 @@ async fn find_lyrics(
 async fn related(shared: &Shared, video_id: String) {
     let result = if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        Ok(demo::page(&Route::Explore))
+        Ok(demo::related(&video_id))
     } else if let Some(p) = shared.preparer().await {
         match details(shared, &p.session, &video_id).await {
             Ok(SongDetails {
@@ -1276,9 +1502,17 @@ async fn image(shared: &Shared, url: String) {
         ));
         return;
     }
+    use std::sync::atomic::Ordering;
+    let asked = shared.pictures_asked.fetch_add(1, Ordering::AcqRel) + 1;
     let Ok(_permit) = shared.images.acquire().await else {
         return;
     };
+    // Many pictures asked for since this one, while it waited its turn:
+    // it scrolled past. The window asks again if it shows once more.
+    if shared.pictures_asked.load(Ordering::Acquire) - asked > STALE_PICTURES {
+        shared.send(Event::ImageSkipped(url));
+        return;
+    }
     let bytes = match shared
         .download
         .get(&url)

@@ -1,6 +1,10 @@
 # Checks every push, and builds YTFast (the app) and ytfast-check for the two
 # computers YTFast targets. The builds are downloadable from the run's
 # "Artifacts" section.
+#
+# Each action is pinned to the full commit of its release (the version is in
+# the comment beside it), so a moved tag cannot change what builds the app.
+# Dependabot (.github/dependabot.yml) proposes new versions.
 name: CI
 
 on:
@@ -37,7 +41,7 @@ jobs:
             app: ""
             check: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
         run: rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --component rustfmt,clippy
@@ -46,7 +50,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Formatting
         if: runner.os == 'Linux'
@@ -86,8 +90,10 @@ jobs:
           codesign --verify --deep --strict "$app"
           ditto -c -k --keepParent "$app" dist/app/YTFast-mac.zip
           cp docs/run-the-app.md dist/app/HOW-TO-RUN.md
+          cp THIRD-PARTY-NOTICES.txt dist/app/
           tar -C target/release -czf dist/check/ytfast-check-macos.tar.gz ytfast-check
           cp docs/run-the-check.md dist/check/HOW-TO-RUN.md
+          cp THIRD-PARTY-NOTICES.txt dist/check/
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -96,12 +102,14 @@ jobs:
           mkdir -p dist/app dist/check
           cp target/release/ytfast.exe dist/app/YTFast.exe
           cp docs/run-the-app.md dist/app/HOW-TO-RUN.md
+          cp THIRD-PARTY-NOTICES.txt dist/app/
           cp target/release/ytfast-check.exe dist/check/
           cp docs/run-the-check.md dist/check/HOW-TO-RUN.md
+          cp THIRD-PARTY-NOTICES.txt dist/check/
 
       - name: Upload the app
         if: matrix.app != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.app }}
           path: dist/app/
@@ -109,7 +117,7 @@ jobs:
 
       - name: Upload the check
         if: matrix.check != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.check }}
           path: dist/check/

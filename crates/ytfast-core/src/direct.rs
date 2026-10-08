@@ -4,7 +4,8 @@
 //! ten. yt-dlp stays as the fallback when this fails ([`crate::prepare`]).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,7 @@ use tokio::sync::Mutex;
 use crate::innertube::Session;
 use crate::read::{self, PlayerInfo, StreamFormat};
 use crate::redact;
-use crate::solver::{PlayerCode, Solver};
+use crate::solver::{Answers, PlayerCode, Solver};
 use crate::stream::Source;
 
 /// A song's audio, found.
@@ -25,6 +26,8 @@ pub struct Found {
     pub format: String,
     pub premium: bool,
     pub duration_seconds: Option<f64>,
+    /// How long finding took: zero when the song was found earlier and
+    /// remembered.
     pub took: Duration,
 }
 
@@ -33,6 +36,10 @@ pub struct Found {
 const KEEP_FOUND: Duration = Duration::from_secs(3 * 3600);
 /// Found songs remembered at most (songs pointed at, top results).
 const MAX_FOUND: usize = 40;
+/// When a player could not be got ready, the fast way rests this long
+/// before trying it again (songs come through yt-dlp meanwhile), rather
+/// than spending seconds failing the same way on every song.
+const REST_AFTER_FAILURE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 struct Player {
@@ -42,12 +49,20 @@ struct Player {
     sts: u64,
 }
 
+/// A player that could not be got ready.
+struct Failed {
+    player: String,
+    at: Instant,
+    why: String,
+}
+
 pub struct Direct {
     session: Arc<Session>,
     solver: Solver,
     /// Where player code is kept between runs.
     cache: PathBuf,
     player: Mutex<Option<Player>>,
+    failed: std::sync::Mutex<Option<Failed>>,
     found: std::sync::Mutex<HashMap<String, (Instant, Found)>>,
 }
 
@@ -58,6 +73,7 @@ impl Direct {
             solver,
             cache,
             player: Mutex::new(None),
+            failed: std::sync::Mutex::new(None),
             found: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -65,7 +81,7 @@ impl Direct {
     /// Gets YouTube's player code and the solver ready, so the first song
     /// is quick too. Called once after signing in; safe to call again.
     pub async fn warm_up(&self) -> Result<(), String> {
-        self.player().await.map(|_| ())
+        self.player(true).await.map(|_| ())
     }
 
     /// Stops the solver when idle (see [`Solver::stop_if_idle`]).
@@ -73,9 +89,16 @@ impl Direct {
         self.solver.stop_if_idle(idle).await;
     }
 
-    /// The player, loaded in the solver.
-    async fn player(&self) -> Result<Player, String> {
-        let mut current = self.player.lock().await;
+    /// The player, loaded in the solver. While it is being got ready,
+    /// others `wait` for it, or are turned away at once.
+    async fn player(&self, wait: bool) -> Result<Player, String> {
+        let mut current = if wait {
+            self.player.lock().await
+        } else {
+            self.player
+                .try_lock()
+                .map_err(|_| "the fast way is busy getting ready")?
+        };
         let url = self
             .session
             .player_js_url()
@@ -86,75 +109,143 @@ impl Direct {
         {
             return Ok(player.clone());
         }
-
-        std::fs::create_dir_all(&self.cache).map_err(|e| e.to_string())?;
-        let code_path = self.cache.join(format!("{id}.js"));
-        let ready_path = self.cache.join(format!("{id}.ready.js"));
-        let code = match std::fs::read_to_string(&code_path) {
-            Ok(code) => code,
-            Err(_) => {
-                let code = self
-                    .session
-                    .fetch_text(&url)
-                    .await
-                    .map_err(|e| format!("could not get YouTube's player: {e}"))?;
-                // Older players go: only the current one is kept.
-                if let Ok(entries) = std::fs::read_dir(&self.cache) {
-                    for entry in entries.flatten() {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
-                }
-                let _ = std::fs::write(&code_path, &code);
-                code
-            }
-        };
-        let sts = signature_timestamp(&code).ok_or("no signature timestamp in the player")?;
-        let mut loaded = false;
-        if let Ok(ready) = std::fs::read_to_string(&ready_path) {
-            match self.solver.load(&id, PlayerCode::Preprocessed(ready)).await {
-                Ok(_) => loaded = true,
-                Err(e) => {
-                    log::info!("the saved prepared player did not load: {e}");
-                    let _ = std::fs::remove_file(&ready_path);
-                }
-            }
+        if let Some(why) = self.resting(&id) {
+            return Err(why);
         }
-        if !loaded {
-            let ready = self
-                .solver
-                .load(&id, PlayerCode::Code(code.clone()))
-                .await?;
-            if let Some(ready) = ready {
-                // Reading the whole player leaves the solver larger for
-                // good; a fresh one given only the prepared code is smaller.
-                self.solver.stop().await;
-                match self
-                    .solver
-                    .load(&id, PlayerCode::Preprocessed(ready.clone()))
-                    .await
-                {
-                    Ok(_) => {
-                        let _ = std::fs::write(&ready_path, ready);
-                    }
-                    Err(e) => {
-                        log::info!("the prepared player did not load: {e}");
-                        self.solver.load(&id, PlayerCode::Code(code)).await?;
-                    }
-                }
-            }
-        }
+        let sts = self.get_ready(&id, &url).await?;
         let player = Player { id, sts };
         *current = Some(player.clone());
         Ok(player)
     }
 
+    /// Why the fast way is resting with player `id`, if it is (see
+    /// [`REST_AFTER_FAILURE`]).
+    fn resting(&self, id: &str) -> Option<String> {
+        let failed = self
+            .failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        failed
+            .as_ref()
+            .filter(|f| f.player == id && f.at.elapsed() < REST_AFTER_FAILURE)
+            .map(|f| format!("{} (the fast way is resting)", f.why))
+    }
+
+    /// Loads player `id` into the solver, from the copy kept on disk when
+    /// there is one, and returns its signature timestamp. A failure is
+    /// remembered, so the fast way rests.
+    async fn get_ready(&self, id: &str, url: &str) -> Result<u64, String> {
+        std::fs::create_dir_all(&self.cache).map_err(|e| e.to_string())?;
+        let code_path = self.cache.join(format!("{id}.js"));
+        let ready_path = self.cache.join(format!("{id}.ready.js"));
+        let forget_player = || {
+            let _ = std::fs::remove_file(&code_path);
+            let _ = std::fs::remove_file(&ready_path);
+        };
+        if let Ok(code) = std::fs::read_to_string(&code_path) {
+            match self.load_player(id, code, &ready_path).await {
+                Ok(sts) => return Ok(sts),
+                Err(e) => {
+                    // Perhaps a damaged copy: fetched again below.
+                    log::info!("the saved player did not work ({e}); getting it again");
+                    forget_player();
+                }
+            }
+        }
+        let code = self
+            .session
+            .fetch_text(url)
+            .await
+            .map_err(|e| format!("could not get YouTube's player: {e}"))?;
+        // Older players go: only the current one is kept.
+        if let Ok(entries) = std::fs::read_dir(&self.cache) {
+            for entry in entries.flatten() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        if let Err(e) = write_whole(&code_path, &code) {
+            log::info!("could not keep YouTube's player for next time: {e}");
+        }
+        match self.load_player(id, code, &ready_path).await {
+            Ok(sts) => {
+                *self
+                    .failed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                Ok(sts)
+            }
+            Err(why) => {
+                forget_player();
+                // Whatever it read of the player, the solver gives back.
+                self.solver.stop().await;
+                *self
+                    .failed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Failed {
+                    player: id.to_string(),
+                    at: Instant::now(),
+                    why: why.clone(),
+                });
+                Err(why)
+            }
+        }
+    }
+
+    /// Loads player `id` from its `code`, or from the prepared form kept at
+    /// `ready_path` when there is one, and returns its signature timestamp.
+    async fn load_player(&self, id: &str, code: String, ready_path: &Path) -> Result<u64, String> {
+        let sts = signature_timestamp(&code).ok_or("no signature timestamp in the player")?;
+        if let Ok(ready) = std::fs::read_to_string(ready_path) {
+            match self.solver.load(id, PlayerCode::Preprocessed(ready)).await {
+                Ok(_) => return Ok(sts),
+                Err(e) => {
+                    log::info!("the saved prepared player did not load: {e}");
+                    let _ = std::fs::remove_file(ready_path);
+                }
+            }
+        }
+        let ready = self.solver.load(id, PlayerCode::Code(code.clone())).await?;
+        if let Some(ready) = ready {
+            // Reading the whole player leaves the solver larger for good; a
+            // fresh one given only the prepared code is smaller.
+            self.solver.stop().await;
+            match self
+                .solver
+                .load(id, PlayerCode::Preprocessed(ready.clone()))
+                .await
+            {
+                Ok(_) => {
+                    if let Err(e) = write_whole(ready_path, &ready) {
+                        log::info!("could not keep the prepared player for next time: {e}");
+                    }
+                }
+                Err(e) => {
+                    log::info!("the prepared player did not load: {e}");
+                    self.solver.load(id, PlayerCode::Code(code)).await?;
+                }
+            }
+        }
+        Ok(sts)
+    }
+
     /// Finds a song's audio. A song found in the last hours is reused.
     pub async fn find(&self, video_id: &str) -> Result<Found, String> {
+        self.find_with(video_id, true).await
+    }
+
+    /// Finds a song's audio ahead of time (a song the pointer rests on, the
+    /// top search result). Skipped while the player is being got ready, so
+    /// a song the listener plays never waits behind these.
+    pub async fn find_ahead(&self, video_id: &str) -> Result<Found, String> {
+        self.find_with(video_id, false).await
+    }
+
+    async fn find_with(&self, video_id: &str, wait: bool) -> Result<Found, String> {
         if let Some(found) = self.remembered(video_id) {
             return Ok(found);
         }
         let started = Instant::now();
-        let player = self.player().await?;
+        let player = self.player(wait).await?;
         let reply = self
             .session
             .player_reply(video_id, Some(player.sts))
@@ -236,6 +327,28 @@ impl Direct {
     /// address is scrambled) and `n` (without which YouTube slows the
     /// stream to a crawl).
     async fn unlock(&self, player: &Player, format: &read::StreamFormat) -> Result<String, String> {
+        let locked = Locked::of(format)?;
+        let sig: Vec<String> = locked.signature.iter().map(|(_, s)| s.clone()).collect();
+        let answers = self
+            .solver
+            .solve(&player.id, locked.n.as_slice(), &sig)
+            .await?;
+        locked.unlock(&answers)
+    }
+}
+
+/// A stream address and the puzzles on it.
+struct Locked {
+    url: String,
+    /// The address's field for the signature, and the scrambled signature,
+    /// when the address is scrambled.
+    signature: Option<(String, String)>,
+    /// The `n` field's puzzle.
+    n: Option<String>,
+}
+
+impl Locked {
+    fn of(format: &read::StreamFormat) -> Result<Self, String> {
         let (url, signature) = match (&format.url, &format.signature_cipher) {
             (Some(url), _) => (url.clone(), None),
             (None, Some(cipher)) => {
@@ -254,14 +367,17 @@ impl Direct {
         let n = query_pairs(url.split_once('?').map_or("", |(_, q)| q))
             .get("n")
             .cloned();
-        let sig: Vec<String> = signature.iter().map(|(_, s)| s.clone()).collect();
-        let answers = self.solver.solve(&player.id, n.as_slice(), &sig).await?;
-        let mut url = url;
-        if let Some((sp, s)) = &signature {
+        Ok(Self { url, signature, n })
+    }
+
+    /// The address with the solver's `answers` put in.
+    fn unlock(self, answers: &Answers) -> Result<String, String> {
+        let mut url = self.url;
+        if let Some((sp, s)) = &self.signature {
             let solved = answers.sig.get(s).ok_or("the signature was not solved")?;
             url = with_query(&url, sp, solved)?;
         }
-        if let Some(n) = &n {
+        if let Some(n) = &self.n {
             let solved = answers.n.get(n).ok_or("n was not solved")?;
             if solved == n {
                 return Err("n came back unchanged".into());
@@ -270,6 +386,17 @@ impl Direct {
         }
         Ok(url)
     }
+}
+
+/// Writes `text` to `path` whole or not at all: into a file beside it, then
+/// renamed into place, so an app closed while writing leaves no half a
+/// player to be read next time.
+fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
+    let folder = path.parent().unwrap_or(Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(folder)?;
+    file.write_all(text.as_bytes())?;
+    file.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// Why none of a song's formats can be played, for the log: it tells
@@ -389,6 +516,89 @@ mod tests {
         assert_eq!(fields["n"], "abc");
         assert_eq!(fields["sig"], "solved=");
         assert_eq!(fields["itag"], "141");
+    }
+
+    fn answers(n: &[(&str, &str)], sig: &[(&str, &str)]) -> Answers {
+        let map = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        Answers {
+            n: map(n),
+            sig: map(sig),
+        }
+    }
+
+    #[test]
+    fn unlocks_a_scrambled_address() {
+        let reply = serde_json::json!({"streamingData": {"adaptiveFormats": [
+            {"itag": 141, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "bitrate": 260000,
+             "signatureCipher": "s=AB%3DC&sp=sig&url=https%3A%2F%2Fr1.example%2Fvideoplayback%3Fn%3Dxyz%26itag%3D141"}
+        ]}});
+        let formats = read::stream_formats(&reply);
+        let locked = Locked::of(&formats[0]).unwrap();
+        assert_eq!(locked.n.as_deref(), Some("xyz"));
+        assert_eq!(
+            locked.signature,
+            Some(("sig".to_string(), "AB=C".to_string()))
+        );
+        let url = locked
+            .unlock(&answers(&[("xyz", "solved-n")], &[("AB=C", "solved-sig")]))
+            .unwrap();
+        let fields = query_pairs(url.split_once('?').unwrap().1);
+        assert_eq!(fields["n"], "solved-n");
+        assert_eq!(fields["sig"], "solved-sig");
+        assert_eq!(fields["itag"], "141");
+        assert!(
+            url.starts_with("https://r1.example/videoplayback?"),
+            "{url}"
+        );
+
+        // Puzzles left unsolved, or `n` handed back as it was, are refused:
+        // the stream would be refused or slowed to a crawl.
+        let unsolved = Locked::of(&formats[0])
+            .unwrap()
+            .unlock(&answers(&[("xyz", "solved-n")], &[]));
+        assert_eq!(unsolved, Err("the signature was not solved".into()));
+        let unchanged = Locked::of(&formats[0])
+            .unwrap()
+            .unlock(&answers(&[("xyz", "xyz")], &[("AB=C", "solved-sig")]));
+        assert_eq!(unchanged, Err("n came back unchanged".into()));
+    }
+
+    #[test]
+    fn unlocks_a_plain_address() {
+        let reply = serde_json::json!({"streamingData": {"adaptiveFormats": [
+            {"itag": 140, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "bitrate": 130000,
+             "url": "https://r1.example/videoplayback?itag=140&n=abc"},
+            {"itag": 139, "mimeType": "audio/mp4; codecs=\"mp4a.40.5\"", "bitrate": 50000,
+             "url": "https://r1.example/videoplayback?itag=139"}
+        ]}});
+        let formats = read::stream_formats(&reply);
+        let locked = Locked::of(&formats[0]).unwrap();
+        assert!(locked.signature.is_none());
+        let url = locked.unlock(&answers(&[("abc", "cba")], &[])).unwrap();
+        assert_eq!(query_pairs(url.split_once('?').unwrap().1)["n"], "cba");
+        // Nothing to solve: the address as it came.
+        let plain = Locked::of(&formats[1]).unwrap();
+        assert!(plain.n.is_none() && plain.signature.is_none());
+        assert_eq!(
+            plain.unlock(&Answers::default()).unwrap(),
+            "https://r1.example/videoplayback?itag=139"
+        );
+    }
+
+    #[test]
+    fn writes_a_file_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("player.js");
+        write_whole(&path, "first").unwrap();
+        write_whole(&path, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        // Nothing else is left beside it.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

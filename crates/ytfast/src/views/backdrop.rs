@@ -1,77 +1,124 @@
 //! What lies behind the pages. The window itself is YouTube Music's
-//! near-black. An album's or playlist's page is washed at the top with its
-//! cover's colour, and the player page lies over the playing song's cover,
-//! blurred into a soft wash of its colours (a few pixels stretched over
-//! the page) under a dark veil, fading from one song to the next.
+//! near-black, as is the player page. An album's or playlist's page has
+//! its cover, blurred, at the top; an artist's page its picture.
 
-use egui::{Color32, Mesh, Pos2, Rect, Shape, TextureId, pos2, vec2};
+use egui::layers::ShapeIdx;
+use egui::{Color32, Mesh, Pos2, Rect, Shape, TextureId, pos2};
 
-use crate::app::App;
 use crate::theme::PALETTE;
 
-/// How strongly the cover's colours show on the player page.
-const STRENGTH: f32 = 0.85;
-/// How long one song's colours take to fade into the next's, in seconds.
-const FADE: f64 = 0.9;
+/// The window's colour, and a place kept just above it for an album's
+/// background (`album_cover`), which the page knows of only after the bars
+/// and the menu are drawn but must lie under them.
+pub fn paint(ui: &egui::Ui, screen: Rect) -> ShapeIdx {
+    let painter = ui.ctx().layer_painter(egui::LayerId::background());
+    painter.rect_filled(screen, 0.0, PALETTE.window);
+    painter.add(Shape::Noop)
+}
 
-pub fn paint(ui: &egui::Ui, screen: Rect) {
+/// Behind an album's or playlist's page, as YouTube Music: its cover,
+/// blurred (80 points), across the window's top, 0.49 of the window high
+/// and as wide as the window but its scroll bar's room; its edges fading
+/// as a blur does. Over it, from the window's top to its foot, black from
+/// 60% to the window's colour. Both move up by `offset` as the songs
+/// scroll; `shown` fades it in. Painted in `slot`, under the bars.
+pub fn album_cover(
+    ui: &egui::Ui,
+    slot: ShapeIdx,
+    screen: Rect,
+    texture: TextureId,
+    shown: f32,
+    offset: f32,
+) {
+    let painter = ui.ctx().layer_painter(egui::LayerId::background());
+    let top = screen.top() - offset;
+    let width = screen.width() - 12.0;
+    let height = screen.height() * 0.49;
+    // The band, its edges half seen and gone 160 below its foot.
+    let xs = [
+        0.0,
+        160.0_f32.min(width / 2.0),
+        (width - 160.0).max(width / 2.0),
+        width,
+    ];
+    let x_alpha = [0.5, 1.0, 1.0, 0.5];
+    let ys = [0.0, 160.0_f32.min(height / 2.0), height, height + 160.0];
+    let y_alpha = [0.5, 1.0, 0.5, 0.0];
+    let mut mesh = Mesh::with_texture(texture);
+    for (row, (&y, &ya)) in ys.iter().zip(&y_alpha).enumerate() {
+        for (&x, &xa) in xs.iter().zip(&x_alpha) {
+            let uv = pos2(x / width, (y / height).min(1.0));
+            let alpha = (xa * ya * shown * 255.0) as u8;
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: pos2(screen.left() + x, top + y),
+                uv,
+                color: Color32::from_white_alpha(alpha),
+            });
+        }
+        if row > 0 {
+            let base = (row as u32 - 1) * 4;
+            for column in 0..3 {
+                let a = base + column;
+                mesh.add_triangle(a, a + 1, a + 5);
+                mesh.add_triangle(a, a + 5, a + 4);
+            }
+        }
+    }
+    // The darkening, the whole window wide.
+    let dark = Rect::from_min_max(
+        pos2(screen.left(), top),
+        pos2(screen.right(), top + screen.height()),
+    );
+    let veil = gradient_shape(dark, Color32::from_black_alpha(153), PALETTE.window);
+    painter.set(slot, Shape::Vec(vec![Shape::mesh(mesh), veil]));
+}
+
+/// Behind an artist's header, as YouTube Music: its picture filling
+/// `frame` (cropped to fill, its top kept), and from `fade` down to the
+/// header's foot a fade to the window's colour, solid for the last 8.98%
+/// (`linear-gradient(1turn, #030303 8.98%, transparent)`), the whole
+/// window wide. Painted in `slot`, under the bars and the menu.
+pub fn artist_picture(
+    ui: &egui::Ui,
+    slot: ShapeIdx,
+    screen: Rect,
+    frame: Rect,
+    texture: Option<(TextureId, [usize; 2])>,
+    fade: f32,
+) {
+    let mut shapes = Vec::new();
+    if let Some((texture, [w, h])) = texture {
+        let picture = w as f32 / h.max(1) as f32;
+        let shape = frame.width() / frame.height().max(1.0);
+        let uv = if picture > shape {
+            // Wider than its frame: the sides go.
+            let keep = shape / picture;
+            Rect::from_min_max(pos2((1.0 - keep) / 2.0, 0.0), pos2((1.0 + keep) / 2.0, 1.0))
+        } else {
+            // Taller: keep the top, where faces are.
+            Rect::from_min_max(Pos2::ZERO, pos2(1.0, picture / shape))
+        };
+        shapes.push(Shape::image(texture, frame, uv, Color32::WHITE));
+    }
+    let foot = frame.bottom();
+    let solid = foot - (foot - fade) * 0.0898;
+    shapes.push(gradient_shape(
+        Rect::from_min_max(pos2(screen.left(), fade), pos2(screen.right(), solid)),
+        Color32::TRANSPARENT,
+        PALETTE.window,
+    ));
+    shapes.push(Shape::rect_filled(
+        Rect::from_min_max(pos2(screen.left(), solid), pos2(screen.right(), foot)),
+        0.0,
+        PALETTE.window,
+    ));
     ui.ctx()
         .layer_painter(egui::LayerId::background())
-        .rect_filled(screen, 0.0, PALETTE.window);
+        .set(slot, Shape::Vec(shapes));
 }
 
-/// The playing song's cover behind the player page, in `rect`.
-pub fn cover(app: &App, ui: &egui::Ui, rect: Rect) {
-    let ctx = ui.ctx();
-    let painter = ui.painter().with_clip_rect(rect);
-    let now = ctx.input(|i| i.time);
-    let time = now as f32;
-    // Slowly drifting.
-    let drift = vec2((time * 0.05).sin(), (time * 0.037).cos()) * 0.12;
-    let backdrop = app.backdrop.borrow();
-    if let Some(current) = &backdrop.current {
-        let shown = ((now - backdrop.since) / FADE).clamp(0.0, 1.0) as f32;
-        if shown < 1.0 {
-            ctx.request_repaint();
-        }
-        if let Some(previous) = &backdrop.previous
-            && shown < 1.0
-        {
-            stretched(
-                &painter,
-                rect,
-                previous.1.id(),
-                STRENGTH * (1.0 - shown),
-                drift,
-            );
-        }
-        stretched(&painter, rect, current.1.id(), STRENGTH * shown, drift);
-    }
-    // The veil: darker towards the bottom, so words stay easy to read.
-    gradient(
-        &painter,
-        rect,
-        Color32::from_black_alpha(120),
-        Color32::from_black_alpha(215),
-    );
-}
-
-/// How strongly a page's cover colours the very top of the window.
-const WASH: f32 = 0.42;
-
-/// A wash of `color`, the colour of a page's cover, behind its top:
-/// strongest at the top of `whole` and gone at its bottom. `rect` is the
-/// part of it to paint (the top bar paints its own part, the page the
-/// rest, and the two meet without an edge).
-pub fn wash(ui: &egui::Ui, rect: Rect, color: Color32, whole: egui::Rangef) {
-    let at = |y: f32| {
-        let down = ((y - whole.min) / (whole.max - whole.min).max(1.0)).clamp(0.0, 1.0);
-        color.gamma_multiply(WASH * (1.0 - down))
-    };
-    gradient(ui.painter(), rect, at(rect.top()), at(rect.bottom()));
-}
-
-fn gradient(painter: &egui::Painter, rect: Rect, top: Color32, bottom: Color32) {
+/// `rect` from `top`'s colour at its top to `bottom`'s at its foot.
+fn gradient_shape(rect: Rect, top: Color32, bottom: Color32) -> Shape {
     let mut mesh = Mesh::default();
     mesh.colored_vertex(rect.left_top(), top);
     mesh.colored_vertex(rect.right_top(), top);
@@ -79,31 +126,5 @@ fn gradient(painter: &egui::Painter, rect: Rect, top: Color32, bottom: Color32) 
     mesh.colored_vertex(rect.left_bottom(), bottom);
     mesh.add_triangle(0, 1, 2);
     mesh.add_triangle(0, 2, 3);
-    painter.add(Shape::mesh(mesh));
-}
-
-/// A texture stretched past the page's edges (so its edge pixels do not
-/// show as bands).
-fn stretched(
-    painter: &egui::Painter,
-    rect: Rect,
-    texture: TextureId,
-    strength: f32,
-    drift: egui::Vec2,
-) {
-    if strength <= 0.0 {
-        return;
-    }
-    let bleed = rect.size().max_elem() * 0.15;
-    // Drifting looks at a slightly smaller part of the cover, moving.
-    let inset = drift.length().min(0.15);
-    let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0))
-        .shrink(inset)
-        .translate(drift * 0.5);
-    painter.image(
-        texture,
-        rect.expand(bleed),
-        uv,
-        Color32::from_white_alpha((strength * 255.0) as u8),
-    );
+    Shape::mesh(mesh)
 }

@@ -56,19 +56,27 @@ crates/ytfast/        the app: an egui window on fastframe
   src/audio_thread.rs the player, on a thread of its own
   src/queue.rs        what plays now and next
   src/images.rs       album covers, loaded once and kept for a while
-  src/colors.rs       colours taken from a cover (backdrop, accent)
+  src/colors.rs       a cover shrunk to a few pixels (the blurred cover
+                      behind an album's page)
   src/lyrics.rs       lyrics as the player page shows them
   src/demo.rs         made-up music for `--demo`
   src/theme.rs        colours, fonts, icons, drawing helpers
   src/views/          what the window draws: backdrop, sidebar, top bar,
                       page, player bar, player page (now_playing), Up
                       next, settings, dialogs, sign-in
-  assets/             icons (Lucide, ISC) and the app's own mark
+  assets/             icons (Google's Material Symbols, Apache 2.0), the
+                      Roboto font (OFL) and the app's own mark
   build.rs            the icon and name in the Windows program
 crates/ytfast-check/  step 0: the guided check program
 packaging/            app icon files, the Mac Info.plist and its
                       build-and-install script, the Windows resource file
 docs/                 plan, how to run the app and the check
+docs/look/            the look: how YouTube Music is measured (README),
+                      its sizes (reference.md), and every difference
+                      left, as a checklist (gaps.md)
+tools/look/           measuring YouTube Music in a browser (measure.js),
+                      and driving the demo on Windows by button names
+                      (demo.ps1)
 ```
 
 The app is modelled on [Spotifast](https://github.com/crmne/spotifast) and
@@ -101,10 +109,10 @@ Paolino), as `audio.rs` does.
   restarted after preparing a new player, which leaves it larger. If any
   step fails, yt-dlp finds the song instead (`prepare.rs`) and the log says
   why. Settings can turn the fast way off.
-- A song plays from its first 256 KB while the rest downloads
-  (`stream.rs`). A connection that breaks or stalls (8 s without data) is
-  asked again for the rest, three times; a download nobody wants any more
-  (the song was skipped) stops. A song whose download broke off for good
+- A song plays from its first 256 KB (`START_BYTES` in `prepare.rs`)
+  while the rest downloads (`stream.rs`). A connection that breaks or
+  stalls (8 s without data) is asked again for the rest, three times; a
+  download nobody wants any more (the song was skipped) stops. A song whose download broke off for good
   stops the player, as `PlayState::Failed`; it is not skipped.
 - The next song is made ready while the current one plays, and more songs
   are asked for (YouTube Music's Up next) when the queue is about to run
@@ -135,18 +143,21 @@ Paolino), as `audio.rs` does.
   player page has the cover on the left and the tabs Up next, Lyrics and
   Related on the right. The owner wants a one-to-one copy of YouTube
   Music's look: when changing a screen, open the real one and measure.
-- An album's or playlist's page is washed at the top with its cover's
-  colour, and the player page lies over the playing song's cover, blurred
-  (`colors.rs`, `views/backdrop.rs`), with lyrics that follow the song in
-  the style of Better Lyrics' Even Better Lyrics Plus theme (recreated,
-  not copied).
+- An album's or playlist's page has its cover, blurred, behind its top,
+  and an artist's page its picture, both under the top bar and the menu
+  (`views/backdrop.rs`, painted in a place `backdrop::paint` keeps under
+  them). The player page is plain, as YouTube Music's, with lyrics that
+  follow the song in the style of Better Lyrics' Even Better Lyrics Plus
+  theme (recreated, not copied).
 - Lyrics: YouTube Music's timed lyrics, else LRCLIB's (lrclib.net, found
   by title, artist, album and length), else YouTube Music's plain ones.
   Asked for only when the player page shows them.
 - Changes to the account (`backend::Edit`) show at once and go to YouTube
   one at a time, in order; a refusal from YouTube (`Event::EditFailed`)
   undoes them (back to what was shown before) and says so.
-- The interface font is Inter. The computer's fonts for other scripts
+- The interface font is Roboto, YouTube Music's own (Roboto Bold stands
+  in for YouTube Sans, which may not be shipped), with Inter behind it for
+  any letter Roboto lacks. The computer's fonts for other scripts
   (Chinese, Japanese, Korean, Arabic, the Indian scripts...; about 60 MB
   on Windows) are read only once some text on screen needs one
   (`theme::ScriptFonts`).
@@ -185,10 +196,30 @@ Paolino), as `audio.rs` does.
   an empty list rather than failing. When a reply breaks a reader, save a real reply (nothing
   personal in it) to `tests/fixtures/` and add a test.
 - Don't hard-code client versions or account details: they come from the
-  page config (`ytcfg.rs`), with fallbacks.
-- Keep to a normal listener's pace: prepare at most the next one or two
-  songs, never download in bulk, never loop requests. yt-dlp's documentation
-  warns that accounts can be banned.
+  page config (`ytcfg.rs`), with fallbacks. The one exception is the
+  language: every request asks for English (`LANGUAGE` in
+  `innertube.rs`), because some readers tell an artist from an album by
+  YouTube's English words. Page and shelf titles are therefore English
+  whatever the account's language.
+- Keep to a normal listener's pace: never download in bulk, never loop
+  requests. yt-dlp's documentation warns that accounts can be banned. The
+  limits the code keeps now, which must not get looser:
+  - The song after the playing one is made ready (downloaded) ahead, and
+    again each time a queue change makes another song next
+    (`App::prepare_next`), so quick queue edits can start a few downloads
+    at once. At most three songs made ready are kept (`READY_AHEAD` in
+    `backend.rs`); a download no longer kept or wanted stops.
+  - The rest of a long list (a playlist, Liked Music, Library Songs) is
+    asked for in up to 100 requests one straight after another
+    (`MAX_BATCHES` in `backend.rs`, about 10,000 songs), each time that
+    page is loaded afresh (Liked Music, for one, after a like elsewhere).
+    A newer loading of the page stops the older one.
+  - A playlist queued as a whole takes up to 5 more batches of its songs
+    (`MAX_QUEUE_BATCHES` in `innertube.rs`), and the Library's tabs up to
+    9 more batches of their cards (`MAX_LIBRARY_BATCHES`).
+  - When the fast way cannot get a player ready, it rests for 15 minutes
+    (`REST_AFTER_FAILURE` in `direct.rs`) and yt-dlp finds songs
+    meanwhile, rather than trying again for every song.
 - Every song played is reported twice: when it starts, and how long it
   played (`playreport.rs`). Without this, History and recommendations stop
   learning.
@@ -197,9 +228,16 @@ Paolino), as `audio.rs` does.
 
 ### Playing
 
-- A song is downloaded whole into memory, and plays from its first bytes
-  while the rest arrives. Its link expires, but nothing more needs
-  fetching once it has arrived.
+- A song is downloaded whole, into memory (a song over 40 MB, into a
+  temporary file instead: `IN_MEMORY` in `stream.rs`), and plays from its
+  first bytes while the rest arrives. Its link expires, but nothing more
+  needs fetching once it has arrived.
+- The sound device must never wait. A song is decoded on a thread of its
+  own, about two seconds ahead (`AHEAD_SECONDS` in `audio.rs`); the device
+  takes only what is ready, and plays silence while the download is
+  behind. That silence is not counted in the song's position, so the time
+  and the lyrics do not run ahead. A song let go (skipped, or replaced by
+  a seek) drops what was decoded for it.
 - Give symphonia's MP4 reader a one-way (unseekable) stream until the
   song has fully arrived: with a seekable one it reads every top-level box
   first, which waits for the whole download. Seeking waits for the whole
@@ -366,21 +404,90 @@ title shows, and at the same maximised window the demo's memory went from
 about 190 to 132 MB (private) and from about 135-150 to 92 MB (working
 set). Not yet tested: anything with the owner's account (a real dropped
 connection, real yt-dlp failures, a renewal with yt-dlp, two windows
-open), and the Mac. Not fixed yet, from the review: an album's or
-playlist's Play takes only the songs loaded so far (and Up next's first
-batch), greyed-out playlist rows are queued as playable, "Add to
-playlist" offers playlists saved but not owned, a renewal takes whichever
-account the browser now has, the sound callback can wait on the network,
-very long tracks (over 200 MB) stop early, long lists are laid out in full
-every frame, and closing the window while minimised forgets its size
-(eframe saves the minimised window's).
+open), and the Mac. What that round left of the review was fixed in the
+next (below), except that closing the window while minimised forgets its
+size (eframe saves the minimised window's).
 
-Where the look still differs from YouTube Music's: the font is Inter, not
-Roboto and YouTube Sans; the icons are Lucide's; there are no like or play
-counts, no descriptions, and no Comments tab; back and forward arrows
-stand before the search box (a browser has its own); History and Settings
-are in the account's menu; and what only a signed-in page shows was not
-seen while measuring.
+The next round (version 0.4.0, 8 October 2026) fixed the rest of the
+review. Playing: each song decodes on a thread of its own, so the sound
+device never waits for the network; songs over 40 MB go to a temporary
+file; a broken fast way rests for 15 minutes instead of being retried for
+every song, and a remembered address that fails is found again the fast
+way; without a sound device, Play says so instead of playing silently
+through the queue; the listening report counts what was heard after a
+jump, and the last song's report is sent before the window closes.
+Reading YouTube: greyed-out rows stay on their page but are not queued; a
+whole playlist queued takes up to 5 more batches, the Library's tabs up
+to 9; an artist's Shuffle and Radio, an episode's Play and Top songs'
+"Show all" use YouTube's own; a video as top result says so; only AAC-LC
+stereo audio is chosen, in the song's original language; every request
+asks for English. The app: a renewal is refused when the browser has
+another account signed in; an older loading of a page is dropped and
+stops loading its batches; errors shown are plain words; "Add to
+playlist" offers only the account's own playlists, scrolls, and starts
+with New playlist; "Remove from playlist" only on that playlist's page;
+long lists draw only the rows on screen; Page Up, Page Down, Home and End
+scroll the page, and Shift+F10 opens a focused row's menu; "/" opens the
+search box without typing itself into it; one-line titles are cut at the
+edge, mid-word; the log's first line and Settings name the build
+("YTFast 0.4.0 (abc1234)"). The check: the report keeps out names and
+home folders, History counts only new plays, the sign-in copy goes when
+the window closes, and `--save-replies` saves scrubbed replies for
+fixtures. CI pins its actions to commits and ships the licence notices.
+Tested on the owner's Windows laptop: the unit tests (176, among them the
+app's own rules, now testable without its threads: stale answers, skip or
+stop, repeat, likes and refusals, suggestions, page loadings), and in demo
+mode: search's filters, an album's Play next (its own three songs), Page
+Up and End in Liked Music, the version in Settings, and memory (122 MB
+private, 93 MB working set at 1280 by 820, after browsing and playing;
+0.02 s of processor time in 10 s paused). Once, a demo window closed by
+itself during testing and could not be made to again; the log now says
+why the window stops if it does. Not yet tested: everything with the
+owner's account (the new decoding with real songs and real dropped
+connections, greyed-out rows, batches of a real library, the artist
+buttons, an episode), Shift+F10 (posted keys carry no Shift), and the Mac.
+
+The next round (version 0.5.0, 8 October 2026) copied YouTube Music's
+look screen by screen, from measurements of music.youtube.com (signed
+out, 1280 wide, in a browser) and its stylesheet. The method, the sizes
+and the checklist of differences (about 250; 200 done, the rest listed
+there) are in `docs/look/`. Roboto and Material Symbols replaced Inter and
+Lucide. Built: the page grid and how many cards fit, by window width; the
+top bar, the menu and its strip of icons; every menu, and Save to
+playlist as a dialog; the player bar; Home's chips and shelves, Explore's
+buttons and moods; album and playlist pages (the blurred cover, two
+columns by YouTube's formula, plays, like, dislike and ⋮ under the
+pointer, greyed-out songs); artist pages (the picture under the bar, the
+description, Subscribe with its count, Top songs in columns with Show
+all); search (the top result card, one mixed list, YouTube's own filter
+buttons, suggestions with pictures, the arrow keys and Enter in them);
+the player page (plain, sliding up, YouTube's spacing and tabs, Up next
+with what it plays from, every song, and the Autoplay switch); Shuffle as
+a mode that stays on; toasts. Read anew from YouTube: descriptions, owner
+pictures, plays, subscriber counts, search's filter buttons, suggestions
+with pictures, and the queue's name. Tested on the owner's Windows laptop:
+the unit tests (184, among them reading a real search and suggestions
+reply, the filter buttons, and shuffle turned off), and every changed
+screen in demo mode beside the real page at 1280 by 820 (some at 1100 and
+1440): 0% processor time when idle, about 120 MB private memory. Not yet
+tested: anything with the owner's account (real pages, covers and
+pictures, and the screens only a signed-in page has, never measured:
+Library, Liked Music, the account's own playlists, the account menu),
+what shows only under the pointer (like, dislike and ⋮ on rows), and the
+Mac.
+
+Where the look still differs from YouTube Music's (the rest is in
+`docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
+there is no Comments tab; back and forward arrows sit beside the account
+(a browser has its own); History and Settings are in the account's menu;
+the account button shows the name's first letter, not the account's
+photo; the playing song's bars do not move (moving ones would keep the
+window drawing); and what only a signed-in page shows was not measured.
+What it does differently: disliking the playing song does not skip it;
+clicking a song in History queues the rest of that list; Edit playlist
+only renames, with new playlists always private (no description and no
+privacy choice); Up next is reordered with Move up and Move down, not by
+dragging, and shows the Autoplay switch for radios too.
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp
