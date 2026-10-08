@@ -11,6 +11,8 @@ use crate::theme::PALETTE;
 
 /// How strongly the cover's colours show on the player page.
 const STRENGTH: f32 = 0.85;
+/// How long one song's colours take to fade into the next's, in seconds.
+const FADE: f64 = 0.9;
 
 pub fn paint(ui: &egui::Ui, screen: Rect) {
     ui.ctx()
@@ -22,12 +24,16 @@ pub fn paint(ui: &egui::Ui, screen: Rect) {
 pub fn cover(app: &App, ui: &egui::Ui, rect: Rect) {
     let ctx = ui.ctx();
     let painter = ui.painter().with_clip_rect(rect);
-    let time = ctx.input(|i| i.time) as f32;
+    let now = ctx.input(|i| i.time);
+    let time = now as f32;
     // Slowly drifting.
     let drift = vec2((time * 0.05).sin(), (time * 0.037).cos()) * 0.12;
     let backdrop = app.backdrop.borrow();
     if let Some(current) = &backdrop.current {
-        let shown = ctx.animate_bool_with_time(egui::Id::new(("backdrop", &current.0)), true, 0.9);
+        let shown = ((now - backdrop.since) / FADE).clamp(0.0, 1.0) as f32;
+        if shown < 1.0 {
+            ctx.request_repaint();
+        }
         if let Some(previous) = &backdrop.previous
             && shown < 1.0
         {

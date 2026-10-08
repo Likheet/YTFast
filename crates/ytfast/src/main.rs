@@ -68,13 +68,22 @@ fn main() -> eframe::Result<()> {
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
         .expect("the icon is a PNG");
+    // The demo keeps its window size and the like in a file of its own: it
+    // may be open beside YTFast in real use, and the real app's file holds
+    // its settings, which the demo would write back as they were when it
+    // opened.
+    let persistence_path = demo
+        .then(|| directories::ProjectDirs::from("", "", "YtFast"))
+        .flatten()
+        .map(|dirs| dirs.cache_dir().join("demo-window.ron"));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("YTFast")
             .with_icon(std::sync::Arc::new(icon))
             .with_app_id("ytfast")
-            .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([960.0, 600.0]),
+            .with_inner_size(app::WINDOW_SIZE)
+            .with_min_inner_size(app::MIN_WINDOW_SIZE),
+        persistence_path,
         ..Default::default()
     };
     eframe::run_native(

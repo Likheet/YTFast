@@ -29,7 +29,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 .corner_radius(CornerRadius::same(12))
                 .inner_margin(Margin::same(24))
                 .show(ui, |ui| {
-                    ui.set_width(width - 48.0);
+                    // (A window restored tiny has no room at all for a
+                    // moment, before it takes its least size.)
+                    ui.set_width((width - 48.0).max(0.0));
                     card(app, ui);
                 });
         });
@@ -118,6 +120,14 @@ fn card(app: &App, ui: &mut egui::Ui) {
 fn browser_row(app: &App, ui: &mut egui::Ui, browser: Browser, selected: bool) {
     let problem = browser.problem_here();
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::RadioButton,
+            problem.is_none(),
+            selected,
+            browser.label(),
+        )
+    });
     let fill = if selected {
         PALETTE.surface_hover
     } else if response.hovered() && problem.is_none() {

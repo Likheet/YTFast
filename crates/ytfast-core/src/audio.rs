@@ -143,7 +143,9 @@ impl SongSource {
         loop {
             let packet = match self.format.next_packet() {
                 Ok(packet) => packet,
-                // The end of the song, or a broken file: either way, stop.
+                // The end of the song, a broken file, or a download that
+                // broke off (the player tells which: `Player::broke_off`):
+                // either way, stop.
                 Err(_) => return false,
             };
             if packet.track_id() != self.track_id {
@@ -295,13 +297,15 @@ impl Player {
             follow_default: true,
             ..OutputOptions::default()
         };
-        let output = fastframe_audio::Output::open(options, render)
+        let mut output = fastframe_audio::Output::open(options, render)
             .map_err(|e| AudioError::Device(e.to_string()))?;
         let (mixer, _rate) = made
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
             .ok_or_else(|| AudioError::Device("the audio output did not start".into()))?;
+        // The device rests until there is a song to play.
+        output.pause();
         let sink = rodio::Sink::connect_new(&mixer);
         Ok(Self {
             output,
@@ -376,9 +380,16 @@ impl Player {
         self.sink.set_volume(gain * self.volume);
     }
 
-    /// Jumps to `to` in the current song.
+    /// Jumps to `to` in the current song. Anywhere but the start needs the
+    /// whole song, and waits for it (see [`Player::can_jump`]).
     pub fn seek(&mut self, to: Duration) -> Result<(), AudioError> {
         self.restart_at(to)
+    }
+
+    /// Whether a jump to `to` can be made without waiting: to the start,
+    /// or anywhere once the whole song has arrived.
+    pub fn can_jump(&self, to: Duration) -> bool {
+        to.is_zero() || self.song.as_ref().is_none_or(|s| s.data.is_complete())
     }
 
     /// How far into the song playback is.
@@ -386,15 +397,34 @@ impl Player {
         self.offset + self.sink.get_pos()
     }
 
-    /// The current song has played to its end.
+    /// The current song has stopped sounding: played to its end, or broken
+    /// off before it (see [`Player::broke_off`]).
     pub fn finished(&self) -> bool {
         self.song.is_some() && self.sink.empty()
+    }
+
+    /// Why the current song stopped before its end: its download failed or
+    /// stalled partway, so the decoder ran out of audio. `None` when the
+    /// whole song arrived.
+    pub fn broke_off(&self) -> Option<String> {
+        let song = self.song.as_ref()?;
+        if song.data.is_complete() {
+            return None;
+        }
+        Some(
+            song.data
+                .failure()
+                .unwrap_or_else(|| "the audio download stalled".into()),
+        )
     }
 
     pub fn stop(&mut self) {
         self.song = None;
         self.sink = rodio::Sink::connect_new(&self.mixer);
         self.offset = Duration::ZERO;
+        // Nothing to play: the device rests (no callbacks, no CPU, and it
+        // does not keep the computer awake) until the next song.
+        self.output.pause();
     }
 
     /// Keeps the output on a working device. Call a few times a second.

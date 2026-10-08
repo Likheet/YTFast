@@ -9,7 +9,7 @@ use egui::{
     Align, Align2, Color32, CornerRadius, Layout, Rect, Sense, UiBuilder, Vec2, pos2, vec2,
 };
 
-use crate::app::{Action, App, NpTab};
+use crate::app::{Action, App, NpTab, PlayState};
 use crate::lyrics::{Lyrics, State};
 use crate::queue::Entry;
 use crate::theme::{self, PALETTE};
@@ -18,11 +18,6 @@ use crate::views::{backdrop, page, queue_panel, widgets};
 pub fn show(app: &App, ui: &mut egui::Ui) {
     let area = ui.max_rect();
     backdrop::cover(app, ui, area);
-    // Keep lyrics and the backdrop moving while music plays.
-    if app.audio_status.entry.is_some() && !app.audio_status.paused {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
-    }
     let Some(entry) = &app.playback.entry else {
         ui.painter().text(
             area.center(),
@@ -59,6 +54,16 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             entry.track.thumbnail.as_ref(),
             CornerRadius::same(8),
         );
+        // A click on the cover pauses and plays again, as on YouTube Music.
+        let sounding = app.playback.state == PlayState::Playing && !app.audio_status.paused;
+        let response = ui.interact(art, ui.id().with("cover"), Sense::click());
+        response.widget_info(|| {
+            let name = if sounding { "Pause" } else { "Play" };
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name)
+        });
+        if response.clicked() {
+            app.act(Action::TogglePause);
+        }
     }
 
     let mut ui = ui.new_child(
@@ -160,6 +165,17 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let now = ui.input(|i| i.time);
     let current = lyrics.current(app.audio_status.position);
     let viewport = ui.available_height();
+    // Lines that follow the song move on as it plays.
+    if lyrics.synced && app.audio_status.entry.is_some() && !app.audio_status.paused {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
+    }
+    // Scrolling by hand pauses following for a few seconds. Read before
+    // the scroll area below takes the wheel's movement for itself.
+    let scrolled = ui.input(|i| i.smooth_scroll_delta.y != 0.0);
+    if scrolled && ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
+        ui.data_mut(|d| d.insert_temp(id.with("manual"), now + 4.0));
+    }
     // Line positions from the last frame, to scroll the sung line into
     // view (a third of the way down).
     let tops: Vec<f32> = ui.data(|d| d.get_temp(id)).unwrap_or_default();
@@ -179,7 +195,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     if follow {
         area = area.vertical_scroll_offset(offset);
     }
-    let output = area.show(ui, |ui| {
+    area.show(ui, |ui| {
         let origin = ui.min_rect().top();
         ui.add_space(24.0);
         let mut new_tops = Vec::with_capacity(lyrics.lines.len());
@@ -240,22 +256,23 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         ui.add_space(if lyrics.synced { viewport * 0.6 } else { 32.0 });
         ui.data_mut(|d| d.insert_temp(id, new_tops));
     });
-    // Scrolling by hand pauses following for a few seconds.
-    let scrolled = ui.input(|i| i.smooth_scroll_delta.y != 0.0);
-    if scrolled && ui.rect_contains_pointer(output.inner_rect) {
-        ui.data_mut(|d| d.insert_temp(id.with("manual"), now + 4.0));
-    }
 }
 
 fn related(app: &App, ui: &mut egui::Ui, entry: &Entry) {
     match app.related.get(&entry.track.video_id) {
         Some(crate::app::Loadable::Ready(found)) => {
+            // Songs played from here start a queue of their own, not one
+            // of the playlist open behind the player page.
+            let route = crate::backend::Route::Browse {
+                id: format!("related-{}", entry.track.video_id),
+                params: None,
+            };
             egui::ScrollArea::vertical()
                 .id_salt(("related", &entry.track.video_id))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    page::sections(app, ui, &app.route, found, &page::Look::PANEL);
+                    page::sections(app, ui, &route, found, &page::Look::PANEL);
                     ui.add_space(32.0);
                 });
         }
