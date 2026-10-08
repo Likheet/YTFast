@@ -525,9 +525,10 @@ impl Session {
         &self,
         video_id: &str,
         playlist_id: Option<&str>,
-    ) -> Result<Vec<Track>, ApiError> {
+    ) -> Result<(Vec<Track>, Option<String>), ApiError> {
         let body = next_body(video_id, playlist_id);
-        Ok(read::up_next(&self.call("next", body).await?))
+        let reply = self.call("next", body).await?;
+        Ok((read::up_next(&reply), read::queue_title(&reply)))
     }
 
     /// The songs of a playlist or album to play, by its playlist ID

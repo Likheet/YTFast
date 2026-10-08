@@ -12,7 +12,7 @@ use ytfast_core::cookies::CookieJar;
 use ytfast_core::direct::Direct;
 use ytfast_core::helpers::{self, Progress};
 use ytfast_core::innertube::{ApiError, Renewer, Renewing, Session};
-use ytfast_core::library::{LibraryTab, Privacy, SearchFilter};
+use ytfast_core::library::{LibraryTab, Privacy};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
 use ytfast_core::read::{Item, Page, PlayerInfo, Rating, Shape, SongDetails, Track};
@@ -36,8 +36,9 @@ pub enum Route {
         params: Option<String>,
     },
     Search(String),
-    /// Search results of one kind only.
-    SearchOnly(String, SearchKind),
+    /// Search results of one kind only: the query, and what YouTube's
+    /// filter button for that kind sends (its `params`).
+    SearchOnly(String, String),
     /// The library's other tabs.
     LibrarySongs,
     LibraryAlbums,
@@ -45,37 +46,6 @@ pub enum Route {
     History,
     /// YTFast's own settings (not loaded from YouTube).
     Settings,
-}
-
-/// The kinds search results can be narrowed to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SearchKind {
-    Songs,
-    Albums,
-    Artists,
-    Playlists,
-}
-
-impl SearchKind {
-    pub const ALL: [Self; 4] = [Self::Songs, Self::Albums, Self::Artists, Self::Playlists];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Songs => "Songs",
-            Self::Albums => "Albums",
-            Self::Artists => "Artists",
-            Self::Playlists => "Playlists",
-        }
-    }
-
-    fn filter(self) -> SearchFilter {
-        match self {
-            Self::Songs => SearchFilter::Songs,
-            Self::Albums => SearchFilter::Albums,
-            Self::Artists => SearchFilter::Artists,
-            Self::Playlists => SearchFilter::Playlists,
-        }
-    }
 }
 
 impl Route {
@@ -283,7 +253,8 @@ pub enum Event {
         video_id: String,
         playlist_id: Option<String>,
         queue: u64,
-        result: Result<Vec<Track>, String>,
+        /// The songs, and what they play from ("Playing from").
+        result: Result<(Vec<Track>, Option<String>), String>,
     },
     PlaylistQueue {
         playlist_id: String,
@@ -291,7 +262,7 @@ pub enum Event {
         ticket: u64,
         result: Result<Vec<Track>, String>,
     },
-    Suggestions(String, Vec<String>),
+    Suggestions(String, ytfast_core::read::Suggestions),
     /// More songs of a long list already shown (a playlist, Liked
     /// Music), loaded after its first ones.
     MoreRows {
@@ -1028,8 +999,8 @@ async fn page(shared: &Shared, route: Route, load: u64) {
         Route::Liked => session.long_page("VLLM", None).await,
         Route::Browse { id, params } => session.long_page(id, params.as_deref()).await,
         Route::Search(query) => session.search(query).await.map(|p| (p, None)),
-        Route::SearchOnly(query, kind) => session
-            .search_filtered(query, kind.filter())
+        Route::SearchOnly(query, params) => session
+            .search_filtered(query, params)
             .await
             .map(|p| (p, None)),
         Route::LibrarySongs => session.long_page(LibraryTab::Songs.browse_id(), None).await,
@@ -1247,29 +1218,17 @@ async fn up_next(shared: &Shared, video_id: String, playlist_id: Option<String>,
 
 async fn suggest(shared: &Shared, text: String) {
     let found = if shared.demo {
-        let lower = text.to_lowercase();
-        [
-            "Glass Hearts",
-            "Mara Sol",
-            "Midnight Arcade",
-            "Night Ferries",
-            "Low Tide",
-            "Lemon Skies",
-        ]
-        .iter()
-        .filter(|s| s.to_lowercase().contains(&lower))
-        .map(|s| s.to_string())
-        .collect()
+        demo::suggestions(&text)
     } else if let Some(p) = shared.preparer().await {
         p.session
             .search_suggestions(&text)
             .await
             .unwrap_or_else(|e| {
                 log::info!("search suggestions did not load: {e}");
-                Vec::new()
+                Default::default()
             })
     } else {
-        Vec::new()
+        Default::default()
     };
     shared.send(Event::Suggestions(text, found));
 }
@@ -1461,7 +1420,7 @@ async fn find_lyrics(
 async fn related(shared: &Shared, video_id: String) {
     let result = if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        Ok(demo::page(&Route::Explore))
+        Ok(demo::related(&video_id))
     } else if let Some(p) = shared.preparer().await {
         match details(shared, &p.session, &video_id).await {
             Ok(SongDetails {

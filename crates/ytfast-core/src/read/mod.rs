@@ -19,10 +19,10 @@ mod song;
 pub use edit::{created_playlist_id, edit_status};
 pub use formats::{StreamFormat, best_stream, stream_formats};
 pub use page::{
-    Card, Header, HeaderButtons, Item, Page, PageKind, Section, Shape, Target, Thumb, more_items,
-    page, queue_continuation, up_next,
+    Card, CardButton, CardLook, Header, HeaderButtons, Item, Page, PageKind, Section, Shape,
+    Target, Thumb, TopResult, more_items, page, queue_continuation, queue_title, up_next,
 };
-pub use search::search_suggestions;
+pub use search::{Suggestions, search_suggestions};
 pub use song::{Rating, SongDetails, lyrics, song_details};
 
 /// Where a browse link says what kind of page it opens.
@@ -131,6 +131,31 @@ pub struct Track {
     /// on its page, and can still be taken out of a playlist, but it does
     /// not play.
     pub playable: bool,
+    /// What its row says beyond that, when it says more.
+    pub more: Option<Box<TrackMore>>,
+}
+
+/// What a song's row says beyond its artists, album and length, when it
+/// says more: its place in a chart, and its plays or views. Kept apart,
+/// as most rows say neither.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrackMore {
+    /// Its place in a chart ("1"), as Explore's Trending numbers its rows.
+    pub rank: Option<String>,
+    /// "53M plays" or "28M views", as YouTube writes it.
+    pub count: Option<String>,
+}
+
+impl Track {
+    /// Its place in a chart, when it has one.
+    pub fn rank(&self) -> Option<&str> {
+        self.more.as_ref()?.rank.as_deref()
+    }
+
+    /// Its plays or views, when its row says them.
+    pub fn count(&self) -> Option<&str> {
+        self.more.as_ref()?.count.as_deref()
+    }
 }
 
 impl Default for Track {
@@ -148,6 +173,7 @@ impl Default for Track {
             artist_id: None,
             album_id: None,
             playable: true,
+            more: None,
         }
     }
 }
@@ -253,6 +279,18 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
             .and_then(|c| c.get("musicVideoType"))
             .and_then(Value::as_str),
     );
+    // A chart's place, and the plays or views wherever the row says them.
+    let rank = row
+        .pointer("/customIndexColumn/musicCustomIndexColumnRenderer/text")
+        .and_then(text)
+        .filter(|r| !r.trim().is_empty());
+    let count = columns
+        .iter()
+        .skip(1)
+        .flat_map(|c| c.split(" \u{2022} "))
+        .find(|part| is_count(part))
+        .map(str::to_string);
+    let more = (rank.is_some() || count.is_some()).then(|| Box::new(TrackMore { rank, count }));
     Some(Track {
         video_id,
         set_video_id,
@@ -265,6 +303,7 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         artist_id: links.artist_id,
         album_id: links.album_id,
         playable,
+        more,
     })
 }
 

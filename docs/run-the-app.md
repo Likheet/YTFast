@@ -17,24 +17,20 @@ with your Premium account. YTFast uses that sign-in.
 
 ## Get the app
 
-1. Go to the repository on GitHub, open the **Actions** tab, and click the
-   newest run with a green tick that is marked **main** (the branch name
-   shows beside each run). Runs marked with any other name are unfinished
-   work that has not been accepted yet. To see only main's runs, choose
-   **main** in the **Branch** menu above the list.
-2. Scroll down to **Artifacts** and download:
-   - `YTFast-for-Windows` on the Windows laptop, or
-   - `YTFast-for-Mac` on the Mac.
+Download the file for your computer:
 
-   Beside the app are this guide (`HOW-TO-RUN.md`) and
-   `THIRD-PARTY-NOTICES.txt`, the licences of the work YTFast is built
-   with. You need not do anything with them.
+- **Windows** (64-bit, Intel or AMD): `YTFast-for-Windows`.
+- **Mac** (Apple Silicon: M1 or newer): `YTFast-for-Mac`. Macs with an
+  Intel processor are not supported yet.
 
-GitHub keeps these downloads for 30 days. If main's newest run shows no
-Artifacts (or says they have expired), make a fresh one: on the
-**Actions** tab, click **CI** on the left, then **Run workflow**, leave
-the branch on **main**, and click the green **Run workflow** button. When
-the new run has its green tick, its Artifacts are there to download.
+Beside the app are this guide (`HOW-TO-RUN.md`) and
+`THIRD-PARTY-NOTICES.txt`, the licences of the work YTFast is built with.
+You need not do anything with them.
+
+(Building it yourself: every push to the repository on GitHub builds both.
+Open its **Actions** tab, click the newest run with a green tick marked
+**main**, and download them from **Artifacts**; GitHub keeps them for 30
+days, and **CI**, **Run workflow** makes a fresh run.)
 
 ## Windows
 
@@ -108,33 +104,42 @@ once a song plays.
 - Songs start in about a second. A song you rest the pointer on, and the top
   search result, are made ready ahead of time, so they start at once.
 - When the queue runs out, songs like the last one follow, as YouTube
-  Music's autoplay does (you can turn this off in Settings).
+  Music's autoplay does (turn this off at the end of Up next, or in
+  Settings).
 
 **The player page**
 
-- Click the song in the player bar to open it: the cover large on the
-  left, over its own colours, and on the right the tabs **Up next**,
-  **Lyrics** and **Related**.
+- Click the player bar (or the ▲ at its right) to open it: it slides up,
+  with the cover large on the left and on the right the tabs **Up next**,
+  **Lyrics** and **Related**. Click the cover to pause or play.
+- **Up next** says what the songs play from ("Playing from"), lists the
+  whole queue (songs already played too, the playing one marked), and
+  ends with the **Autoplay** switch.
 - Lyrics follow the song: the line being sung is lit. Click any line to jump
   there. Scroll to read ahead; it starts following again a moment later.
-- **Esc**, the back arrow, or another click on the song in the player bar
-  closes it.
+- **Esc**, the back arrow, the ▼ at the player bar's right, or another
+  click on the player bar closes it.
 
 **Menus**
 
+- Menus look and read as YouTube Music's.
 - **Right-click a song**, or click the three dots that show at its right
-  when the pointer is on it: Start radio, Play next, Add to queue, Add to
-  liked songs, Add to playlist, Go to album, Go to artist, Copy link. On
-  your own playlists, also **Remove from playlist**. The three dots at the
-  right of the player bar give the same for the song playing.
-- **Right-click an album or playlist**: Play, Shuffle play, Start radio,
-  Play next, Add to queue, Save to library, Copy link.
-- **Right-click a song in Up next**: Play next, Move up, Move down, Remove
-  from queue.
+  when the pointer is on it: Start mix, Play next, Add to queue, Add to
+  liked songs, Save to playlist, Go to album, Go to artist, Share. On
+  your own playlists, also **Remove from playlist**. The three dots in the
+  middle of the player bar give the same for the song playing.
+- **Save to playlist** opens a window with your playlists (click one to
+  add the song) and a **New playlist** button.
+- **Share** copies the song's link.
+- **Right-click an album or playlist**: Shuffle play, Start mix, Play
+  next, Add to queue, Save album (or playlist) to library, Share.
+- **Right-click a song in Up next**: Start mix, Play next, Move up, Move
+  down, ..., Remove from queue.
 
 **Your music**
 
-- The thumbs in the player bar like or dislike the song playing.
+- The thumbs in the middle of the player bar like or dislike the song
+  playing.
 - **Library** has Playlists, Songs, Albums and Artists.
 - An album or a playlist shows its cover on the left with three buttons
   under it: the big one plays it, the one with three dots has Shuffle
@@ -142,19 +147,27 @@ once a song plays.
   (a plus, or a tick once saved). On your own playlists the third is a
   pencil, which renames it, and **Delete playlist** is under the three
   dots. Try changes on a playlist you don't mind first.
-- On an artist: **Shuffle**, **Radio** and **Subscribe**.
-- **Search** suggests as you type; the results can be narrowed to Songs,
-  Albums, Artists or Playlists.
+- On an artist: **Shuffle**, **Mix**, **Subscribe** (with the number of
+  subscribers) and a menu; the description opens with **More**. Top songs
+  shows plays, and **Show all** under it.
+- **Search** suggests as you type: words, then the artist and songs it
+  finds, with pictures (a song plays, an artist opens). The results can be
+  narrowed with YouTube Music's own buttons (Songs, Albums, Community
+  playlists...); the × before them goes back to all results.
 
 **In the player bar**
 
-- In the middle: **Shuffle** (mixes up the songs coming up), previous,
-  play or pause, next, and **Repeat** (off, then the queue, then the
-  song; it is lit while on).
-- On the right: the time, like and dislike, the volume (click it to mute;
-  rest the pointer on it for the volume bar, or scroll over it), and the
-  song's menu.
-- Click or drag the red line along the top of the bar to jump in the song.
+- Laid out as YouTube Music's. On the left: previous, play or pause,
+  next, and the time.
+- In the middle: the song playing (click the artist's or the album's name
+  to go there), like and dislike, and the song's menu.
+- On the right: the volume (click it to mute; rest the pointer on it for
+  the volume bar, or scroll over it), **Repeat** (off, then the queue,
+  then the song; white while on), **Shuffle** (white while on: the songs
+  coming up play in a random order, in this queue and the next; off puts
+  them back in order), and ▲ to open the player page.
+- Click or drag the red line along the top of the bar to jump in the song;
+  the time under the pointer shows above it.
 
 | Key | What it does |
 |---|---|

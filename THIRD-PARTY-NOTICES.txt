@@ -13,8 +13,9 @@ What is in which program:
 
 Contents:
 
-  1. Lucide icons (ISC licence; some icons from Feather, MIT licence)
-  2. The Inter font (SIL Open Font License 1.1)
+  1. Lucide icons (ISC licence; some icons from Feather, MIT licence), and
+     Material Symbols icons (Apache License 2.0)
+  2. The Roboto and Inter fonts (SIL Open Font License 1.1)
   3. egui's own fonts: Ubuntu Light, Noto Emoji, Hack, emoji-icon-font
   4. fastframe, and code adapted from Spotifast (MIT licence)
   5. Rust libraries (crates), with the MIT and Apache 2.0 licence texts
@@ -24,10 +25,15 @@ YTFast fetches them from their makers' own releases the first time it
 signs in, and checks them against their published fingerprints.
 
 ============================================================================
-1. Lucide icons (https://lucide.dev)
+1. Lucide icons (https://lucide.dev) and Material Symbols
 ============================================================================
 
-The icons in YTFast are Lucide's, some through fastframe. Their licence:
+The icons in menus (and more, as YTFast comes to look like YouTube Music)
+are Google's Material Symbols (https://fonts.google.com/icons), Copyright
+Google LLC, under the Apache License 2.0, whose text is in section 5.
+
+The other icons in YTFast are Lucide's, some through fastframe. Their
+licence:
 
 ISC License
 
@@ -74,10 +80,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ============================================================================
-2. The Inter font (https://github.com/rsms/inter)
+2. The Roboto font (https://github.com/googlefonts/roboto-classic) and the
+   Inter font (https://github.com/rsms/inter)
 ============================================================================
 
-YTFast's text is drawn in Inter, carried in the app through fastframe.
+YTFast's text is drawn in Roboto (Regular, Medium and Bold, version 3.015,
+from Google Fonts), and in Inter, carried in the app through fastframe,
+where Roboto has no letter.
+
+Copyright 2011 The Roboto Project Authors
+(https://github.com/googlefonts/roboto-classic)
 
 Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
 
