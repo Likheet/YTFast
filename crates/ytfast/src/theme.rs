@@ -293,6 +293,20 @@ fastframe_icons::icons! {
         History => "history",
         Settings => "settings",
         LogOut => "logout",
+        // The account menu's (ACCOUNT_BOX, PAID, PRIVACY_TIP, HELP).
+        AccountBox => "account-box",
+        Paid => "paid",
+        Policy => "policy",
+        Help => "help",
+        // A playlist's privacy (PUBLIC, LINK, LOCK), and a menu's arrow.
+        Public => "public",
+        Link => "link",
+        Lock => "lock",
+        DropDown => "arrow-drop-down",
+        /// YouTube's "E" for explicit (MUSIC_EXPLICIT_BADGE).
+        Explicit => "explicit",
+        /// A sort button's chevron.
+        ExpandMore => "expand-more",
     }
 }
 
@@ -534,12 +548,17 @@ pub fn bold(size: f32) -> FontId {
 /// A menu's width (`tp-yt-paper-listbox.ytmusic-menu-popup-renderer`).
 pub const MENU_WIDTH: f32 = 240.0;
 
+/// A menu's 1 border: white@0.10 as the page draws it, over the menu's own
+/// `#212121`, so solid here (a see-through edge would let what lies under
+/// the menu show through its outermost pixel).
+pub const MENU_EDGE: Color32 = Color32::from_rgb(0x37, 0x37, 0x37);
+
 /// YouTube Music's menu frame: `#212121`, a 1 point white@0.10 border,
 /// corners 2, 16 above and below the entries, and no shadow.
 pub fn menu_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(PALETTE.panel)
-        .stroke(Stroke::new(1.0, PALETTE.outline))
+        .stroke(Stroke::new(1.0, MENU_EDGE))
         .corner_radius(CornerRadius::same(2))
         .inner_margin(egui::Margin::symmetric(0, 16))
 }
@@ -638,6 +657,21 @@ pub fn fit_centered(
 ) -> Arc<Galley> {
     let mut job = job(text, font, color, width, rows);
     job.halign = egui::Align::Center;
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// [`fit`], its first line starting `indent` in (room for a badge).
+pub fn fit_indented(
+    ui: &egui::Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    width: f32,
+    rows: usize,
+    indent: f32,
+) -> Arc<Galley> {
+    let mut job = job(text, font, color, width, rows);
+    job.sections[0].leading_space = indent;
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
@@ -797,6 +831,11 @@ pub enum Pill {
     Outline(Color32),
     /// Words and ring in this colour (Subscribe).
     Ringed(Color32),
+    /// Only words, `#f1f1f1`; white@0.10 under the pointer (a dialog's
+    /// Cancel).
+    Plain,
+    /// Only words, blue (a confirmation's buttons).
+    Link,
 }
 
 /// A pill button 36 high, with an icon before its words when given one.
@@ -813,10 +852,13 @@ pub fn pill_sized(
     style: Pill,
     width: Option<f32>,
 ) -> Response {
+    let enabled = ui.is_enabled();
     let color = match style {
+        _ if !enabled => PALETTE.disabled,
         Pill::Filled => Color32::from_rgb(0x0f, 0x0f, 0x0f),
-        Pill::Tonal => PALETTE.button,
+        Pill::Tonal | Pill::Plain => PALETTE.button,
         Pill::Outline(color) | Pill::Ringed(color) => color,
+        Pill::Link => PALETTE.switch,
     };
     let galley = ui
         .painter()
@@ -832,6 +874,10 @@ pub fn pill_sized(
         let hovered = response.hovered();
         let radius = CornerRadius::same(18);
         match style {
+            // A main button that cannot be pressed yet is grey.
+            Pill::Filled if !enabled => {
+                ui.painter().rect_filled(rect, radius, PALETTE.surface);
+            }
             Pill::Filled => {
                 let fill = if hovered {
                     Color32::from_rgb(0xd9, 0xd9, 0xd9)
@@ -861,6 +907,17 @@ pub fn pill_sized(
                         Stroke::new(1.0, PALETTE.surface_hover),
                         egui::StrokeKind::Inside,
                     );
+                }
+            }
+            Pill::Plain => {
+                if hovered && enabled {
+                    ui.painter().rect_filled(rect, radius, PALETTE.surface);
+                }
+            }
+            Pill::Link => {
+                if hovered && enabled {
+                    ui.painter()
+                        .rect_filled(rect, radius, PALETTE.switch.gamma_multiply(0.1));
                 }
             }
             Pill::Ringed(color) => {

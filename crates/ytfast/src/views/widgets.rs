@@ -4,7 +4,7 @@
 use egui::{Color32, CornerRadius, Rect, Sense, Vec2, pos2, vec2};
 use ytfast_core::read::{Card, Target, Thumb, Track, TrackKind};
 
-use crate::app::{Action, App};
+use crate::app::{Action, App, PlayState};
 use crate::theme::{self, Icon, PALETTE};
 
 /// Draws a cover in `rect`: the picture when it has arrived, a quiet
@@ -620,7 +620,8 @@ pub fn track_row_in(
             ui.painter()
                 .circle_filled(menu.center(), 16.0, PALETTE.surface);
         }
-        theme::paint_icon(ui, Icon::MoreVertical, menu, 18.0, PALETTE.text);
+        // Grey, as YouTube Music's rows draw it (`--ytmusic-menu-renderer-overflow-button-color`).
+        theme::paint_icon(ui, Icon::MoreVertical, menu, 18.0, PALETTE.dim);
         clicked_menu = menu_response.clicked();
         theme::menu_popup(&menu_response)
             .id(id.with("menu-popup"))
@@ -654,6 +655,8 @@ pub fn track_row_in(
         // artist, the plays (when said) and the album sharing the other 9,
         // 16 before each.
         let title_width = space * 6.0 / 15.0;
+        // An explicit song's "E" at the end of its title's column.
+        let badge = if track.explicit() { 32.0 } else { 0.0 };
         line_at(
             ui,
             text_left,
@@ -661,8 +664,14 @@ pub fn track_row_in(
             &track.title,
             title_font,
             title_color,
-            title_width,
+            title_width - badge,
         );
+        if badge > 0.0 {
+            explicit_badge(
+                ui,
+                pos2(text_left + title_width - 16.0, rect.center().y - 8.0),
+            );
+        }
         let others: Vec<&str> = [
             Some(track.artists.as_str()),
             track.count(),
@@ -700,13 +709,33 @@ pub fn track_row_in(
                 title_color,
                 space,
             );
-            line_at(ui, text_left, under_top, &under, line, line_color, space);
+            // An explicit song's "E" (16, then 4) before the line under.
+            let badge = if track.explicit() { 20.0 } else { 0.0 };
+            if badge > 0.0 {
+                let height = font_line(&line);
+                explicit_badge(ui, pos2(text_left, under_top + (height - 16.0) / 2.0));
+            }
+            line_at(
+                ui,
+                text_left + badge,
+                under_top,
+                &under,
+                line,
+                line_color,
+                space - badge,
+            );
         }
     }
     if response.clicked() && !clicked_menu {
         app.act(on_click());
     }
     theme::context_menu(&response).show(|ui| song_menu(app, ui, track, place));
+}
+
+/// YouTube's "E" for explicit: 16 across, white@0.70, `at` its top left.
+fn explicit_badge(ui: &egui::Ui, at: egui::Pos2) {
+    let spot = Rect::from_min_size(at, Vec2::splat(16.0));
+    theme::paint_icon(ui, Icon::Explicit, spot, 16.0, PALETTE.secondary);
 }
 
 /// Three still bars, as YouTube Music's equaliser marks the playing song
@@ -1011,6 +1040,19 @@ pub fn share(app: &App, ui: &mut egui::Ui, link: String) {
 /// down), a round play button (40, black 60%) shows 32 in from its right
 /// and bottom, and a ⋮ button (36) 4 from its right and 8 from its top;
 /// they fade in over 0.2 s. Clicking opens it; the play button plays it.
+/// Whether the queue plays from this card's album or playlist.
+fn plays_from(app: &App, card: &Card) -> bool {
+    let Some(Target::Watch {
+        playlist_id: Some(list),
+        ..
+    }) = &card.play
+    else {
+        return false;
+    };
+    let bare = |id: &str| id.strip_prefix("VL").unwrap_or(id).to_string();
+    app.playback.entry.is_some() && app.queue.source.as_deref().map(bare) == Some(bare(list))
+}
+
 pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
     let center = card.round;
     // A video's card is as tall and 16:9 wide.
@@ -1021,14 +1063,17 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
         size
     };
     let title = theme::fit(ui, &card.title, theme::medium(14.0), PALETTE.text, size, 2);
+    // An explicit card's "E" (16, then 4) begins its subtitle's first line.
+    let badge = if card.look.explicit { 20.0 } else { 0.0 };
     let subtitle = (!card.subtitle.is_empty()).then(|| {
-        theme::fit(
+        theme::fit_indented(
             ui,
             &card.subtitle,
             theme::regular(14.0),
             PALETTE.secondary,
             size,
             2,
+            badge,
         )
     });
     let words = 16.0 + title.size().y + subtitle.as_ref().map_or(0.0, |s| 3.0 + s.size().y);
@@ -1051,12 +1096,17 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
     let lit = ui
         .ctx()
         .animate_bool_with_time(response.id.with("hover"), hovered, 0.2);
+    // The album or playlist playing keeps its gradient and button without
+    // the pointer (YouTube Music's play button in a state other than
+    // "default").
+    let current = plays_from(app, card);
+    let shade = if current { 1.0 } else { lit };
     let mut pressed = false;
-    if lit > 0.0 && !card.round {
+    if shade > 0.0 && !card.round {
         // The gradient over the cover's top third.
         let mut mesh = egui::Mesh::default();
         let top = Rect::from_min_size(art.min, vec2(art.width(), art.height() / 3.0));
-        let dark = Color32::from_black_alpha((128.0 * lit) as u8);
+        let dark = Color32::from_black_alpha((128.0 * shade) as u8);
         mesh.colored_vertex(top.left_top(), dark);
         mesh.colored_vertex(top.right_top(), dark);
         mesh.colored_vertex(top.right_bottom(), Color32::TRANSPARENT);
@@ -1064,7 +1114,8 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
         mesh.add_triangle(0, 1, 2);
         mesh.add_triangle(0, 2, 3);
         ui.painter().add(egui::Shape::mesh(mesh));
-
+    }
+    if lit > 0.0 && !card.round {
         // ⋮, which opens the card's menu.
         let dots = Rect::from_min_size(
             pos2(art.right() - 4.0 - 36.0, art.top() + 8.0),
@@ -1115,25 +1166,36 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
             pressed = true;
             app.act(Action::Play(target, card.song()));
         }
-    } else if lit > 0.0 && card.play.is_some() && !card.round {
+    } else if shade > 0.0 && card.play.is_some() && !card.round {
         let button =
             Rect::from_center_size(art.right_bottom() - vec2(32.0, 32.0), Vec2::splat(40.0));
         let play = ui.interact(button, response.id.with("play"), Sense::click());
+        // Playing: a speaker, and Pause under the pointer; paused: Play.
+        let sounding = current
+            && matches!(
+                app.playback.state,
+                PlayState::Playing | PlayState::Preparing
+            )
+            && !app.audio_status.paused;
+        let pointed = ui.rect_contains_pointer(button);
+        let (icon, name) = match (sounding, pointed) {
+            (true, true) => (Icon::Pause, "Pause"),
+            (true, false) => (Icon::Volume, "Pause"),
+            (false, _) => (Icon::Play, "Play"),
+        };
         play.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Button,
                 true,
-                format!("Play {}", card.title),
+                format!("{name} {}", card.title),
             )
         });
         // Under the pointer it turns solid and grows 1.2 times.
-        let on = ui.ctx().animate_bool_with_time(
-            play.id.with("on"),
-            ui.rect_contains_pointer(button),
-            0.2,
-        );
+        let on = ui
+            .ctx()
+            .animate_bool_with_time(play.id.with("on"), pointed, 0.2);
         let grown = 1.0 + 0.2 * on;
-        let alpha = (153.0 + 102.0 * on) * lit;
+        let alpha = (153.0 + 102.0 * on) * shade;
         ui.painter().circle_filled(
             button.center(),
             20.0 * grown,
@@ -1141,16 +1203,18 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
         );
         theme::paint_icon(
             ui,
-            Icon::Play,
+            icon,
             button,
             24.0 * grown,
-            Color32::from_white_alpha((255.0 * lit) as u8),
+            Color32::from_white_alpha((255.0 * shade) as u8),
         );
-        if play.clicked()
-            && let Some(target) = card.play.clone()
-        {
+        if play.clicked() {
             pressed = true;
-            app.act(Action::Play(target, card.song()));
+            if current {
+                app.act(Action::TogglePause);
+            } else if let Some(target) = card.play.clone() {
+                app.act(Action::Play(target, card.song()));
+            }
         }
     }
 
@@ -1178,6 +1242,9 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
     }
     if let Some(subtitle) = subtitle {
         let at = place(&subtitle, top);
+        if badge > 0.0 {
+            explicit_badge(ui, pos2(at.x, at.y + 0.4));
+        }
         ui.painter().galley(at, subtitle, PALETTE.secondary);
     }
     if response.hovered() {
@@ -1349,7 +1416,12 @@ pub fn card_row(app: &App, ui: &mut egui::Ui, style: Row, card: &Card) {
 /// A mood or genre button (a card without a picture): a chip, white
 /// when it is the one chosen (clicking it again goes back to Home).
 pub fn chip(app: &App, ui: &mut egui::Ui, card: &Card) {
-    if theme::chip(ui, &card.title, card.look.chosen, 36.0).clicked() {
+    chip_sized(app, ui, card, 36.0);
+}
+
+/// [`chip`], `height` high (32: the chips over Liked Music's songs).
+pub fn chip_sized(app: &App, ui: &mut egui::Ui, card: &Card, height: f32) {
+    if theme::chip(ui, &card.title, card.look.chosen, height).clicked() {
         if card.look.chosen {
             app.act(Action::Navigate(crate::backend::Route::Home));
         } else if let Some(target) = card.open.clone() {
