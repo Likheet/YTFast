@@ -107,15 +107,20 @@ pub enum Request {
         video_id: String,
         play: bool,
     },
-    /// What plays after a song (its playlist, or a radio).
+    /// What plays after a song (its playlist, or a radio). `queue` is the
+    /// queue it is asked for ([`crate::queue::Queue::generation`]), given
+    /// back with the answer.
     UpNext {
         video_id: String,
         playlist_id: Option<String>,
+        queue: u64,
     },
     /// The songs of a playlist or album, to play it (or queue it).
+    /// `ticket` is given back with the answer, so a late one is known.
     PlaylistQueue {
         playlist_id: String,
         mode: crate::app::QueueMode,
+        ticket: u64,
     },
     /// Suggestions for what is being typed in the search box.
     Suggest(String),
@@ -155,6 +160,22 @@ impl Picture {
         Self {
             summary: colors::summarize(&image),
             image,
+        }
+    }
+}
+
+impl Edit {
+    /// What the change is to: a song, a playlist or a channel.
+    pub fn item(&self) -> &str {
+        match self {
+            Self::Rate { video_id, .. } => video_id,
+            Self::AddToPlaylist { playlist_id, .. }
+            | Self::RemoveFromPlaylist { playlist_id, .. }
+            | Self::RenamePlaylist { playlist_id, .. }
+            | Self::DeletePlaylist { playlist_id }
+            | Self::Save { playlist_id, .. } => playlist_id,
+            Self::CreatePlaylist { title, .. } => title,
+            Self::Subscribe { channel_id, .. } => channel_id,
         }
     }
 }
@@ -238,11 +259,14 @@ pub enum Event {
     },
     UpNext {
         video_id: String,
+        playlist_id: Option<String>,
+        queue: u64,
         result: Result<Vec<Track>, String>,
     },
     PlaylistQueue {
         playlist_id: String,
         mode: crate::app::QueueMode,
+        ticket: u64,
         result: Result<Vec<Track>, String>,
     },
     Suggestions(String, Vec<String>),
@@ -269,6 +293,9 @@ pub struct Backend {
     events: mpsc::Receiver<Event>,
     /// The private folder holding this run's copy of the YouTube cookies.
     session_dir: PathBuf,
+    /// Held while this run is open, so another run leaves the folder be
+    /// (see [`still_open`]).
+    session_lock: Option<std::fs::File>,
 }
 
 impl Backend {
@@ -276,6 +303,7 @@ impl Backend {
     pub fn start(wake: impl Fn() + Send + Sync + 'static, demo: bool) -> std::io::Result<Self> {
         let folders = Folders::new(demo)?;
         let session_dir = folders.session.clone();
+        let session_lock = lock_session(&session_dir);
         let (requests, receiver) = tokio::sync::mpsc::unbounded_channel();
         let (sender, events) = mpsc::channel();
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
@@ -293,6 +321,7 @@ impl Backend {
             requests,
             events,
             session_dir,
+            session_lock,
         })
     }
 
@@ -305,9 +334,29 @@ impl Backend {
     }
 
     /// Removes this run's sign-in copy. Called when the window closes.
-    pub fn forget_sign_in(&self) {
+    pub fn forget_sign_in(&mut self) {
+        // Let go of the folder's lock first: Windows keeps a file in use.
+        drop(self.session_lock.take());
         let _ = std::fs::remove_dir_all(&self.session_dir);
     }
+}
+
+/// The file each run keeps locked in its sign-in folder while it is open.
+const SESSION_LOCK: &str = "open";
+
+/// Locks this run's sign-in folder while the run is open. The lock goes
+/// when the run ends, however it ends (a crash too).
+fn lock_session(folder: &Path) -> Option<std::fs::File> {
+    let file = std::fs::File::create(folder.join(SESSION_LOCK)).ok()?;
+    file.try_lock().ok()?;
+    Some(file)
+}
+
+/// Whether the run that made this sign-in folder is still open (another
+/// YTFast window): it holds the folder's lock.
+fn still_open(folder: &Path) -> bool {
+    std::fs::File::open(folder.join(SESSION_LOCK))
+        .is_ok_and(|file| matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
 }
 
 /// Where YtFast keeps its helpers, caches and this run's sign-in copy.
@@ -326,13 +375,16 @@ impl Folders {
         let dirs = directories::ProjectDirs::from("", "", "YtFast")
             .ok_or_else(|| std::io::Error::other("no home folder"))?;
         let cache = dirs.cache_dir().to_path_buf();
-        // Left over from a run that did not close properly. The demo
-        // leaves them be: it may be open beside YTFast in real use, whose
-        // sign-in is in one of them.
+        // Left over from a run that did not close properly. A run still
+        // open (YTFast opened twice) keeps its folder: its sign-in is in
+        // use. The demo leaves them all be: it may be open beside YTFast in
+        // real use, whose sign-in is in one of them.
         let sessions = cache.join("app-sessions");
         if !demo && let Ok(entries) = std::fs::read_dir(&sessions) {
             for entry in entries.flatten() {
-                let _ = std::fs::remove_dir_all(entry.path());
+                if !still_open(&entry.path()) {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
             }
         }
         let session = sessions.join(std::process::id().to_string());
@@ -447,7 +499,22 @@ async fn serve(
             }
         });
     }
+    // Changes to the account go to YouTube one at a time, in the order they
+    // were made: a quick like and unlike must end unliked.
+    let (edits, mut queued_edits) = tokio::sync::mpsc::unbounded_channel();
+    {
+        let shared = Arc::clone(&shared);
+        tokio::spawn(async move {
+            while let Some(change) = queued_edits.recv().await {
+                edit(&shared, change).await;
+            }
+        });
+    }
     while let Some(request) = requests.recv().await {
+        if let Request::Edit(change) = request {
+            let _ = edits.send(change);
+            continue;
+        }
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
             match request {
@@ -456,9 +523,13 @@ async fn serve(
                     *shared.signed_in.write().await = None;
                     let _ =
                         std::fs::remove_file(shared.folders.session.join("youtube-cookies.txt"));
-                    let mut guard = shared.prepared.lock().await;
-                    guard.0.clear();
-                    guard.1.clear();
+                    {
+                        let mut guard = shared.prepared.lock().await;
+                        guard.0.clear();
+                        guard.1.clear();
+                    }
+                    // What the old account thought of songs (its likes).
+                    shared.details.lock().await.clear();
                 }
                 Request::Page(route) => page(&shared, route).await,
                 Request::Prepare {
@@ -469,10 +540,13 @@ async fn serve(
                 Request::UpNext {
                     video_id,
                     playlist_id,
-                } => up_next(&shared, video_id, playlist_id).await,
-                Request::PlaylistQueue { playlist_id, mode } => {
-                    playlist_queue(&shared, playlist_id, mode).await
-                }
+                    queue,
+                } => up_next(&shared, video_id, playlist_id, queue).await,
+                Request::PlaylistQueue {
+                    playlist_id,
+                    mode,
+                    ticket,
+                } => playlist_queue(&shared, playlist_id, mode, ticket).await,
                 Request::Suggest(text) => suggest(&shared, text).await,
                 Request::Warm(video_id) => {
                     if !shared.demo
@@ -490,7 +564,8 @@ async fn serve(
                 } => lyrics(&shared, video_id, title, artist, album, duration).await,
                 Request::Related(video_id) => related(&shared, video_id).await,
                 Request::Details(video_id) => song_started(&shared, video_id).await,
-                Request::Edit(change) => edit(&shared, change).await,
+                // Queued above, in order.
+                Request::Edit(_) => {}
                 Request::FastWay(on) => shared
                     .fast_way
                     .store(on, std::sync::atomic::Ordering::Relaxed),
@@ -564,12 +639,15 @@ async fn try_sign_in(shared: &Shared, browser: Browser) -> Result<String, String
     let session = Session::start(net::api_client(), &jar)
         .await
         .map_err(|e| e.to_string())?;
-    let (account, flags) = session.account().await.map_err(|e| e.to_string())?;
+    let signed_out =
+        || "YouTube Music treated the sign-in as signed out. Sign in again in your browser.";
+    let (account, flags) = match session.account().await {
+        Ok(found) => found,
+        Err(ApiError::SignedOut) => return Err(signed_out().into()),
+        Err(e) => return Err(e.to_string()),
+    };
     if flags.logged_in == Some(false) {
-        return Err(
-            "YouTube Music treated the sign-in as signed out. Sign in again in your browser."
-                .into(),
-        );
+        return Err(signed_out().into());
     }
     let name = account
         .map(|a| a.name)
@@ -772,19 +850,19 @@ fn drop_chips(page: &mut Page) {
 /// The most batches of a long list loaded (about 10,000 songs).
 const MAX_BATCHES: usize = 100;
 
+/// Only a problem with this one song lets the window move on to the next.
+/// Anything else (the sign-in, the network, YouTube slowing the account
+/// down, yt-dlp unable to get audio) would fail the same way for every
+/// song, so moving on would only run through the queue.
 fn classify(error: PrepareError) -> Failure {
-    let message = error.to_string();
-    let lower = message.to_ascii_lowercase();
-    let song_only = match &error {
-        PrepareError::NoPlayableAudio => true,
-        PrepareError::Find(_) => {
-            lower.contains("not available")
-                || lower.contains("unavailable")
-                || lower.contains("private")
-        }
-        PrepareError::SignIn(_) | PrepareError::Download(_) => false,
-    };
-    Failure { message, song_only }
+    let song_only = matches!(
+        error,
+        PrepareError::NoPlayableAudio | PrepareError::Unavailable(_)
+    );
+    Failure {
+        message: error.to_string(),
+        song_only,
+    }
 }
 
 async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
@@ -883,7 +961,7 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
     shared.send(Event::Prepared { entry, result });
 }
 
-async fn up_next(shared: &Shared, video_id: String, playlist_id: Option<String>) {
+async fn up_next(shared: &Shared, video_id: String, playlist_id: Option<String>, queue: u64) {
     let result = if shared.demo {
         Ok(demo::up_next(&video_id))
     } else {
@@ -896,7 +974,12 @@ async fn up_next(shared: &Shared, video_id: String, playlist_id: Option<String>)
             None => Err("Not signed in.".into()),
         }
     };
-    shared.send(Event::UpNext { video_id, result });
+    shared.send(Event::UpNext {
+        video_id,
+        playlist_id,
+        queue,
+        result,
+    });
 }
 
 async fn suggest(shared: &Shared, text: String) {
@@ -928,7 +1011,12 @@ async fn suggest(shared: &Shared, text: String) {
     shared.send(Event::Suggestions(text, found));
 }
 
-async fn playlist_queue(shared: &Shared, playlist_id: String, mode: crate::app::QueueMode) {
+async fn playlist_queue(
+    shared: &Shared,
+    playlist_id: String,
+    mode: crate::app::QueueMode,
+    ticket: u64,
+) {
     let result = if shared.demo {
         Ok(demo::playlist_songs(&playlist_id))
     } else {
@@ -944,6 +1032,7 @@ async fn playlist_queue(shared: &Shared, playlist_id: String, mode: crate::app::
     shared.send(Event::PlaylistQueue {
         playlist_id,
         mode,
+        ticket,
         result,
     });
 }

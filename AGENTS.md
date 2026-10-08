@@ -83,10 +83,15 @@ Paolino), as `audio.rs` does.
   network or yt-dlp. The audio thread (`audio_thread.rs`) owns the player.
   They talk through channels: `Request`/`Event` and `Command`/`Status`.
 - Views draw from a shared `&App` and push `Action`s; `App::apply` runs
-  them after the frame is drawn, so nothing changes under a view.
+  them after the frame is drawn, so nothing changes under a view. What
+  keeps the music going (backend and player news, media keys) runs in
+  `App::logic`, which eframe also runs while the window is minimised or
+  hidden.
 - Each queue entry has its own ID. Answers about an entry (a song made
   ready, a song that ended) carry that ID, and answers about an entry no
-  longer playing are ignored.
+  longer playing are ignored. Answers about the queue (more songs, a
+  playlist to play) are tagged the same way, so a late one cannot change
+  a queue the user has replaced.
 - Songs are found the fast way (`direct.rs`): one `player` request
   carrying the player code's signature timestamp, then the stream address
   unlocked by the solver (`solver.rs`: yt-dlp's own EJS scripts, from
@@ -97,11 +102,19 @@ Paolino), as `audio.rs` does.
   step fails, yt-dlp finds the song instead (`prepare.rs`) and the log says
   why. Settings can turn the fast way off.
 - A song plays from its first 256 KB while the rest downloads
-  (`stream.rs`).
+  (`stream.rs`). A connection that breaks or stalls (8 s without data) is
+  asked again for the rest, three times; a download nobody wants any more
+  (the song was skipped) stops. A song whose download broke off for good
+  stops the player, as `PlayState::Failed`; it is not skipped.
 - The next song is made ready while the current one plays, and more songs
   are asked for (YouTube Music's Up next) when the queue is about to run
-  out. The top search result and a song the pointer rests on are found
-  ahead of time too (found only, not downloaded).
+  out. At the end of a playlist or album, with autoplay on, a radio of
+  its last song follows. The top search result and a song the pointer
+  rests on (0.35 s on that row, not rows scrolling past) are found ahead
+  of time too (found only, not downloaded).
+- A song that cannot play is skipped only when the problem is that song's
+  (removed, private, not offered here), and at most five in a row; any
+  other problem stops and waits for Play (`App::song_failed`).
 - The sign-in is a copy of the browser's. A browser renews its own as it
   goes, which ends the copy (within the hour, with YouTube open in the
   browser). When YouTube stops accepting it (HTTP 401, a reply as if
@@ -109,7 +122,10 @@ Paolino), as `audio.rs` does.
   valid), the session reads the browser's sign-in again and sends the
   request once more, without asking the user: `Session::renew_with` and
   `Session::send` (`innertube.rs`), `Preparer::prepare` (`prepare.rs`),
-  `backend::renewer`. The browser is read at most once a minute.
+  `backend::renewer`. The browser is read at most once a minute. yt-dlp
+  gets a copy of the cookie file of its own for each song (it writes its
+  cookies back), and a refusal still there after reading the browser again
+  shows the sign-in screen (`Event::SignedOut`).
 - The window is laid out as YouTube Music's own page: a bar across the
   top, the menu on the left (which closes to icons), the page, and the
   player bar across the bottom. Sizes and colours are YouTube Music's,
@@ -127,8 +143,13 @@ Paolino), as `audio.rs` does.
 - Lyrics: YouTube Music's timed lyrics, else LRCLIB's (lrclib.net, found
   by title, artist, album and length), else YouTube Music's plain ones.
   Asked for only when the player page shows them.
-- Changes to the account (`backend::Edit`) show at once; a refusal from
-  YouTube (`Event::EditFailed`) undoes them and says so.
+- Changes to the account (`backend::Edit`) show at once and go to YouTube
+  one at a time, in order; a refusal from YouTube (`Event::EditFailed`)
+  undoes them (back to what was shown before) and says so.
+- The interface font is Inter. The computer's fonts for other scripts
+  (Chinese, Japanese, Korean, Arabic, the Indian scripts...; about 60 MB
+  on Windows) are read only once some text on screen needs one
+  (`theme::ScriptFonts`).
 - Long lists (a playlist, Liked Music) show their first songs at once and
   load the rest in the background (`Session::more_tracks`).
 - Every page is a header and sections of songs or cards (`read::Page`), so
@@ -136,8 +157,9 @@ Paolino), as `audio.rs` does.
 - `--demo` replaces the account with made-up music and no network or
   sound, for trying the interface and for screenshots. It can be open
   beside YTFast in real use without disturbing it: it keeps a log of its
-  own (`ytfast-demo.log`), leaves the sign-in folders alone, and saves no
-  settings.
+  own (`ytfast-demo.log`), leaves the sign-in folders alone, saves no
+  settings, and keeps its window's size in a file of its own
+  (`demo-window.ron` in the cache folder).
 - Problems go to `ytfast.log` in the cache folder, made new each run
   (warnings; everything with `--verbose`). Every line passes through
   `redact::urls`. Ask the owner for this file when something fails on
@@ -290,12 +312,13 @@ window was laid out again as YouTube Music's own page, from measurements of
 music.youtube.com (signed out, in a browser, 1280 wide). Tested: the unit
 tests (among them when the sign-in is read again, and that it is read once
 for requests refused together), and every screen in demo mode on that
-laptop, beside the real pages, at 1280 by 820 and at 960 by 600. Not yet
-tested: reading the sign-in again with a real account (it needs the app
-open until the sign-in goes stale, about an hour with YouTube open in the
-browser), the new look with real pages (the owner's library, real covers,
-an artist's wide picture), what shows only under the pointer (the menu
-button on a song row, the volume bar), and the Mac.
+laptop, beside the real pages, at 1280 by 820 and at 960 by 600. Since
+then, that build's log from a run left open overnight (7 to 8 October,
+the owner's account) shows the sign-in read again from Firefox twice, by
+itself, with nothing failing. Not yet tested: the new look with real pages
+(the owner's library, real covers, an artist's wide picture), what shows
+only under the pointer (the menu button on a song row, the volume bar),
+and the Mac.
 
 An earlier build (before the new look) ran on the owner's Mac with their
 account on 7 October 2026, built there, signed in through Safari. The
@@ -310,6 +333,47 @@ Full Disk Access button; and builds made on the Mac carry a fixed
 signature (above). Not yet tested: any of these with the owner's account,
 the button's page in System Settings, and whether Full Disk Access now
 lasts from one build to the next.
+
+On 8 October 2026 a review of the whole code (seventeen readers, each
+finding then checked by two more; the usage limit stopped about half of
+the checks) found, above all, that the music stopped after the current
+song while the window was minimised, and several ways the app could skip
+through the queue or download in bulk. Built since, on the owner's Windows
+laptop: songs advance and media keys work while the window is minimised
+(`App::logic`); only a song's own problem skips it, at most five in a
+row; downloads stop when no longer wanted, ask again after a broken or
+stalled connection, and a song whose download broke off stops instead of
+skipping; songs are found ahead only after the pointer rests on that row;
+late answers about a queue are dropped, a finished album no longer starts
+over (autoplay follows with a radio), and Play works after the queue
+ends; lyrics are looked up with the right song's length, and lyrics and
+Related that did not load are asked for again; yt-dlp gets its own copy
+of the cookies, a renewal by another request counts for yt-dlp, a newer
+yt-dlp that cannot be downloaded leaves the installed one in use, and a
+second YTFast leaves the first's sign-in alone; changes to the account go
+in order, and a refusal puts back what was shown; the sound device rests
+when nothing plays, and a jump in a song still arriving no longer freezes
+the controls; the fonts for other scripts are read only when some text
+needs them (58 MB on that laptop: most of the demo's excess memory); the
+demo keeps its window in a file of its own. Tested: the unit tests (128,
+among them a download broken off and asked again, one refused, one
+stopped when unwanted; yt-dlp's words for one song's problem and for
+every song's; the queue's order and generations; a renewal by another
+request; which characters need the other fonts), and in demo mode on that
+laptop: the next song starts while the window is minimised, Enter makes a
+playlist, the other fonts are read (in the background) only once such a
+title shows, and at the same maximised window the demo's memory went from
+about 190 to 132 MB (private) and from about 135-150 to 92 MB (working
+set). Not yet tested: anything with the owner's account (a real dropped
+connection, real yt-dlp failures, a renewal with yt-dlp, two windows
+open), and the Mac. Not fixed yet, from the review: an album's or
+playlist's Play takes only the songs loaded so far (and Up next's first
+batch), greyed-out playlist rows are queued as playable, "Add to
+playlist" offers playlists saved but not owned, a renewal takes whichever
+account the browser now has, the sound callback can wait on the network,
+very long tracks (over 200 MB) stop early, long lists are laid out in full
+every frame, and closing the window while minimised forgets its size
+(eframe saves the minimised window's).
 
 Where the look still differs from YouTube Music's: the font is Inter, not
 Roboto and YouTube Sans; the icons are Lucide's; there are no like or play

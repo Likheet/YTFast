@@ -17,6 +17,9 @@ pub struct Queue {
     entries: Vec<Entry>,
     current: Option<usize>,
     next_id: u64,
+    /// Counts the queues played: an answer asked for one queue (more songs
+    /// for it) is not added to a queue that replaced it.
+    generation: u64,
     /// Where more songs come from when the queue runs out: the playlist or
     /// album being played, else a radio of the last song.
     pub source: Option<String>,
@@ -31,6 +34,12 @@ impl Queue {
         }
     }
 
+    /// Which queue this is: it changes when the queue is replaced or
+    /// cleared.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Plays `tracks`, starting at `start`. Returns the entry to play.
     pub fn replace(
         &mut self,
@@ -42,6 +51,7 @@ impl Queue {
         self.current = (!entries.is_empty()).then(|| start.min(entries.len() - 1));
         self.entries = entries;
         self.source = source;
+        self.generation += 1;
         self.current()
     }
 
@@ -92,13 +102,14 @@ impl Queue {
         self.current()
     }
 
-    /// Adds songs at the end (more of the radio or playlist). A song that
-    /// is already coming up is not added twice.
+    /// Adds songs at the end (more of the radio or playlist). A song already
+    /// in the queue is not added again: a playlist's Up next lists its
+    /// songs from the first, and those must not start it over.
     pub fn append(&mut self, tracks: Vec<Track>) -> usize {
-        let start = self.current.unwrap_or(0);
         let mut added = 0;
         for track in tracks {
-            let known = self.entries[start..]
+            let known = self
+                .entries
                 .iter()
                 .any(|e| e.track.video_id == track.video_id);
             if !known {
@@ -122,6 +133,17 @@ impl Queue {
                 self.entries.push(entry);
                 self.current = Some(self.entries.len() - 1);
             }
+        }
+    }
+
+    /// Puts songs right after the current one, in their order (an album's
+    /// "Play next"). With nothing queued, the first of them plays first.
+    pub fn play_next_all(&mut self, tracks: Vec<Track>) {
+        let at = self.current.map_or(self.entries.len(), |i| i + 1);
+        let entries: Vec<Entry> = tracks.into_iter().map(|t| self.entry(t)).collect();
+        self.entries.splice(at..at, entries);
+        if self.current.is_none() && !self.entries.is_empty() {
+            self.current = Some(0);
         }
     }
 
@@ -191,6 +213,7 @@ impl Queue {
         self.entries.clear();
         self.current = None;
         self.source = None;
+        self.generation += 1;
     }
 }
 
@@ -257,6 +280,43 @@ mod tests {
         let added = q.append(vec![song("b"), song("c"), song("d")]);
         assert_eq!(added, 2);
         assert_eq!(ids(&q), ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn appending_never_starts_a_playlist_over() {
+        // A playlist's Up next lists its songs from the first: at its end,
+        // none of them come back.
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("b"), song("c")], 2, Some("PL".into()));
+        let added = q.append(vec![song("a"), song("b"), song("c"), song("d")]);
+        assert_eq!(added, 1);
+        assert_eq!(ids(&q), ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn play_next_keeps_an_albums_order() {
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("b")], 0, None);
+        q.play_next_all(vec![song("x"), song("y")]);
+        assert_eq!(ids(&q), ["a", "x", "y", "b"]);
+        // With nothing queued, the album's first song plays first.
+        let mut empty = Queue::default();
+        empty.play_next_all(vec![song("x"), song("y"), song("z")]);
+        assert_eq!(ids(&empty), ["x", "y", "z"]);
+        assert_eq!(empty.current().unwrap().track.video_id, "x");
+    }
+
+    #[test]
+    fn a_new_queue_is_a_new_generation() {
+        let mut q = Queue::default();
+        let first = q.generation();
+        q.add_to_end(song("a"));
+        assert_eq!(q.generation(), first, "adding to a queue keeps it");
+        q.replace(vec![song("b")], 0, None);
+        let second = q.generation();
+        assert_ne!(second, first);
+        q.clear();
+        assert_ne!(q.generation(), second);
     }
 
     #[test]

@@ -51,9 +51,12 @@ Nearly every feature is the same round trip through five places:
 5. Every backend task answers from `demo.rs` when `shared.demo` is set. A
    new `Request` needs that branch too, or `--demo` shows nothing for it.
 
-One frame (`App::ui`) runs in this order: events, media keys, shortcuts,
-cover colours, lyrics and related when wanted, the views, then the actions
-the views pushed.
+One frame runs `App::logic` first: events, media keys, and the actions
+they pushed. Then `App::ui`: shortcuts, cover colours, lyrics and related
+when wanted, the views, then the actions the views pushed. eframe also
+runs `App::logic` alone while the window is minimised or hidden (it draws
+nothing then), so whatever keeps the music going belongs there, not in
+`App::ui`.
 
 ## Easy to get wrong
 
@@ -73,35 +76,60 @@ the views pushed.
   it again did not help either.
 - **egui is a pinned fork.** The root `Cargo.toml` patches egui, eframe and
   winit to fixed commits of Spotifast's forks, and both crates take
-  fastframe at one tag. Move all of them together. The frame's entry point
-  here is `eframe::App::ui`, not the older `update`: follow the calls
-  already in `views/` rather than older egui examples.
+  fastframe at one tag. Move all of them together. The frame's entry points
+  here are `eframe::App::logic` and `eframe::App::ui`, not the older
+  `update`: follow the calls already in `views/` rather than older egui
+  examples.
 - **The window draws only when asked.** The backend and audio threads wake
-  it when they have something; `App::ui` asks again after 250 ms only while
-  a song plays. Views ask with `request_repaint_after` and a reason to stop
-  (typing pause, lyrics following). An unconditional repaint makes an idle
-  window use CPU; one such loop has been fixed already.
+  it when they have something; `App::logic` asks again after 250 ms only
+  while a song plays. Views ask with `request_repaint_after` and a reason to
+  stop (typing pause, synced lyrics following). An unconditional repaint
+  makes an idle window use CPU; two such loops have been fixed already.
 - **Playlist IDs come in two forms.** A playlist's page is `VL` plus its ID
   (Liked Music is `VLLM`); changes to it take the ID without `VL`
   (`library::bare`). `Route::browse` turns `VLLM` into `Route::Liked`, so
   Liked Music is one page however it is reached.
-- **Skip or stop.** `backend::classify` marks a failure `song_only` (the
-  song is gone or not offered here). Only then does the app move to the
-  next song; anything else leaves the queue where it is, as
-  `PlayState::Failed`, and Play tries again.
+- **Skip or stop.** Only a problem with the song itself moves on to the
+  next: `PrepareError::Unavailable` (yt-dlp's words for a removed, private
+  or blocked song, `YtDlpError::song_unavailable`), `NoPlayableAudio`, or
+  audio that cannot be decoded (`PlayFailure::song_only`). Anything else
+  (the sign-in, the network, YouTube slowing the account down, a download
+  that broke off part way) leaves the queue where it is, as
+  `PlayState::Failed`, and Play tries again. `App::song_failed` also stops
+  after `MAX_SKIPS` songs in a row, so a problem every song has can never
+  run through the queue.
 - **One fetch per song.** `Shared.prepared` keeps one cell per song, so a
   song made ready ahead and then played is fetched once (at most
   `READY_AHEAD` kept). `Shared.details` does the same for what likes,
-  lyrics and Related all need.
+  lyrics and Related all need. A download holds its song weakly
+  (`stream::fetch`): once the player and the songs made ready ahead let go
+  of it, it stops. Keep it that way, or skipping downloads in bulk.
+- **Answers about the queue are tagged.** Up next answers carry the queue's
+  generation (`Queue::generation`) and playlist answers a ticket
+  (`App::wanted_playlist`); one for a queue since replaced is dropped. Do
+  the same for any new answer that changes what plays.
+- **Fonts for other scripts load when needed.** `theme::ScriptFonts` adds
+  the computer's fonts for Chinese, Arabic, the Indian scripts and so on
+  (about 60 MB) only once some text needs them. Text that reaches the
+  screen from somewhere new must pass through `ScriptFonts::want_for`
+  (see `words` in `app.rs`), or it may show as empty boxes.
 - **Everything kept in memory has a limit** (pages 24, with Home, Library
   and Liked Music always kept; lyrics, related, details and covers too).
   Give any new store one: the target is about 200 MB.
 - **What the user chose sits on top of what YouTube said.** `App.likes`,
   `saved` and `subscribed` hold this run's choices over the page's own
-  state; a late `Event::Liked` never replaces one, and `EditFailed` takes
-  it back out.
+  state; a late `Event::Liked` never replaces one. Changes go to YouTube
+  one at a time, in order (`backend::serve`), and an `EditFailed` undoes
+  what was shown only when no newer change to the same thing is on its way
+  (`App::edit_answered`); a like goes back to what it was before.
 - **The folder on disk is `YtFast`**, not `YTFast`
   (`ProjectDirs::from("", "", "YtFast")`, in the app and the check alike).
-  Renaming it would lose the settings and download the helpers again.
-- **Settings** are saved by eframe under the key `ytfast`; `Settings` is
+  Renaming it would lose the helpers and download them again. Each open
+  run keeps its sign-in folder (`app-sessions/<pid>`) locked, so a second
+  YTFast leaves it alone.
+- **Settings** are saved by eframe under the key `ytfast`, in eframe's own
+  folder named after the app id (`%APPDATA%\ytfast\data\app.ron` on
+  Windows, `~/Library/Application Support/ytfast` on a Mac), not in
+  `YtFast`. The demo keeps its window state in `demo-window.ron` in
+  YtFast's cache folder, so it never writes the real file. `Settings` is
   `#[serde(default)]`, so a new field needs a default.

@@ -64,6 +64,10 @@ impl std::fmt::Debug for Prepared {
 pub enum PrepareError {
     #[error("{0}")]
     Find(String),
+    /// Only this song cannot be played here (removed, private, not offered
+    /// in this country); other songs can.
+    #[error("{0}")]
+    Unavailable(String),
     /// YouTube no longer accepts the sign-in, and it could not be renewed.
     #[error("{0}")]
     SignIn(String),
@@ -108,9 +112,11 @@ impl Preparer {
         video_id: &str,
         resolved: Option<Resolved>,
     ) -> Result<Prepared, PrepareError> {
+        // The sign-in yt-dlp is about to be handed, should it refuse it.
+        let used = self.session.sign_in_number();
         match self.prepare_once(video_id, resolved).await {
             Err(PrepareError::SignIn(problem)) => {
-                if self.session.renew_sign_in().await {
+                if self.session.renew_sign_in(used).await {
                     log::info!("the sign-in was read again; getting the song once more");
                     self.prepare_once(video_id, None).await
                 } else {
@@ -168,6 +174,8 @@ impl Preparer {
                 .map_err(|e| {
                     if e.sign_in_expired() {
                         PrepareError::SignIn(e.to_string())
+                    } else if e.song_unavailable() {
+                        PrepareError::Unavailable(e.to_string())
                     } else {
                         PrepareError::Find(e.to_string())
                     }
@@ -217,14 +225,20 @@ impl Preparer {
         let started = Instant::now();
         let data = SongData::new(located.source.size);
         {
+            // Held weakly: a song nobody wants any more (skipped, or let
+            // go after being made ready ahead) stops downloading.
             let (http, source, data) = (
                 self.download.clone(),
                 located.source.clone(),
-                Arc::clone(&data),
+                Arc::downgrade(&data),
             );
             tokio::spawn(async move {
-                if let Err(e) = stream::fetch(&http, &source, &data).await {
-                    log::warn!("a song's download stopped: {e}");
+                match stream::fetch(&http, &source, data).await {
+                    Ok(stream::Fetched::Whole(_)) => {}
+                    Ok(stream::Fetched::Unwanted) => {
+                        log::debug!("a song no longer wanted stopped downloading");
+                    }
+                    Err(e) => log::warn!("a song's download stopped: {e}"),
                 }
             });
         }

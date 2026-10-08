@@ -31,9 +31,11 @@ pub fn show(app: &App, ui: &egui::Ui) {
                             .font(theme::regular(15.0))
                             .desired_width(f32::INFINITY),
                     );
+                    // Asked before the field takes the focus back, which
+                    // would hide that Enter just took it away.
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     field.request_focus();
                     ui.add_space(16.0);
-                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if buttons(ui, "Make it") || (enter && !name.trim().is_empty()) {
                         if !name.trim().is_empty() {
                             app.act(Action::Edit(Edit::CreatePlaylist {
@@ -52,9 +54,10 @@ pub fn show(app: &App, ui: &egui::Ui) {
                             .font(theme::regular(15.0))
                             .desired_width(f32::INFINITY),
                     );
+                    // As above: asked before the field takes the focus back.
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     field.request_focus();
                     ui.add_space(16.0);
-                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (buttons(ui, "Rename") || enter) && !name.trim().is_empty() {
                         app.act(Action::RenamePlaylist {
                             playlist_id: playlist_id.clone(),

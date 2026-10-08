@@ -85,7 +85,7 @@ fn text(ui: &mut egui::Ui, text: &str) {
 fn switch(app: &App, ui: &mut egui::Ui, title: &str, about: &str, on: bool, which: Setting) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.set_max_width(ui.available_width() - 70.0);
+            ui.set_max_width((ui.available_width() - 70.0).max(0.0));
             theme::label(ui, title, theme::medium(15.5), PALETTE.text);
             ui.label(
                 egui::RichText::new(about)
@@ -95,6 +95,10 @@ fn switch(app: &App, ui: &mut egui::Ui, title: &str, about: &str, on: bool, whic
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (rect, response) = ui.allocate_exact_size(vec2(44.0, 24.0), Sense::click());
+            // A name and an on/off state, for screen readers.
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, title)
+            });
             let t = ui.ctx().animate_bool_with_time(response.id, on, 0.15);
             let fill = if on {
                 PALETTE.switch
