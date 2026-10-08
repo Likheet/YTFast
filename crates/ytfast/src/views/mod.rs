@@ -26,6 +26,10 @@ pub const SEARCH_BOX: &str = "ytfast-search-box";
 pub fn show(app: &App, ui: &mut egui::Ui) {
     backdrop::paint(ui, ui.max_rect());
     if !matches!(app.auth, Auth::SignedIn { .. }) {
+        // Signed out by YouTube while a song plays: it can still be paused.
+        if app.playback.entry.is_some() {
+            player_bar::show(app, ui);
+        }
         egui::CentralPanel::default()
             .frame(Frame::new())
             .show(ui, |ui| signin::show(app, ui));

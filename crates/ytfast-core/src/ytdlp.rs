@@ -96,11 +96,51 @@ impl YtDlpError {
     pub fn sign_in_expired(&self) -> bool {
         matches!(self, Self::Failed { details, .. } if says_sign_in_expired(&details.to_ascii_lowercase()))
     }
+
+    /// yt-dlp found that only this song cannot be played here (removed,
+    /// private, for a channel's members, not offered in this country), not
+    /// something every song would run into.
+    pub fn song_unavailable(&self) -> bool {
+        matches!(self, Self::Failed { details, .. } if says_song_unavailable(&details.to_ascii_lowercase()))
+    }
 }
 
 /// yt-dlp's words (in lower case) for cookies YouTube stopped accepting.
 fn says_sign_in_expired(lower: &str) -> bool {
     lower.contains("no longer valid") || lower.contains("rotated")
+}
+
+/// yt-dlp's words (in lower case) for a problem every song would have:
+/// YouTube slowing the account down, or audio yt-dlp could not get (after
+/// a change at YouTube that a newer yt-dlp mends).
+fn says_every_song(lower: &str) -> bool {
+    [
+        "try again later",
+        "rate-limit",
+        "rate limit",
+        "http error 429",
+        "not a bot",
+        "requested format",
+    ]
+    .iter()
+    .any(|words| lower.contains(words))
+}
+
+/// yt-dlp's words (in lower case) for one song that cannot be played here.
+fn says_song_unavailable(lower: &str) -> bool {
+    !says_every_song(lower)
+        && [
+            "video unavailable",
+            "is not available",
+            "no longer available",
+            "private video",
+            "members-only",
+            "has been removed",
+            "in your country",
+            "confirm your age",
+        ]
+        .iter()
+        .any(|words| lower.contains(words))
 }
 
 /// One audio-only stream yt-dlp found.
@@ -309,15 +349,23 @@ impl YtDlp {
             });
         }
         let started = Instant::now();
+        // yt-dlp writes its cookies back to the file it was given as it
+        // finishes, which would put back a sign-in older than one read
+        // again meanwhile: it gets a copy of its own, deleted afterwards.
+        let cookies = private_copy(cookies_file).map_err(|e| {
+            YtDlpError::Start(format!("the sign-in could not be handed to yt-dlp: {e}"))
+        })?;
         let mut command = self.command();
         command
             .args(["-J", "--no-playlist", "--js-runtimes"])
             .arg(format!("deno:{}", self.deno.display()))
             .arg("--cookies")
-            .arg(cookies_file)
+            .arg(cookies.path())
             .arg("--")
             .arg(format!("https://music.youtube.com/watch?v={video_id}"));
-        let output = self.run(command, Duration::from_secs(120)).await?;
+        let output = self.run(command, Duration::from_secs(120)).await;
+        drop(cookies);
+        let output = output?;
         if !output.status.success() {
             return Err(failure("yt-dlp could not get this song", &output.stderr));
         }
@@ -331,6 +379,19 @@ impl YtDlp {
         resolved.took = started.elapsed();
         Ok(resolved)
     }
+}
+
+/// A copy of a cookie file beside it, readable only by this user (as
+/// `tempfile` makes files), deleted when dropped.
+fn private_copy(file: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    use std::io::Write;
+    let folder = file.parent().unwrap_or_else(|| Path::new("."));
+    let mut copy = tempfile::Builder::new()
+        .prefix("yt-dlp-cookies-")
+        .suffix(".txt")
+        .tempfile_in(folder)?;
+    copy.write_all(&std::fs::read(file)?)?;
+    Ok(copy)
 }
 
 /// On Windows, a program started from a windowed app opens a console
@@ -421,10 +482,9 @@ fn parse_format(f: &Value) -> Option<AudioFormat> {
             .get("abr")
             .and_then(Value::as_f64)
             .or_else(|| f.get("tbr").and_then(Value::as_f64)),
-        size: f
-            .get("filesize")
-            .and_then(Value::as_u64)
-            .or_else(|| f.get("filesize_approx").and_then(Value::as_u64)),
+        // Only the exact size: an estimate (`filesize_approx`) would cut
+        // the song short or ask past its end. Without it, the server says.
+        size: f.get("filesize").and_then(Value::as_u64),
         note: s("format_note"),
         has_drm: f.get("has_drm").and_then(Value::as_bool).unwrap_or(false),
         url,
@@ -455,7 +515,11 @@ fn failure(default: &str, stderr: &[u8]) -> YtDlpError {
         "The browser's sign-in data could not be unlocked. On a Mac, click Allow (or Always Allow) when asked about Chrome Safe Storage"
     } else if lower.contains("javascript runtime") {
         "yt-dlp could not use Deno to answer YouTube's challenge"
-    } else if lower.contains("video unavailable") || lower.contains("not available") {
+    } else if lower.contains("requested format") {
+        "yt-dlp could not get this song's audio. If this keeps happening, quit YTFast and open it again: it then gets the newest yt-dlp"
+    } else if says_every_song(&lower) {
+        "YouTube asked YTFast to slow down. Wait a while, then try again"
+    } else if says_song_unavailable(&lower) {
         "YouTube says this song is not available to this account"
     } else {
         default
@@ -559,6 +623,46 @@ mod tests {
         assert!(err.sign_in_expired());
         assert!(err.to_string().contains("no longer accepts"));
         assert_eq!(failure("default", b"something else").to_string(), "default");
+    }
+
+    #[test]
+    fn tells_one_songs_problem_from_every_songs() {
+        let one_song = |stderr: &[u8]| failure("default", stderr).song_unavailable();
+        assert!(one_song(
+            b"ERROR: [youtube] abc: Video unavailable. This video has been removed by the uploader"
+        ));
+        assert!(one_song(
+            b"ERROR: [youtube] abc: Private video. Sign in if you've been granted access to this video"
+        ));
+        assert!(one_song(
+            b"ERROR: [youtube] abc: Join this channel to get access to members-only content like this video"
+        ));
+        assert!(one_song(
+            b"ERROR: [youtube] abc: The uploader has not made this video available in your country"
+        ));
+        // Every song would fail the same way: the queue must not skip
+        // through them.
+        assert!(!one_song(
+            b"ERROR: [youtube] abc: Requested format is not available. Use --list-formats for a list of available formats"
+        ));
+        assert!(!one_song(
+            b"ERROR: [youtube] abc: Video unavailable. This content isn't available, try again later."
+        ));
+        assert!(!one_song(
+            b"ERROR: [youtube] abc: Sign in to confirm you\xe2\x80\x99re not a bot."
+        ));
+        assert!(!one_song(b"something else"));
+        let private = failure("default", b"ERROR: [youtube] abc: Private video.");
+        assert!(
+            private
+                .to_string()
+                .contains("not available to this account")
+        );
+        let format = failure(
+            "default",
+            b"ERROR: [youtube] abc: Requested format is not available.",
+        );
+        assert!(format.to_string().contains("newest yt-dlp"));
     }
 
     #[test]

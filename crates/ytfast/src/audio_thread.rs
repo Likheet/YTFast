@@ -38,8 +38,21 @@ pub struct Status {
     pub paused: bool,
     /// An entry that played to its end, for the window to move on from.
     pub ended: Option<u64>,
+    /// An entry that could not play to its end.
+    pub failed: Option<PlayFailure>,
     pub device: String,
     pub problem: Option<String>,
+}
+
+/// A song that could not play to its end.
+#[derive(Clone, Debug)]
+pub struct PlayFailure {
+    pub entry: u64,
+    pub message: String,
+    /// The song's own audio is at fault (it cannot be decoded), so the next
+    /// song may well play. Otherwise its download broke off, which the next
+    /// song would likely run into too.
+    pub song_only: bool,
 }
 
 pub struct Audio {
@@ -77,6 +90,15 @@ impl Audio {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .ended
+            .take()
+    }
+
+    /// The entry that could not play to its end, once.
+    pub fn take_failed(&self) -> Option<PlayFailure> {
+        self.status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .failed
             .take()
     }
 }
@@ -166,6 +188,15 @@ impl Engine {
         }
     }
 
+    /// Whether a jump to `to` seconds can be made now, without waiting for
+    /// the rest of the song to arrive.
+    fn can_jump(&self, to: f64) -> bool {
+        match self {
+            Self::Real(player) => player.can_jump(Duration::from_secs_f64(to.max(0.0))),
+            Self::Silent(_) => true,
+        }
+    }
+
     fn stop(&mut self) {
         match self {
             Self::Real(player) => player.stop(),
@@ -184,6 +215,14 @@ impl Engine {
         match self {
             Self::Real(player) => player.finished(),
             Self::Silent(s) => s.loaded && s.position() >= s.length,
+        }
+    }
+
+    /// Why a finished song stopped before its end, if it did.
+    fn broke_off(&self) -> Option<String> {
+        match self {
+            Self::Real(player) => player.broke_off(),
+            Self::Silent(_) => None,
         }
     }
 
@@ -208,6 +247,16 @@ impl Engine {
     }
 }
 
+/// Jumps to `to` seconds into the song.
+fn jump(engine: &mut Engine, to: f64, ended_sent: &mut bool, problem: &mut Option<String>) {
+    match engine.seek(to) {
+        // Playing again (after the end, to repeat it): its next end is news
+        // too.
+        Ok(()) => *ended_sent = false,
+        Err(e) => *problem = Some(format!("Could not jump: {e}")),
+    }
+}
+
 fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(), silent: bool) {
     let mut problem = None;
     let mut engine = if silent {
@@ -224,6 +273,9 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
     let mut entry: Option<u64> = None;
     let mut length = 0.0;
     let mut ended_sent = false;
+    // A jump waiting for the rest of the song to arrive. Waiting here, not
+    // in the jump, keeps Pause, Next and Stop answering meanwhile.
+    let mut pending_jump: Option<f64> = None;
     let update = |f: &mut dyn FnMut(&mut Status)| {
         let mut s = status.lock().unwrap_or_else(PoisonError::into_inner);
         f(&mut s);
@@ -236,7 +288,11 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
 
     loop {
         let mut changed = false;
-        match commands.recv_timeout(Duration::from_millis(100)) {
+        // A sounding song is followed closely (its position, its end);
+        // otherwise a look now and then is enough (a device that changed).
+        let sounding = entry.is_some() && !engine.paused();
+        let wait = Duration::from_millis(if sounding { 100 } else { 1000 });
+        match commands.recv_timeout(wait) {
             Ok(command) => {
                 changed = true;
                 match command {
@@ -246,6 +302,7 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                         gain,
                         length: song_length,
                     } => {
+                        pending_jump = None;
                         match engine.play(data, gain, song_length) {
                             Ok(()) => {
                                 entry = Some(id);
@@ -254,10 +311,15 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                                 problem = None;
                             }
                             Err(e) => {
-                                // The song cannot be played: report it as
-                                // ended so the window moves on, and say why.
-                                problem = Some(format!("This song could not be played: {e}"));
-                                update(&mut |s| s.ended = Some(id));
+                                // The song cannot be played: the window
+                                // decides whether to move on.
+                                update(&mut |s| {
+                                    s.failed = Some(PlayFailure {
+                                        entry: id,
+                                        message: format!("This song could not be played: {e}"),
+                                        song_only: true,
+                                    });
+                                });
                                 entry = None;
                             }
                         }
@@ -266,16 +328,19 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                     Command::Resume => engine.resume(),
                     Command::Seek(to) => {
                         let to = to.clamp(0.0, (length - 0.5).max(0.0));
-                        match engine.seek(to) {
-                            // Playing again (after the end, to repeat it):
-                            // its next end is news too.
-                            Ok(()) => ended_sent = false,
-                            Err(e) => problem = Some(format!("Could not jump: {e}")),
+                        if engine.can_jump(to) {
+                            pending_jump = None;
+                            jump(&mut engine, to, &mut ended_sent, &mut problem);
+                        } else {
+                            pending_jump = Some(to);
                         }
                     }
                     Command::Stop => {
                         engine.stop();
                         entry = None;
+                        pending_jump = None;
+                        // Not the next song's length.
+                        length = 0.0;
                     }
                     Command::Volume(v) => engine.set_volume(v),
                 }
@@ -283,12 +348,22 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        if let Some(note) = engine.maintain() {
-            problem = Some(note);
+        if let Some(to) = pending_jump
+            && engine.can_jump(to)
+        {
+            pending_jump = None;
+            jump(&mut engine, to, &mut ended_sent, &mut problem);
             changed = true;
         }
-        // Say once that the song ended.
+        if let Some(note) = engine.maintain() {
+            // The window hears of a problem once, not at every try.
+            changed |= problem.as_ref() != Some(&note);
+            problem = Some(note);
+        }
+        // Say once that the song ended, or that it broke off before its end
+        // (its download failed or stalled): that is no reason to move on.
         let just_ended = entry.is_some() && !ended_sent && engine.finished();
+        let broke_off = if just_ended { engine.broke_off() } else { None };
         if just_ended {
             ended_sent = true;
             changed = true;
@@ -301,8 +376,18 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
             s.paused = paused;
             s.device = engine.device();
             s.problem = problem.clone();
-            if just_ended {
-                s.ended = entry;
+            match (&broke_off, entry) {
+                (Some(why), Some(id)) => {
+                    s.failed = Some(PlayFailure {
+                        entry: id,
+                        message: format!(
+                            "The song stopped: its download broke off ({why}). Press Play to try again."
+                        ),
+                        song_only: false,
+                    });
+                }
+                _ if just_ended => s.ended = entry,
+                _ => {}
             }
         });
         if changed {

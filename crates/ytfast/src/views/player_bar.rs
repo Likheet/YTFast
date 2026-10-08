@@ -384,14 +384,15 @@ fn volume(app: &App, ui: &mut egui::Ui) {
         .animate_bool_with_time(id.with("open"), was_open, 0.15);
 
     let mut volume = app.settings.volume;
-    let icon = if volume <= 0.001 {
-        Icon::Muted
+    let muted = volume <= 0.001;
+    let (icon, name) = if muted {
+        (Icon::Muted, "Unmute")
     } else {
-        Icon::Loud
+        (Icon::Loud, "Mute")
     };
-    let button = theme::round_button(ui, icon, 32.0, 18.0, Round::Tonal, PALETTE.text, "Mute");
+    let button = theme::round_button(ui, icon, 32.0, 18.0, Round::Tonal, PALETTE.text, name);
     if button.clicked() {
-        app.act(Action::SetVolume(if volume <= 0.001 { 0.8 } else { 0.0 }));
+        app.act(Action::ToggleMute);
     }
     let mut region = button.rect;
     let mut dragging = false;

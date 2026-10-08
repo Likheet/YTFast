@@ -114,52 +114,43 @@ pub async fn ensure(
     tokio::fs::create_dir_all(dir).await?;
 
     progress(Progress::Checking);
-    let installed_yt_dlp = newest_installed(&dir.join("yt-dlp"));
-    let latest = latest_yt_dlp_version().await;
-    let yt_dlp_version = match (latest, installed_yt_dlp) {
-        (Ok(latest), _) => latest,
-        (Err(_), Some(installed)) => installed,
-        (Err(error), None) => {
-            return Err(error.context("could not ask GitHub for the latest yt-dlp"));
+    let yt_dlp_parent = dir.join("yt-dlp");
+    let installed = newest_installed(&yt_dlp_parent, platform.yt_dlp_exe);
+    let yt_dlp_version = match latest_yt_dlp_version().await {
+        Ok(latest) if usable(&yt_dlp_parent.join(&latest), platform.yt_dlp_exe) => {
+            progress(Progress::UsingInstalled {
+                what: "yt-dlp",
+                version: latest.clone(),
+            });
+            latest
         }
+        Ok(latest) => match install_yt_dlp(http, platform, &yt_dlp_parent, &latest, progress).await
+        {
+            Ok(()) => {
+                remove_old_versions(&yt_dlp_parent, &latest);
+                latest
+            }
+            // The newest could not be fetched: the one installed still
+            // works, and the next start tries again.
+            Err(error) => match installed {
+                Some(installed) => {
+                    log::warn!(
+                        "yt-dlp {latest} could not be installed, so {installed} is used: {error:#}"
+                    );
+                    installed
+                }
+                None => return Err(error),
+            },
+        },
+        Err(error) => match installed {
+            Some(installed) => installed,
+            None => return Err(error.context("could not ask GitHub for the latest yt-dlp")),
+        },
     };
-
-    let yt_dlp_dir = dir.join("yt-dlp").join(&yt_dlp_version);
-    if is_complete(&yt_dlp_dir) {
-        progress(Progress::UsingInstalled {
-            what: "yt-dlp",
-            version: yt_dlp_version.clone(),
-        });
-    } else {
-        let base = format!("https://github.com/yt-dlp/yt-dlp/releases/download/{yt_dlp_version}");
-        let sums = http
-            .get(format!("{base}/SHA2-256SUMS"))
-            .send()
-            .await
-            .and_then(|r| r.error_for_status())
-            .context("could not download yt-dlp's checksum list")?
-            .text()
-            .await?;
-        let expected = checksum_for(&sums, platform.yt_dlp_archive).ok_or_else(|| {
-            anyhow!(
-                "yt-dlp's checksum list has no entry for {}",
-                platform.yt_dlp_archive
-            )
-        })?;
-        install(
-            http,
-            &format!("{base}/{}", platform.yt_dlp_archive),
-            &expected,
-            &yt_dlp_dir,
-            "yt-dlp",
-            progress,
-        )
-        .await?;
-        remove_old_versions(&dir.join("yt-dlp"), &yt_dlp_version);
-    }
+    let yt_dlp_dir = yt_dlp_parent.join(&yt_dlp_version);
 
     let deno_dir = dir.join("deno").join(DENO_VERSION);
-    if is_complete(&deno_dir) {
+    if usable(&deno_dir, platform.deno_exe) {
         progress(Progress::UsingInstalled {
             what: "Deno",
             version: DENO_VERSION.into(),
@@ -260,15 +251,58 @@ fn is_complete(dir: &Path) -> bool {
     dir.join(COMPLETE).is_file()
 }
 
-fn newest_installed(parent: &Path) -> Option<String> {
+/// Whether a helper's folder holds a whole install: unpacked to the end,
+/// and its program still there (a virus scanner may take it away; it is
+/// then downloaded again).
+fn usable(dir: &Path, exe: &str) -> bool {
+    is_complete(dir) && dir.join(exe).is_file()
+}
+
+/// The newest usable version in `parent`, whose program is `exe`.
+fn newest_installed(parent: &Path, exe: &str) -> Option<String> {
     let mut versions: Vec<String> = std::fs::read_dir(parent)
         .ok()?
         .filter_map(|e| e.ok())
-        .filter(|e| is_complete(&e.path()))
+        .filter(|e| usable(&e.path(), exe))
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     versions.sort();
     versions.pop()
+}
+
+/// Downloads yt-dlp `version` into `parent`, checked against the release's
+/// published checksums.
+async fn install_yt_dlp(
+    http: &reqwest::Client,
+    platform: Platform,
+    parent: &Path,
+    version: &str,
+    progress: &(dyn Fn(Progress) + Sync),
+) -> Result<()> {
+    let base = format!("https://github.com/yt-dlp/yt-dlp/releases/download/{version}");
+    let sums = http
+        .get(format!("{base}/SHA2-256SUMS"))
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .context("could not download yt-dlp's checksum list")?
+        .text()
+        .await?;
+    let expected = checksum_for(&sums, platform.yt_dlp_archive).ok_or_else(|| {
+        anyhow!(
+            "yt-dlp's checksum list has no entry for {}",
+            platform.yt_dlp_archive
+        )
+    })?;
+    install(
+        http,
+        &format!("{base}/{}", platform.yt_dlp_archive),
+        &expected,
+        &parent.join(version),
+        "yt-dlp",
+        progress,
+    )
+    .await
 }
 
 /// Keeps `keep` and the newest other complete version (to go back to if a
@@ -499,9 +533,23 @@ mod tests {
             let p = dir.path().join(v);
             std::fs::create_dir_all(&p).unwrap();
             std::fs::write(p.join(COMPLETE), "x").unwrap();
+            std::fs::write(p.join("yt-dlp.exe"), "x").unwrap();
         }
         std::fs::create_dir_all(dir.path().join(".download-leftover")).unwrap();
-        assert_eq!(newest_installed(dir.path()).as_deref(), Some("2026.08.19"));
+        assert_eq!(
+            newest_installed(dir.path(), "yt-dlp.exe").as_deref(),
+            Some("2026.08.19")
+        );
+        // A version whose program went missing (a virus scanner took it)
+        // is not used: it is downloaded again.
+        let program = dir.path().join("2026.08.19").join("yt-dlp.exe");
+        std::fs::remove_file(&program).unwrap();
+        assert!(!usable(&dir.path().join("2026.08.19"), "yt-dlp.exe"));
+        assert_eq!(
+            newest_installed(dir.path(), "yt-dlp.exe").as_deref(),
+            Some("2026.07.04")
+        );
+        std::fs::write(&program, "x").unwrap();
         remove_old_versions(dir.path(), "2026.08.19");
         let mut left: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()

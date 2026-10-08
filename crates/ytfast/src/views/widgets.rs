@@ -200,8 +200,9 @@ pub fn track_row_in(
     }
     if response.hovered() {
         // A song the pointer rests on is found ahead of time, so a click
-        // starts it at once.
-        let resting = ui.input(|i| i.pointer.time_since_last_movement());
+        // starts it at once. Rows scrolled under a still pointer are only
+        // passing: resting counts from when this row came under it.
+        let resting = app.resting_on(ui.ctx(), &track.video_id);
         if resting >= WARM_AFTER {
             app.warm(&track.video_id);
         } else {
@@ -396,7 +397,14 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, queued: Option<u64
         }
     }
     ui.separator();
-    let liked = app.likes.get(&track.video_id) == Some(&crate::app::LikeState::Liked);
+    // As chosen in this run or as YouTube said; else every song on Liked
+    // Music is liked.
+    let liked = app
+        .likes
+        .get(&track.video_id)
+        .map_or(app.route == crate::backend::Route::Liked, |like| {
+            *like == crate::app::LikeState::Liked
+        });
     if liked {
         item(
             ui,
@@ -596,7 +604,12 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
         let own = app.own_playlists().iter().any(|(own, _)| own == id);
         if !own && !id.starts_with("RD") && id != "LM" && id != "SE" {
             ui.separator();
-            let saved = app.saved.get(id).copied().unwrap_or(false);
+            // As chosen in this run; else what the Library shows is saved.
+            let in_library = matches!(
+                app.route,
+                crate::backend::Route::Library | crate::backend::Route::LibraryAlbums
+            );
+            let saved = app.saved.get(id).copied().unwrap_or(in_library);
             let label = if saved {
                 "Remove from library"
             } else {

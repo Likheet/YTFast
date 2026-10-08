@@ -599,7 +599,11 @@ fn step_account(rt: &Runtime, cookies: &CookieJar, report: &mut Report) -> Optio
                 Outcome::Fail,
                 "YouTube Music says you are signed out. Sign in again in your browser.",
             );
-            report.step("Account", Outcome::Fail, "signed out (HTTP 401)");
+            report.step(
+                "Account",
+                Outcome::Fail,
+                "YouTube Music treated the sign-in as signed out",
+            );
             None
         }
         Err(e) => {

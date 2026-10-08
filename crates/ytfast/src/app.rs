@@ -189,6 +189,8 @@ pub enum Action {
     Previous,
     Seek(f64),
     SetVolume(f32),
+    /// Silence, or back to the volume before it.
+    ToggleMute,
     JumpTo(u64),
     /// Put a song right after the one playing now.
     PlayNext(Track),
@@ -271,6 +273,14 @@ pub struct App {
     visited: Vec<Route>,
     pub queue: Queue,
     pub playback: Playback,
+    /// Songs skipped in a row because they could not play (see
+    /// [`App::song_failed`]).
+    skipped_in_a_row: usize,
+    /// The last playlist asked for to play: its songs play when they
+    /// arrive, unless something else was chosen since.
+    wanted_playlist: Option<u64>,
+    /// Numbers the playlists asked for.
+    tickets: u64,
     /// The audio thread's latest status, read once per frame.
     pub audio_status: Status,
     /// A short message shown above the player bar.
@@ -278,6 +288,8 @@ pub struct App {
     pub actions: RefCell<Vec<Action>>,
     /// Songs already asked for ahead of time.
     warmed: RefCell<std::collections::HashSet<String>>,
+    /// The song row under the pointer (see [`App::resting_on`]).
+    pointed: RefCell<Option<Pointed>>,
     /// The playing song's cover, blurred, behind the player page.
     pub backdrop: RefCell<Backdrop>,
     /// The player page is open, and on which tab.
@@ -294,6 +306,28 @@ pub struct App {
     pub dialog: RefCell<Option<Dialog>>,
     /// Search suggestions, for the text they were asked for.
     pub suggestions: (String, Vec<String>),
+    /// The fonts for other scripts, added once some words need them.
+    script_fonts: crate::theme::ScriptFonts,
+    /// The volume before muting, which unmuting goes back to.
+    loud_volume: f32,
+    /// Changes to the account on their way to YouTube, by what they change
+    /// (see [`App::edit_answered`]).
+    edits_in_flight: HashMap<String, usize>,
+    /// What a song's like was before the changes on their way, to go back
+    /// to if YouTube refuses them.
+    like_before: HashMap<String, Option<LikeState>>,
+    /// The window's size has been looked at (see
+    /// [`App::mend_window_size`]).
+    window_checked: bool,
+}
+
+/// The song row under the pointer, and since when.
+struct Pointed {
+    video_id: String,
+    /// When it came under the pointer (egui's clock).
+    since: f64,
+    /// The frame it was last seen under the pointer in.
+    frame: u64,
 }
 
 /// The backdrop's textures: the current song's, and the one fading out.
@@ -301,6 +335,8 @@ pub struct App {
 pub struct Backdrop {
     pub current: Option<(String, egui::TextureHandle)>,
     pub previous: Option<(String, egui::TextureHandle)>,
+    /// When the current one came (egui's clock), for the fade.
+    pub since: f64,
 }
 
 fn default_browser() -> Browser {
@@ -313,7 +349,7 @@ fn default_browser() -> Browser {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, demo: bool) -> Self {
-        crate::theme::install(&cc.egui_ctx);
+        let script_fonts = crate::theme::install(&cc.egui_ctx);
         let settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value(s, "ytfast"))
@@ -350,6 +386,11 @@ impl App {
                 browser: default_browser(),
             },
         };
+        let loud_volume = if settings.volume > 0.001 {
+            settings.volume
+        } else {
+            Settings::default().volume
+        };
 
         Self {
             backend,
@@ -367,10 +408,14 @@ impl App {
             visited: Vec::new(),
             queue: Queue::default(),
             playback: Playback::default(),
+            skipped_in_a_row: 0,
+            wanted_playlist: None,
+            tickets: 0,
             audio_status: Status::default(),
             notice: None,
             actions: RefCell::new(Vec::new()),
             warmed: RefCell::new(std::collections::HashSet::new()),
+            pointed: RefCell::new(None),
             backdrop: RefCell::new(Backdrop::default()),
             now_playing: false,
             np_tab: NpTab::UpNext,
@@ -381,12 +426,48 @@ impl App {
             subscribed: HashMap::new(),
             dialog: RefCell::new(None),
             suggestions: (String::new(), Vec::new()),
+            script_fonts,
+            loud_volume,
+            edits_in_flight: HashMap::new(),
+            like_before: HashMap::new(),
+            window_checked: false,
         }
     }
 
     /// Queues an action for after this frame.
     pub fn act(&self, action: Action) {
         self.actions.borrow_mut().push(action);
+    }
+
+    /// A window closed while minimised opens again the size of a minimised
+    /// one, in a corner (eframe keeps the size it had then, and the least
+    /// size does not hold at opening): it goes back to its first size.
+    /// Looked at once, when the window first has a size.
+    fn mend_window_size(&mut self, ctx: &egui::Context) {
+        if self.window_checked {
+            return;
+        }
+        let Some(inner) = ctx.input(|i| i.viewport().inner_rect) else {
+            return;
+        };
+        self.window_checked = true;
+        let [least_width, least_height] = MIN_WINDOW_SIZE;
+        if inner.width() < least_width || inner.height() < least_height {
+            log::info!(
+                "the window opened {:.0} by {:.0}; back to its first size",
+                inner.width(),
+                inner.height()
+            );
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(WINDOW_SIZE.into()));
+        }
+    }
+
+    /// Does what the views and the media keys asked for.
+    fn apply_actions(&mut self) {
+        let actions = std::mem::take(self.actions.get_mut());
+        for action in actions {
+            self.apply(action);
+        }
     }
 
     /// The account's playlists (ID without `VL`, title), from the
@@ -448,6 +529,23 @@ impl App {
         let track = &entry.track;
         match self.np_tab {
             NpTab::Lyrics if !self.lyrics.contains_key(&track.video_id) => {
+                // The player's length is this song's only once it plays it
+                // (until then it is the last song's).
+                let playing_it = self.audio_status.entry == Some(entry.id);
+                let duration = if playing_it && self.audio_status.length > 0.0 {
+                    Some(self.audio_status.length)
+                } else {
+                    track.duration_seconds.map(f64::from)
+                };
+                // LRCLIB matches on the length: without one from YouTube,
+                // wait for the song to start.
+                let starting = matches!(
+                    self.playback.state,
+                    PlayState::Preparing | PlayState::Playing
+                );
+                if duration.is_none() && !playing_it && starting {
+                    return;
+                }
                 if self.lyrics.len() > 30 {
                     self.lyrics.clear();
                 }
@@ -458,9 +556,7 @@ impl App {
                     title: track.title.clone(),
                     artist: track.artists.clone(),
                     album: track.album.clone(),
-                    duration: (self.audio_status.length > 0.0)
-                        .then_some(self.audio_status.length)
-                        .or(track.duration_seconds.map(f64::from)),
+                    duration,
                 });
             }
             NpTab::Related if !self.related.contains_key(&track.video_id) => {
@@ -496,7 +592,34 @@ impl App {
             );
             backdrop.previous = backdrop.current.take();
             backdrop.current = Some((cover, texture));
+            backdrop.since = ctx.input(|i| i.time);
         }
+    }
+
+    /// How long, in seconds, the pointer has rested on the song row
+    /// `video_id` (drawn this frame under the pointer): since the pointer
+    /// last moved, and since the row came under it. A list scrolled with
+    /// the wheel moves rows under a still pointer, and those only pass.
+    pub fn resting_on(&self, ctx: &egui::Context, video_id: &str) -> f32 {
+        let (now, still) = ctx.input(|i| (i.time, i.pointer.time_since_last_movement()));
+        let frame = ctx.cumulative_frame_nr();
+        let mut pointed = self.pointed.borrow_mut();
+        let since = match pointed.as_mut() {
+            // Under the pointer last frame too.
+            Some(p) if p.video_id == video_id && p.frame + 1 >= frame => {
+                p.frame = frame;
+                p.since
+            }
+            _ => {
+                *pointed = Some(Pointed {
+                    video_id: video_id.to_string(),
+                    since: now,
+                    frame,
+                });
+                now
+            }
+        };
+        still.min((now - since) as f32)
     }
 
     /// Finds a song's audio ahead of time, so it starts at once if played
@@ -527,10 +650,40 @@ impl App {
         self.notice = Some((text.into(), Instant::now()));
     }
 
+    /// Sends a change to the account (already shown), counting it until
+    /// YouTube answers.
+    fn send_edit(&mut self, change: Edit) {
+        *self
+            .edits_in_flight
+            .entry(change.item().to_string())
+            .or_default() += 1;
+        self.backend.send(Request::Edit(change));
+    }
+
+    /// YouTube answered a change to the account. True when it was the last
+    /// change to that song, playlist or channel on its way: a refusal of
+    /// an older one then undoes nothing, since the newer choice stands.
+    fn edit_answered(&mut self, change: &Edit) -> bool {
+        let item = change.item();
+        match self.edits_in_flight.get_mut(item) {
+            Some(count) if *count > 1 => {
+                *count -= 1;
+                false
+            }
+            _ => {
+                self.edits_in_flight.remove(item);
+                true
+            }
+        }
+    }
+
     // ---- Events from the backend and the audio thread ----
 
     fn handle_events(&mut self, ctx: &egui::Context) {
         while let Some(event) = self.backend.try_recv() {
+            for word in words(&event) {
+                self.script_fonts.want_for(word);
+            }
             match event {
                 Event::Progress(line) => {
                     if let Auth::Working { progress, .. } = &mut self.auth {
@@ -548,6 +701,8 @@ impl App {
                     self.visited.clear();
                     self.load(Route::Home);
                     self.load(Route::Library);
+                    // The page that was open (after signing in again).
+                    self.show_current();
                 }
                 Event::SignInFailed(message) => {
                     let browser = match &self.auth {
@@ -588,38 +743,18 @@ impl App {
                     }
                 }
                 Event::Prepared { entry, result } => self.prepared(entry, result),
-                Event::UpNext { video_id, result } => self.more_arrived(&video_id, result),
+                Event::UpNext {
+                    video_id,
+                    playlist_id,
+                    queue,
+                    result,
+                } => self.more_arrived(video_id, playlist_id, queue, result),
                 Event::PlaylistQueue {
                     playlist_id,
                     mode,
+                    ticket,
                     result,
-                } => match result {
-                    Ok(tracks) if !tracks.is_empty() => match mode {
-                        QueueMode::Play => self.play_tracks(tracks, 0, Some(playlist_id)),
-                        QueueMode::Shuffle => self.apply(Action::Shuffle {
-                            tracks,
-                            source: Some(playlist_id),
-                        }),
-                        QueueMode::Next => {
-                            let count = tracks.len();
-                            for track in tracks.into_iter().rev() {
-                                self.queue.play_next(track);
-                            }
-                            self.notify(format!("{count} songs play next"));
-                            self.queue_grew();
-                        }
-                        QueueMode::End => {
-                            let count = tracks.len();
-                            for track in tracks {
-                                self.queue.add_to_end(track);
-                            }
-                            self.notify(format!("Added {count} songs to the queue"));
-                            self.queue_grew();
-                        }
-                    },
-                    Ok(_) => self.notify("That playlist has no songs that can play."),
-                    Err(e) => self.notify(format!("Could not play that: {e}")),
-                },
+                } => self.playlist_arrived(playlist_id, mode, ticket, result),
                 Event::Suggestions(text, found) => self.suggestions = (text, found),
                 Event::Lyrics(video_id, lyrics) => {
                     let state = match lyrics {
@@ -642,9 +777,18 @@ impl App {
                     self.likes.entry(video_id).or_insert(like);
                 }
                 Event::EditFailed(change, message) => {
+                    if !self.edit_answered(&change) {
+                        // A newer change to the same thing is on its way.
+                        log::warn!("a change to the account was refused: {message}");
+                        continue;
+                    }
                     match &change {
+                        // Back to what it was before.
                         Edit::Rate { video_id, .. } => {
-                            self.likes.remove(video_id);
+                            match self.like_before.remove(video_id).flatten() {
+                                Some(before) => self.likes.insert(video_id.clone(), before),
+                                None => self.likes.remove(video_id),
+                            };
                         }
                         Edit::Save { playlist_id, .. } => {
                             self.saved.remove(playlist_id);
@@ -661,25 +805,37 @@ impl App {
                     }
                     self.notify(format!("That did not work: {message}"));
                 }
-                Event::Edited(change) => match change {
-                    // The library and the changed playlist show the change.
-                    Edit::CreatePlaylist { title, .. } => {
-                        self.notify(format!("Made the playlist {title}"));
-                        self.load(Route::Library);
+                Event::Edited(change) => {
+                    // A newer change to the same thing is on its way: its
+                    // answer is the one that counts.
+                    if !self.edit_answered(&change) {
+                        continue;
                     }
-                    Edit::RenamePlaylist { .. }
-                    | Edit::DeletePlaylist { .. }
-                    | Edit::Save { .. } => self.load(Route::Library),
-                    Edit::AddToPlaylist { playlist_id, .. } => {
-                        self.reload_playlist(&playlist_id);
+                    match change {
+                        // The library and the changed playlist show the
+                        // change.
+                        Edit::CreatePlaylist { title, .. } => {
+                            self.notify(format!("Made the playlist {title}"));
+                            self.load(Route::Library);
+                        }
+                        Edit::RenamePlaylist { .. }
+                        | Edit::DeletePlaylist { .. }
+                        | Edit::Save { .. } => self.load(Route::Library),
+                        Edit::AddToPlaylist { playlist_id, .. } => {
+                            self.reload_playlist(&playlist_id);
+                        }
+                        // Taken: nothing to go back to any more. Liked
+                        // Music shows the change the next time it opens
+                        // (not under the user while they look at it).
+                        Edit::Rate { video_id, .. } => {
+                            self.like_before.remove(&video_id);
+                            if self.route != Route::Liked {
+                                self.pages.remove(&Route::Liked);
+                            }
+                        }
+                        _ => {}
                     }
-                    // Liked Music shows the change the next time it opens
-                    // (not under the user while they look at it).
-                    Edit::Rate { .. } if self.route != Route::Liked => {
-                        self.pages.remove(&Route::Liked);
-                    }
-                    _ => {}
-                },
+                }
                 Event::MoreRows { route, tracks } => {
                     if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
                         add_rows(page, tracks);
@@ -698,6 +854,15 @@ impl App {
             } else {
                 self.next();
             }
+        }
+        if let Some(failure) = self.audio.take_failed()
+            && let Some(entry) = self
+                .playback
+                .entry
+                .clone()
+                .filter(|e| e.id == failure.entry)
+        {
+            self.song_failed(&entry.track.title, failure.message, failure.song_only);
         }
     }
 
@@ -729,6 +894,18 @@ impl App {
                 });
                 self.backend
                     .send(Request::Details(current.track.video_id.clone()));
+                // Lyrics or Related that did not load last time it played
+                // (the network, a slow answer) are asked for again.
+                let video_id = &current.track.video_id;
+                if matches!(
+                    self.lyrics.get(video_id),
+                    Some(crate::lyrics::State::Missing)
+                ) {
+                    self.lyrics.remove(video_id);
+                }
+                if matches!(self.related.get(video_id), Some(Loadable::Failed(_))) {
+                    self.related.remove(video_id);
+                }
                 let report = PlayReport::new(&ready.info);
                 if let Some(url) = report.started(0.0) {
                     self.backend.send(Request::Report(url));
@@ -748,6 +925,7 @@ impl App {
                 );
                 log::info!("song ready: {}", self.playback.format.replace('\n', "; "));
                 self.playback.state = PlayState::Playing;
+                self.skipped_in_a_row = 0;
                 // Get the next song ready while this one plays.
                 self.prepare_next();
                 // With the queue on repeat, it plays again instead.
@@ -755,36 +933,133 @@ impl App {
                     self.ask_for_more();
                 }
             }
-            Err(failure) if failure.song_only => {
-                self.notify(format!(
-                    "Skipped \"{}\": {}",
-                    current.track.title, failure.message
-                ));
-                self.next();
-            }
             Err(failure) => {
-                self.playback.state = PlayState::Failed(failure.message);
+                self.song_failed(&current.track.title, failure.message, failure.song_only);
             }
         }
     }
 
-    fn more_arrived(&mut self, video_id: &str, result: Result<Vec<Track>, String>) {
+    /// A song could not be played. Only a problem with the song itself
+    /// moves on to the next, and only a few songs in a row: something that
+    /// hits every song (YouTube refusing, a broken yt-dlp, no network)
+    /// stops and waits for Play, rather than running through the queue and
+    /// asking YouTube for each song.
+    fn song_failed(&mut self, title: &str, message: String, song_only: bool) {
+        if song_only && self.skipped_in_a_row < MAX_SKIPS {
+            self.skipped_in_a_row += 1;
+            self.notify(format!("Skipped \"{title}\": {message}"));
+            self.next();
+            return;
+        }
+        let message = if song_only {
+            format!(
+                "{} songs in a row could not play. {message}",
+                self.skipped_in_a_row + 1
+            )
+        } else {
+            message
+        };
+        self.skipped_in_a_row = 0;
+        self.finish_report();
+        self.audio.send(Command::Stop);
+        self.playback.state = PlayState::Failed(message);
+    }
+
+    fn more_arrived(
+        &mut self,
+        video_id: String,
+        playlist_id: Option<String>,
+        queue: u64,
+        result: Result<Vec<Track>, String>,
+    ) {
+        // Asked for a queue that has been replaced since.
+        if queue != self.queue.generation() {
+            return;
+        }
         let tracks = match result {
             Ok(tracks) => tracks,
             Err(e) => {
                 log::warn!("Up next for {video_id} failed: {e}");
+                // Asked again the next time the queue runs out.
+                self.playback.asked_more_for = None;
+                if self.playback.state == PlayState::WaitingForMore {
+                    self.notify("Could not get more songs to play.");
+                }
                 return;
             }
         };
-        let added = self.queue.append(tracks);
-        if added > 0 && self.playback.state == PlayState::WaitingForMore {
-            self.next();
+        if self.queue.append(tracks) > 0 {
+            self.queue_grew();
+        } else if playlist_id.is_some() && self.settings.autoplay {
+            // The playlist or album has played to its end: carry on with
+            // songs like its last one, as autoplay does.
+            self.backend.send(Request::UpNext {
+                video_id,
+                playlist_id: None,
+                queue,
+            });
         }
+    }
+
+    /// A playlist's or album's songs arrived, to play or queue.
+    fn playlist_arrived(
+        &mut self,
+        playlist_id: String,
+        mode: QueueMode,
+        ticket: u64,
+        result: Result<Vec<Track>, String>,
+    ) {
+        // Something else was chosen to play while it loaded.
+        if matches!(mode, QueueMode::Play | QueueMode::Shuffle)
+            && self.wanted_playlist != Some(ticket)
+        {
+            return;
+        }
+        match result {
+            Ok(tracks) if !tracks.is_empty() => match mode {
+                QueueMode::Play => self.play_tracks(tracks, 0, Some(playlist_id)),
+                QueueMode::Shuffle => self.apply(Action::Shuffle {
+                    tracks,
+                    source: Some(playlist_id),
+                }),
+                QueueMode::Next => {
+                    let count = tracks.len();
+                    self.queue.play_next_all(tracks);
+                    self.notify(format!("{count} songs play next"));
+                    self.queue_grew();
+                }
+                QueueMode::End => {
+                    let count = tracks.len();
+                    for track in tracks {
+                        self.queue.add_to_end(track);
+                    }
+                    self.notify(format!("Added {count} songs to the queue"));
+                    self.queue_grew();
+                }
+            },
+            Ok(_) => self.notify("That playlist has no songs that can play."),
+            Err(e) => self.notify(format!("Could not play that: {e}")),
+        }
+    }
+
+    /// Asks for a playlist's or album's songs, to play or queue them.
+    fn ask_for_playlist(&mut self, playlist_id: String, mode: QueueMode) {
+        self.tickets += 1;
+        if matches!(mode, QueueMode::Play | QueueMode::Shuffle) {
+            self.wanted_playlist = Some(self.tickets);
+        }
+        self.backend.send(Request::PlaylistQueue {
+            playlist_id,
+            mode,
+            ticket: self.tickets,
+        });
     }
 
     // ---- Playing ----
 
     fn play_tracks(&mut self, tracks: Vec<Track>, start: usize, source: Option<String>) {
+        // What the user chose last plays: not a playlist still loading.
+        self.wanted_playlist = None;
         if let Some(entry) = self.queue.replace(tracks, start, source).cloned() {
             self.playback.asked_more_for = None;
             self.start(entry);
@@ -820,8 +1095,12 @@ impl App {
     fn next(&mut self) {
         match self.queue.advance().cloned() {
             Some(entry) => self.start(entry),
-            // A queue of one song, on repeat: no need to fetch it again.
-            None if self.settings.repeat == Repeat::All && self.queue.entries().len() == 1 => {
+            // A queue of one song, on repeat, that played: no need to fetch
+            // it again. (One that could not play is fetched again below.)
+            None if self.settings.repeat == Repeat::All
+                && self.queue.entries().len() == 1
+                && self.playback.state == PlayState::Playing =>
+            {
                 self.play_again();
             }
             None if self.settings.repeat == Repeat::All => {
@@ -890,6 +1169,7 @@ impl App {
         self.backend.send(Request::UpNext {
             video_id,
             playlist_id: self.queue.source.clone(),
+            queue: self.queue.generation(),
         });
     }
 
@@ -913,6 +1193,13 @@ impl App {
             PlayState::Playing => self.audio.send(Command::Pause),
             PlayState::Failed(_) => {
                 if let Some(entry) = self.playback.entry.clone() {
+                    self.start(entry);
+                }
+            }
+            // The queue ran out and nothing more came: Play starts its last
+            // song again.
+            PlayState::WaitingForMore => {
+                if let Some(entry) = self.queue.current().cloned() {
                     self.start(entry);
                 }
             }
@@ -1017,10 +1304,7 @@ impl App {
                 playlist_id: Some(playlist_id),
             } => {
                 self.notify("Getting the songs...");
-                self.backend.send(Request::PlaylistQueue {
-                    playlist_id,
-                    mode: QueueMode::Play,
-                });
+                self.ask_for_playlist(playlist_id, QueueMode::Play);
             }
             Target::Watch { .. } => {}
             Target::Browse { id, params, .. } => self.navigate(Route::browse(id, params)),
@@ -1049,6 +1333,7 @@ impl App {
                 }
             }
             Action::Search(query) => {
+                self.script_fonts.want_for(&query);
                 let query = query.trim().to_string();
                 if !query.is_empty() {
                     let route = Route::Search(query);
@@ -1088,7 +1373,18 @@ impl App {
             }
             Action::SetVolume(volume) => {
                 self.settings.volume = volume;
+                if volume > 0.001 {
+                    self.loud_volume = volume;
+                }
                 self.audio.send(Command::Volume(volume));
+            }
+            Action::ToggleMute => {
+                let to = if self.settings.volume <= 0.001 {
+                    self.loud_volume
+                } else {
+                    0.0
+                };
+                self.apply(Action::SetVolume(to));
             }
             Action::JumpTo(id) => {
                 if let Some(entry) = self.queue.jump(id).cloned() {
@@ -1126,10 +1422,15 @@ impl App {
             Action::CloseNowPlaying => self.now_playing = false,
             Action::NowPlayingTab(tab) => self.np_tab = tab,
             Action::Rate(video_id, like) => {
-                // Shown at once; YouTube is told in the background.
+                // Shown at once; YouTube is told in the background. What
+                // it was before the first change on its way, should
+                // YouTube refuse.
+                if !self.edits_in_flight.contains_key(&video_id) {
+                    let before = self.likes.get(&video_id).copied();
+                    self.like_before.insert(video_id.clone(), before);
+                }
                 self.likes.insert(video_id.clone(), like);
-                self.backend
-                    .send(Request::Edit(Edit::Rate { video_id, like }));
+                self.send_edit(Edit::Rate { video_id, like });
                 if like == LikeState::Liked {
                     self.notify("Added to Liked Music");
                 }
@@ -1140,17 +1441,18 @@ impl App {
                 video_id,
             } => {
                 self.notify(format!("Added to {title}"));
-                self.backend.send(Request::Edit(Edit::AddToPlaylist {
+                self.send_edit(Edit::AddToPlaylist {
                     playlist_id,
                     video_id,
-                }));
+                });
             }
-            Action::Edit(change) => self.backend.send(Request::Edit(change)),
-            Action::Suggest(text) => self.backend.send(Request::Suggest(text)),
-            Action::QueuePlaylist(playlist_id, mode) => {
-                self.backend
-                    .send(Request::PlaylistQueue { playlist_id, mode });
+            Action::Edit(change) => self.send_edit(change),
+            Action::Suggest(text) => {
+                // Words being typed show in their own script at once.
+                self.script_fonts.want_for(&text);
+                self.backend.send(Request::Suggest(text));
             }
+            Action::QueuePlaylist(playlist_id, mode) => self.ask_for_playlist(playlist_id, mode),
             Action::Toggle(which) => {
                 let s = &mut self.settings;
                 match which {
@@ -1173,8 +1475,7 @@ impl App {
                 {
                     header.title = name.clone();
                 }
-                self.backend
-                    .send(Request::Edit(Edit::RenamePlaylist { playlist_id, name }));
+                self.send_edit(Edit::RenamePlaylist { playlist_id, name });
             }
             Action::DeletePlaylist(playlist_id) => {
                 self.notify("Deleted the playlist");
@@ -1184,8 +1485,7 @@ impl App {
                     self.route = Route::Library;
                     self.show_current();
                 }
-                self.backend
-                    .send(Request::Edit(Edit::DeletePlaylist { playlist_id }));
+                self.send_edit(Edit::DeletePlaylist { playlist_id });
             }
             Action::RemoveFromPlaylist {
                 playlist_id,
@@ -1202,11 +1502,11 @@ impl App {
                     }
                 }
                 self.notify("Removed from the playlist");
-                self.backend.send(Request::Edit(Edit::RemoveFromPlaylist {
+                self.send_edit(Edit::RemoveFromPlaylist {
                     playlist_id,
                     video_id,
                     set_video_id,
-                }));
+                });
             }
             Action::ToggleSave { playlist_id, save } => {
                 self.saved.insert(playlist_id.clone(), save);
@@ -1215,18 +1515,17 @@ impl App {
                 } else {
                     "Removed from your library"
                 });
-                self.backend
-                    .send(Request::Edit(Edit::Save { playlist_id, save }));
+                self.send_edit(Edit::Save { playlist_id, save });
             }
             Action::ToggleSubscribe {
                 channel_id,
                 subscribe,
             } => {
                 self.subscribed.insert(channel_id.clone(), subscribe);
-                self.backend.send(Request::Edit(Edit::Subscribe {
+                self.send_edit(Edit::Subscribe {
                     channel_id,
                     subscribe,
-                }));
+                });
             }
             Action::OpenLogFolder => {
                 if let Some(dirs) = directories::ProjectDirs::from("", "", "YtFast") {
@@ -1273,6 +1572,12 @@ impl App {
                 self.playback = Playback::default();
                 self.pages.clear();
                 self.visited.clear();
+                // The next account's are its own.
+                self.likes.clear();
+                self.saved.clear();
+                self.subscribed.clear();
+                self.edits_in_flight.clear();
+                self.like_before.clear();
                 self.settings.browser = None;
                 self.backend.send(Request::SignOut);
                 self.auth = Auth::Choosing {
@@ -1328,7 +1633,7 @@ impl App {
                 self.act(Action::Previous);
             }
             if pressed(Key::M, Modifiers::NONE) {
-                self.act(Action::SetVolume(if volume > 0.0 { 0.0 } else { 0.8 }));
+                self.act(Action::ToggleMute);
             }
             if pressed(Key::L, Modifiers::NONE)
                 && let Some(entry) = &self.playback.entry
@@ -1408,6 +1713,55 @@ impl App {
     }
 }
 
+/// The words an event brings to the screen (titles, names, lyrics), to
+/// know which fonts they need.
+fn words(event: &Event) -> Vec<&str> {
+    fn track<'a>(track: &'a Track, words: &mut Vec<&'a str>) {
+        words.extend([track.title.as_str(), track.artists.as_str()]);
+        words.extend(track.album.as_deref());
+    }
+    fn page<'a>(page: &'a Page, words: &mut Vec<&'a str>) {
+        if let Some(header) = &page.header {
+            words.extend([
+                header.title.as_str(),
+                header.subtitle.as_str(),
+                header.owner.as_str(),
+            ]);
+        }
+        for section in &page.sections {
+            words.push(&section.title);
+            for item in &section.items {
+                match item {
+                    Item::Track(t) => track(t, words),
+                    Item::Card(card) => words.extend([card.title.as_str(), card.subtitle.as_str()]),
+                }
+            }
+        }
+    }
+    let mut words = Vec::new();
+    match event {
+        Event::SignedIn { name } => words.push(name.as_str()),
+        Event::Page(_, Ok(found)) | Event::Related(_, Ok(found)) => page(found, &mut words),
+        Event::MoreRows { tracks, .. }
+        | Event::UpNext {
+            result: Ok(tracks), ..
+        }
+        | Event::PlaylistQueue {
+            result: Ok(tracks), ..
+        } => {
+            for t in tracks {
+                track(t, &mut words);
+            }
+        }
+        Event::Lyrics(_, Some(lyrics)) => {
+            words.extend(lyrics.lines.iter().map(|line| line.text.as_str()));
+        }
+        Event::Suggestions(_, found) => words.extend(found.iter().map(String::as_str)),
+        _ => {}
+    }
+    words
+}
+
 /// Adds a long list's later songs after its first ones.
 fn add_rows(page: &mut Page, tracks: Vec<Track>) {
     // The list is the untitled section of songs (others have titles).
@@ -1426,26 +1780,48 @@ fn add_rows(page: &mut Page, tracks: Vec<Track>) {
 /// loads again.
 const MAX_PAGES: usize = 24;
 
+/// The most songs skipped in a row for problems of their own before the
+/// queue stops: a few removed songs together are skipped, but a problem
+/// every song has cannot run through the queue.
+const MAX_SKIPS: usize = 5;
+
 /// How long a notice shows.
 const NOTICE_TIME: Duration = Duration::from_secs(4);
 
+/// The window's first size, and the least it can be made, in points.
+pub const WINDOW_SIZE: [f32; 2] = [1280.0, 820.0];
+pub const MIN_WINDOW_SIZE: [f32; 2] = [960.0, 600.0];
+
 impl eframe::App for App {
+    /// Runs before every frame, and also while the window is minimised or
+    /// hidden, when eframe draws nothing: what keeps the music going (the
+    /// next song, the media keys) must not wait for the window to show.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.script_fonts.add_when_read();
+        self.handle_events(ctx);
+        self.media_controls();
+        // A media key pressed while the window is hidden acts at once.
+        self.apply_actions();
+        // Keep the progress bar moving, and hear when the song ends, while
+        // a song plays.
+        if self.playback.state == PlayState::Playing && !self.audio_status.paused {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.scrolling.apply(&ctx);
+        self.mend_window_size(&ctx);
+        self.script_fonts.check();
         self.images.get_mut().begin_frame();
-        self.handle_events(&ctx);
-        self.media_controls();
         self.shortcuts(&ctx);
         self.update_colors(&ctx);
         self.want_song_extras();
 
         views::show(self, ui);
 
-        let actions = std::mem::take(self.actions.get_mut());
-        for action in actions {
-            self.apply(action);
-        }
+        self.apply_actions();
         // A notice shows for a few seconds.
         if let Some((_, at)) = &self.notice {
             let left = NOTICE_TIME.saturating_sub(at.elapsed());
@@ -1454,10 +1830,6 @@ impl eframe::App for App {
             } else {
                 ctx.request_repaint_after(left);
             }
-        }
-        // Keep the progress bar moving while a song plays.
-        if self.playback.state == PlayState::Playing && !self.audio_status.paused {
-            ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
 
