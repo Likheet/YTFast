@@ -8,9 +8,13 @@
 //! in it.
 
 mod play;
+mod replies;
 mod report;
+mod scrub;
 mod ui;
 
+use std::future::Future;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -23,6 +27,7 @@ use ytfast_core::helpers::{self, Progress};
 use ytfast_core::innertube::{ApiError, Session};
 use ytfast_core::net;
 use ytfast_core::prepare::Preparer;
+use ytfast_core::read::Track;
 use ytfast_core::ytdlp::{Browser, YtDlp, is_video_id};
 
 use crate::play::Song;
@@ -57,6 +62,10 @@ struct Args {
     #[arg(long)]
     no_play: bool,
 
+    /// Also save YouTube Music's replies in this folder, for YtFast's tests. Your name, email, photo and sign-in are taken out first.
+    #[arg(long, value_name = "FOLDER")]
+    save_replies: Option<PathBuf>,
+
     /// Show technical details while running.
     #[arg(short, long)]
     verbose: bool,
@@ -86,16 +95,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Ctrl+C outside the player: remove the sign-in copy before leaving.
-    let session_dir = folders.session.clone();
-    rt.spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            let _ = crossterm::terminal::disable_raw_mode();
-            let _ = std::fs::remove_dir_all(&session_dir);
-            eprintln!("\nStopped.");
-            std::process::exit(130);
-        }
-    });
+    remove_sign_in_when_stopped(&rt, &folders.session);
 
     println!("YtFast check (step 0)");
     println!();
@@ -106,7 +106,18 @@ fn main() -> ExitCode {
     println!("just as they would on the website.");
 
     let mut report = Report::default();
-    run(&rt, &args, &folders, &mut report);
+    let session = run(&rt, &args, &folders, &mut report);
+    if let Some(folder) = &args.save_replies {
+        match &session {
+            Some(session) => replies::save(&rt, session, folder, &mut report),
+            None => {
+                println!();
+                println!(
+                    "YouTube Music's replies were not saved: the check did not get as far as your account."
+                );
+            }
+        }
+    }
 
     println!();
     println!("Summary");
@@ -114,10 +125,18 @@ fn main() -> ExitCode {
         println!("   {} {}", step.outcome.tag(), step.name);
     }
     println!();
-    if report.passed() {
-        println!("Everything worked. Step 0 passed on this computer.");
-    } else {
-        println!("Some checks did not pass. The report says what went wrong.");
+    match (report.passed(), report.skipped()) {
+        (true, 0) => println!("Everything worked. Step 0 passed on this computer."),
+        (true, skipped) => {
+            let steps = if skipped == 1 {
+                "step was"
+            } else {
+                "steps were"
+            };
+            println!("Everything that was checked worked, but {skipped} {steps} skipped,");
+            println!("so step 0 has not fully passed on this computer yet.");
+        }
+        (false, _) => println!("Some checks did not pass. The report says what went wrong."),
     }
     match report.save() {
         Ok(path) => {
@@ -145,8 +164,9 @@ struct Folders {
     helpers: PathBuf,
     yt_dlp_cache: PathBuf,
     /// A private folder for this run's copy of the YouTube cookies. Removed
-    /// at the end of the run, and at the start of the next one if a run was
-    /// cut short.
+    /// at the end of the run, when the run is stopped (see
+    /// [`remove_sign_in_when_stopped`]), and at the start of the next one if
+    /// a run was cut short anyway.
     session: PathBuf,
 }
 
@@ -177,11 +197,78 @@ impl Folders {
     }
 }
 
+impl Drop for Folders {
+    /// The sign-in copy goes even when the check stops on an error.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.session);
+    }
+}
+
+/// Removes this run's sign-in copy (`session`) when the check is stopped
+/// from outside: Ctrl+C (outside the player, which reads keys itself),
+/// closing the window (Windows' close event, the Mac's hang-up signal),
+/// logging off or shutting down. Without this the copy would stay on disk
+/// until the check runs again.
+fn remove_sign_in_when_stopped(rt: &Runtime, session: &Path) {
+    // Listening for signals needs the runtime.
+    let _runtime = rt.enter();
+    on_stop(rt, session, 130, async {
+        tokio::signal::ctrl_c().await.ok()
+    });
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows;
+        // Windows waits a few seconds for these before ending the program,
+        // which is time enough to remove the copy.
+        if let Ok(mut close) = windows::ctrl_close() {
+            on_stop(rt, session, 130, async move { close.recv().await });
+        }
+        if let Ok(mut stop) = windows::ctrl_break() {
+            on_stop(rt, session, 130, async move { stop.recv().await });
+        }
+        if let Ok(mut logoff) = windows::ctrl_logoff() {
+            on_stop(rt, session, 130, async move { logoff.recv().await });
+        }
+        if let Ok(mut shutdown) = windows::ctrl_shutdown() {
+            on_stop(rt, session, 130, async move { shutdown.recv().await });
+        }
+    }
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        for (kind, code) in [(SignalKind::hangup(), 129), (SignalKind::terminate(), 143)] {
+            if let Ok(mut stopped) = signal(kind) {
+                on_stop(rt, session, code, async move { stopped.recv().await });
+            }
+        }
+    }
+}
+
+/// Once `stopped` gives `Some`, removes `session` and ends the program
+/// with `code`.
+fn on_stop(
+    rt: &Runtime,
+    session: &Path,
+    code: i32,
+    stopped: impl Future<Output = Option<()>> + Send + 'static,
+) {
+    let session = session.to_path_buf();
+    rt.spawn(async move {
+        if stopped.await.is_some() {
+            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = std::fs::remove_dir_all(&session);
+            // The window may be gone already: a failed write must not stop
+            // the program from ending.
+            let _ = writeln!(std::io::stderr(), "\nStopped.");
+            std::process::exit(code);
+        }
+    });
+}
+
 /// Writes a file only this user can read.
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -203,19 +290,17 @@ enum SignInSource {
     File(PathBuf),
 }
 
-fn run(rt: &Runtime, args: &Args, folders: &Folders, report: &mut Report) {
+/// Runs the steps. Returns the YouTube Music session once step 3 opened
+/// one, for `--save-replies`.
+fn run(rt: &Runtime, args: &Args, folders: &Folders, report: &mut Report) -> Option<Arc<Session>> {
     // Step 1: helper programs.
     ui::heading(1, STEPS, "Getting the helper programs (yt-dlp and Deno)");
-    let Some(helpers) = step_helpers(rt, folders, report) else {
-        return;
-    };
+    let helpers = step_helpers(rt, folders, report)?;
     let yt_dlp = YtDlp::new(&helpers, folders.yt_dlp_cache.clone());
 
     // Step 2: the sign-in.
     ui::heading(2, STEPS, "Reading your YouTube sign-in");
-    let Some(cookies) = step_sign_in(rt, args, folders, &yt_dlp, report) else {
-        return;
-    };
+    let cookies = step_sign_in(rt, args, folders, &yt_dlp, report)?;
     let cookies_file = folders.session.join("youtube-cookies.txt");
     if let Err(e) = write_private(&cookies_file, &cookies.to_netscape()) {
         report.step(
@@ -223,32 +308,53 @@ fn run(rt: &Runtime, args: &Args, folders: &Folders, report: &mut Report) {
             Outcome::Fail,
             format!("could not keep the sign-in for yt-dlp: {e}"),
         );
-        return;
+        return None;
     }
 
     // Step 3: the account.
     ui::heading(3, STEPS, "Checking your YouTube Music account");
-    let Some(session) = step_account(rt, &cookies, report) else {
-        return;
+    let session = Arc::new(step_account(rt, &cookies, report)?);
+    play_and_check(rt, args, &yt_dlp, &cookies_file, &session, report);
+    Some(session)
+}
+
+/// Steps 4 to 7, once the account is open.
+fn play_and_check(
+    rt: &Runtime,
+    args: &Args,
+    yt_dlp: &YtDlp,
+    cookies_file: &Path,
+    session: &Arc<Session>,
+    report: &mut Report,
+) {
+    // What History looked like before playing, to tell new plays from old
+    // ones in step 7. `None` when it could not be read.
+    let history_before: Option<Vec<String>> = if args.no_play {
+        None
+    } else {
+        rt.block_on(session.history())
+            .ok()
+            .map(|page| page.tracks.into_iter().map(|t| t.video_id).collect())
     };
-    let session = Arc::new(session);
 
     // Step 4: Liked songs.
     ui::heading(4, STEPS, "Reading your Liked songs");
-    let Some(songs) = step_songs(rt, args, &session, report) else {
+    let newest_played = history_before.as_ref().and_then(|h| h.first());
+    let Some(songs) = step_songs(rt, args, session, newest_played.map(String::as_str), report)
+    else {
         return;
     };
 
     // Step 5: Premium audio, from the first song that is available.
     ui::heading(5, STEPS, "Checking for Premium-quality audio");
-    let (songs, resolved) = step_premium_audio(rt, &yt_dlp, songs, &cookies_file, report);
+    let (songs, resolved) = step_premium_audio(rt, yt_dlp, songs, cookies_file, report);
 
     // Step 6: playing.
     ui::heading(6, STEPS, "Playing your songs");
-    let reported: (Vec<String>, Vec<String>) = if args.no_play {
+    let reported: Vec<String> = if args.no_play {
         ui::result(Outcome::Skip, "Skipped (--no-play).");
         report.step("Playback", Outcome::Skip, "skipped with --no-play");
-        (Vec::new(), Vec::new())
+        Vec::new()
     } else if resolved
         .as_ref()
         .is_none_or(|r| r.best_playable().is_none())
@@ -258,28 +364,22 @@ fn run(rt: &Runtime, args: &Args, folders: &Folders, report: &mut Report) {
             "Skipped: no playable audio was found in step 5.",
         );
         report.step("Playback", Outcome::Skip, "no playable audio from step 5");
-        (Vec::new(), Vec::new())
+        Vec::new()
     } else {
-        // What History looked like before, to tell new plays from old ones.
-        let before: Vec<String> = rt
-            .block_on(session.history())
-            .map(|page| page.tracks.into_iter().map(|t| t.video_id).collect())
-            .unwrap_or_default();
         let preparer = Preparer {
-            session: Arc::clone(&session),
+            session: Arc::clone(session),
             yt_dlp: yt_dlp.clone(),
             download: net::download_client(),
-            cookies_file: cookies_file.clone(),
+            cookies_file: cookies_file.to_path_buf(),
             // The check tests yt-dlp's way, which the app falls back on.
             direct: None,
         };
-        let reported = play::run(rt, &preparer, songs, resolved, report);
-        (reported, before)
+        play::run(rt, &preparer, songs, resolved, report)
     };
 
     // Step 7: History.
     ui::heading(7, STEPS, "Checking that your plays reached your History");
-    step_history(rt, &session, &reported.0, &reported.1, report);
+    step_history(rt, session, &reported, history_before.as_deref(), report);
 }
 
 fn step_helpers(rt: &Runtime, folders: &Folders, report: &mut Report) -> Option<helpers::Helpers> {
@@ -380,8 +480,11 @@ fn choose_source(args: &Args) -> Result<SignInSource, String> {
         let browser = Browser::parse(name).ok_or_else(|| {
             format!("\"{name}\" is not one of: chrome, firefox, safari, edge, brave")
         })?;
-        if let Some(problem) = browser.problem_here() {
-            return Err(problem.to_string());
+        if let Some(problem) = problem_in_check(
+            browser,
+            "run it again with --cookies and a cookies.txt file's path",
+        ) {
+            return Err(problem);
         }
         return Ok(SignInSource::Browser(
             browser,
@@ -415,18 +518,67 @@ fn choose_source(args: &Args) -> Result<SignInSource, String> {
             continue;
         };
         if n == file_choice {
-            let path =
+            let answer =
                 ui::ask("Drag the cookies.txt file here (or type its path) and press Enter:")
                     .ok_or("No file was given.")?;
-            let path = path.trim_matches(['"', '\'']).trim();
-            return Ok(SignInSource::File(PathBuf::from(path)));
+            return Ok(SignInSource::File(dragged_file(&answer)));
         }
         if let Some(browser) = n.checked_sub(1).and_then(|i| Browser::ALL.get(i)).copied() {
-            match browser.problem_here() {
-                Some(problem) => ui::say(problem),
+            let way_round = format!("choose {file_choice} if you have a cookies.txt file");
+            match problem_in_check(browser, &way_round) {
+                Some(problem) => ui::say(&problem),
                 None => return Ok(SignInSource::Browser(browser, None)),
             }
         }
+    }
+}
+
+/// Why `browser` cannot be used on this computer. For the browsers
+/// Windows locks, with the check's own way round it, `way_round` (the app
+/// has none: it reads browsers only).
+fn problem_in_check(browser: Browser, way_round: &str) -> Option<String> {
+    let problem = browser.problem_here()?;
+    Some(if browser == Browser::Safari {
+        problem.to_string()
+    } else {
+        format!("{problem} Or {way_round}.")
+    })
+}
+
+/// The file dragged onto the window, or typed. A dragged path comes in
+/// quotes (Windows), or with a backslash before each space and bracket
+/// (the Mac's Terminal: `cookies\ \(1\).txt`).
+fn dragged_file(answer: &str) -> PathBuf {
+    let home = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf());
+    let path = typed_path(answer, cfg!(unix), home.as_deref());
+    // A name with a real backslash in it, as typed.
+    let as_typed = typed_path(answer, false, None);
+    if !path.exists() && as_typed.exists() {
+        as_typed
+    } else {
+        path
+    }
+}
+
+/// `answer` without quotes round it; on `unix`, also without the
+/// backslashes a shell puts before spaces and brackets, and with `~/` as
+/// the home folder.
+fn typed_path(answer: &str, unix: bool, home: Option<&Path>) -> PathBuf {
+    let path = answer.trim().trim_matches(['"', '\'']).trim();
+    if !unix {
+        return PathBuf::from(path);
+    }
+    let mut plain = String::with_capacity(path.len());
+    let mut chars = path.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => plain.extend(chars.next()),
+            c => plain.push(c),
+        }
+    }
+    match (plain.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(plain),
     }
 }
 
@@ -441,7 +593,12 @@ fn step_sign_in(
         Ok(s) => s,
         Err(e) => {
             ui::result(Outcome::Fail, &e);
-            report.step("Sign-in", Outcome::Fail, "no sign-in source was chosen");
+            // A fixed sentence or the browser's name: nothing personal.
+            report.step(
+                "Sign-in",
+                Outcome::Fail,
+                format!("no sign-in source could be used: {e}"),
+            );
             return None;
         }
     };
@@ -632,10 +789,15 @@ fn video_id_from(link: &str) -> Option<String> {
         .find(|id| is_video_id(id))
 }
 
+/// Reads Liked songs and chooses the songs to play: those given with
+/// `--song`, else the first Liked songs. `newest_played` is the song at the
+/// top of History: a new play of it would look like the old one in step 7,
+/// so it is left out when there are others.
 fn step_songs(
     rt: &Runtime,
     args: &Args,
     session: &Session,
+    newest_played: Option<&str>,
     report: &mut Report,
 ) -> Option<Vec<Song>> {
     let mut chosen: Vec<Song> = Vec::new();
@@ -696,17 +858,7 @@ fn step_songs(
                 report.fact("Premium (from Liked songs)", answer);
             }
             if chosen.is_empty() {
-                chosen = page
-                    .tracks
-                    .iter()
-                    .take(args.count.max(1))
-                    .map(|t| Song {
-                        video_id: t.video_id.clone(),
-                        title: t.title.clone(),
-                        artists: t.artists.clone(),
-                        expected_seconds: t.duration_seconds.map(f64::from),
-                    })
-                    .collect();
+                chosen = songs_to_play(&page.tracks, args.count.max(1), newest_played);
             }
         }
         Err(e) => {
@@ -723,26 +875,52 @@ fn step_songs(
     Some(chosen)
 }
 
+/// The first `count` of `liked`, leaving out `newest_played` (the song at
+/// the top of History) when there are enough others.
+fn songs_to_play(liked: &[Track], count: usize, newest_played: Option<&str>) -> Vec<Song> {
+    let enough_others = liked.len() > count;
+    liked
+        .iter()
+        .filter(|t| !(enough_others && newest_played == Some(t.video_id.as_str())))
+        .take(count)
+        .map(|t| Song {
+            video_id: t.video_id.clone(),
+            title: t.title.clone(),
+            artists: t.artists.clone(),
+            expected_seconds: t.duration_seconds.map(f64::from),
+        })
+        .collect()
+}
+
 /// Asks yt-dlp for the audio of the first song that is available (one of
 /// the first three), and puts that song first. A song can be unavailable
-/// (removed, or not in this country) without anything being wrong.
+/// (removed, or not in this country) without anything being wrong: those
+/// are left out, so step 6 does not try them again.
 fn step_premium_audio(
     rt: &Runtime,
     yt_dlp: &YtDlp,
-    mut songs: Vec<Song>,
+    songs: Vec<Song>,
     cookies_file: &Path,
     report: &mut Report,
 ) -> (Vec<Song>, Option<ytfast_core::ytdlp::Resolved>) {
     ui::say("Asking yt-dlp for a song's audio (this can take a few seconds)...");
     let mut last_error = None;
     let mut resolved = None;
-    for index in 0..songs.len().min(3) {
-        match rt.block_on(yt_dlp.resolve(&songs[index].video_id, cookies_file)) {
+    let mut first = None;
+    let mut unavailable = Vec::new();
+    for (index, song) in songs.iter().enumerate().take(3) {
+        match rt.block_on(yt_dlp.resolve(&song.video_id, cookies_file)) {
             Ok(r) => {
-                let song = songs.remove(index);
-                songs.insert(0, song);
+                first = Some(index);
                 resolved = Some(r);
                 break;
+            }
+            Err(e) if e.song_unavailable() => {
+                ui::result(
+                    Outcome::Skip,
+                    &format!("Song {}: {e}. It is left out.", index + 1),
+                );
+                unavailable.push(index);
             }
             Err(e) => {
                 ui::result(Outcome::Fail, &format!("Song {}: {e}", index + 1));
@@ -756,8 +934,33 @@ fn step_premium_audio(
             }
         }
     }
+    // The song that worked first, then the others but those unavailable.
+    let mut ordered = Vec::with_capacity(songs.len());
+    for (index, song) in songs.into_iter().enumerate() {
+        if first == Some(index) {
+            ordered.insert(0, song);
+        } else if !unavailable.contains(&index) {
+            ordered.push(song);
+        }
+    }
+    let songs = ordered;
+    let left_out = match unavailable.len() {
+        0 => String::new(),
+        1 => "; 1 song not available to this account was left out".into(),
+        n => format!("; {n} songs not available to this account were left out"),
+    };
     let Some(resolved) = resolved else {
-        let detail = last_error.unwrap_or_else(|| "no song to try".into());
+        let detail = match last_error {
+            Some(error) => format!("{error}{left_out}"),
+            None if !unavailable.is_empty() => {
+                ui::say("Try other songs with --song and a song link.");
+                format!(
+                    "none of the {} songs tried is available to this account",
+                    unavailable.len()
+                )
+            }
+            None => "no song to try".into(),
+        };
         report.step("Premium audio", Outcome::Fail, detail);
         return (songs, None);
     };
@@ -803,33 +1006,58 @@ fn step_premium_audio(
         ),
     };
     ui::result(outcome, &detail);
-    report.step("Premium audio", outcome, detail);
+    report.step("Premium audio", outcome, format!("{detail}{left_out}"));
     report.fact("Audio streams offered", found.join(", "));
     (songs, Some(resolved))
 }
 
-/// Which of `reported` are newer than everything that was in History
-/// before playing. New plays go on top, above the old first entry; a song
-/// that was already in History from earlier does not count.
+/// How many of `reported` History shows as played again. History lists
+/// each song by its last play, newest first, so only a new play moves a
+/// song up past another: a song counts when something that was above it
+/// before is below it now, or (a song not in History before) when it is
+/// above the old first entry. A song that was already the newest cannot
+/// be told apart, played again or not.
 fn new_in_history(before: &[String], after: &[String], reported: &[String]) -> usize {
+    let position = |list: &[String], id: &str| list.iter().position(|x| x == id);
     let marker = before.iter().find(|id| !reported.contains(id));
     let cutoff = marker
-        .and_then(|m| after.iter().position(|id| id == m))
+        .and_then(|m| position(after, m))
         .unwrap_or(after.len().min(30));
     let mut unique: Vec<&String> = reported.iter().collect();
     unique.sort();
     unique.dedup();
     unique
         .into_iter()
-        .filter(|id| after[..cutoff].contains(id))
+        .filter(|id| {
+            let Some(now) = position(after, id) else {
+                return false;
+            };
+            match position(before, id) {
+                None => now < cutoff,
+                Some(then) => before[..then]
+                    .iter()
+                    .any(|above| position(after, above).is_some_and(|at| at > now)),
+            }
+        })
         .count()
+}
+
+/// History as it would be once every play in `reported` (in order)
+/// reached it: each song moved to the top.
+fn history_after_plays(before: &[String], reported: &[String]) -> Vec<String> {
+    let mut history = before.to_vec();
+    for id in reported {
+        history.retain(|x| x != id);
+        history.insert(0, id.clone());
+    }
+    history
 }
 
 fn step_history(
     rt: &Runtime,
     session: &Session,
     reported: &[String],
-    before: &[String],
+    before: Option<&[String]>,
     report: &mut Report,
 ) {
     if reported.is_empty() {
@@ -837,10 +1065,40 @@ fn step_history(
         report.step("History", Outcome::Skip, "nothing was played");
         return;
     }
+    let Some(before) = before else {
+        ui::result(
+            Outcome::Skip,
+            "Skipped: your History could not be read before playing, so new plays\ncould not be told from old ones.",
+        );
+        report.step(
+            "History",
+            Outcome::Skip,
+            "History could not be read before playing",
+        );
+        return;
+    };
     let mut expected: Vec<&String> = reported.iter().collect();
     expected.sort();
     expected.dedup();
     let expected = expected.len();
+    // How many would show even if every play reached History.
+    let visible = new_in_history(before, &history_after_plays(before, reported), reported);
+    if visible == 0 {
+        ui::result(
+            Outcome::Skip,
+            "Could not tell: the songs played were already the newest in your History,\n\
+             so a new play looks just like the old one. Play another song on\n\
+             music.youtube.com, then run this again.",
+        );
+        report.step(
+            "History",
+            Outcome::Skip,
+            format!(
+                "could not tell: the {expected} songs played were already the newest in History"
+            ),
+        );
+        return;
+    }
     ui::say("Waiting a few seconds for YouTube to update your History...");
     let mut found = 0;
     for wait in [5u64, 15] {
@@ -849,7 +1107,7 @@ fn step_history(
             Ok(page) => {
                 let after: Vec<String> = page.tracks.into_iter().map(|t| t.video_id).collect();
                 found = new_in_history(before, &after, reported);
-                if found == expected {
+                if found >= visible {
                     break;
                 }
             }
@@ -860,8 +1118,15 @@ fn step_history(
             }
         }
     }
-    let detail = format!("{found} of {expected} played songs appeared in History");
-    if found == expected {
+    let mut detail = format!("{found} of {expected} played songs appeared in History");
+    if visible < expected {
+        let hidden = expected - visible;
+        detail.push_str(&format!(
+            " (the other {hidden} {} already the newest there, so could not be told apart)",
+            if hidden == 1 { "was" } else { "were" }
+        ));
+    }
+    if found >= visible {
         ui::result(
             Outcome::Ok,
             &format!("{detail}. Your recommendations will keep learning."),
@@ -922,6 +1187,101 @@ mod tests {
     }
 
     #[test]
+    fn songs_already_newest_in_history_are_not_counted() {
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A second run plays the same three songs; the first run's plays
+        // are on top. Even if none of the new plays arrived, History looks
+        // the same: nothing can be told, and nothing counts.
+        let before = ids(&["c", "b", "a", "x"]);
+        let reported = ids(&["a", "b", "c"]);
+        assert_eq!(new_in_history(&before, &before, &reported), 0);
+        assert_eq!(
+            history_after_plays(&before, &reported),
+            ids(&["c", "b", "a", "x"])
+        );
+        assert_eq!(
+            new_in_history(&before, &history_after_plays(&before, &reported), &reported),
+            0
+        );
+        // Played in another order, the moves show: c was newest already, but
+        // a and b moved up past it.
+        let reported = ids(&["c", "b", "a"]);
+        let after = history_after_plays(&before, &reported);
+        assert_eq!(after, ids(&["a", "b", "c", "x"]));
+        assert_eq!(new_in_history(&before, &after, &reported), 2);
+        // With the newest one left out (step 4 does), every play shows.
+        let reported = ids(&["a", "b", "d"]);
+        let after = history_after_plays(&before, &reported);
+        assert_eq!(new_in_history(&before, &after, &reported), 3);
+        // ... and only those that arrived.
+        assert_eq!(
+            new_in_history(&before, &ids(&["d", "c", "b", "a", "x"]), &reported),
+            1
+        );
+    }
+
+    #[test]
+    fn the_song_newest_in_history_is_left_out() {
+        let liked: Vec<Track> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|id| Track {
+                video_id: id.to_string(),
+                ..Track::default()
+            })
+            .collect();
+        let chosen = |count, newest| {
+            songs_to_play(&liked, count, newest)
+                .into_iter()
+                .map(|s| s.video_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(chosen(3, None), ["a", "b", "c"]);
+        assert_eq!(chosen(3, Some("b")), ["a", "c", "d"]);
+        assert_eq!(chosen(3, Some("z")), ["a", "b", "c"]);
+        // Not enough others: it is played anyway.
+        assert_eq!(chosen(4, Some("b")), ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn dragged_paths() {
+        // The Mac's Terminal escapes spaces and brackets.
+        assert_eq!(
+            typed_path(r"/Users/me/Downloads/cookies\ \(1\).txt", true, None),
+            PathBuf::from("/Users/me/Downloads/cookies (1).txt")
+        );
+        assert_eq!(
+            typed_path(
+                "'~/Downloads/cookies.txt'",
+                true,
+                Some(Path::new("/Users/me"))
+            ),
+            PathBuf::from("/Users/me/Downloads/cookies.txt")
+        );
+        // Windows quotes them, and its backslashes are folders.
+        assert_eq!(
+            typed_path(r#""C:\Users\me\Downloads\cookies (1).txt""#, false, None),
+            PathBuf::from(r"C:\Users\me\Downloads\cookies (1).txt")
+        );
+    }
+
+    #[test]
+    fn the_check_offers_a_cookies_file_where_the_app_cannot() {
+        for browser in Browser::ALL {
+            let Some(problem) = browser.problem_here() else {
+                continue;
+            };
+            // The app shows this: it has no cookies.txt file to offer.
+            assert!(!problem.contains("cookies.txt"), "{problem}");
+            let in_check = problem_in_check(browser, "choose 6").unwrap();
+            assert_eq!(
+                in_check.contains("choose 6"),
+                browser != Browser::Safari,
+                "{in_check}"
+            );
+        }
+    }
+
+    #[test]
     fn arguments_parse() {
         let args = Args::try_parse_from([
             "ytfast-check",
@@ -931,10 +1291,13 @@ mod tests {
             "dQw4w9WgXcQ",
             "--count",
             "2",
+            "--save-replies",
+            "replies",
         ])
         .unwrap();
         assert_eq!(args.browser.as_deref(), Some("firefox"));
         assert_eq!(args.songs, ["dQw4w9WgXcQ"]);
         assert_eq!(args.count, 2);
+        assert_eq!(args.save_replies, Some(PathBuf::from("replies")));
     }
 }

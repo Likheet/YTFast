@@ -132,35 +132,16 @@ impl Preparer {
         video_id: &str,
         resolved: Option<Resolved>,
     ) -> Result<Prepared, PrepareError> {
-        let started = Instant::now();
         let mut direct_problem = None;
         if resolved.is_none()
             && let Some(direct) = &self.direct
         {
-            match direct.find(video_id).await {
-                Ok(found) => {
-                    let find_time = started.elapsed();
-                    let located = Located {
-                        source: found.source,
-                        info: found.info,
-                        format: found.format,
-                        premium: found.premium,
-                        duration_seconds: found.duration_seconds,
-                        details_problem: None,
-                    };
-                    match self.begin(video_id, located, find_time, true).await {
-                        Ok(prepared) => return Ok(prepared),
-                        Err(problem) => {
-                            // The address stopped working: find it afresh.
-                            direct.forget(video_id);
-                            direct_problem = Some(problem);
-                        }
-                    }
+            match self.prepare_direct(direct, video_id).await {
+                Ok(prepared) => return Ok(prepared),
+                Err(problem) => {
+                    log::warn!("the fast way did not work ({problem}); using yt-dlp");
+                    direct_problem = Some(problem);
                 }
-                Err(problem) => direct_problem = Some(problem),
-            }
-            if let Some(problem) = &direct_problem {
-                log::warn!("the fast way did not work ({problem}); using yt-dlp");
             }
         }
 
@@ -214,6 +195,41 @@ impl Preparer {
         Ok(prepared)
     }
 
+    /// Prepares `video_id` the fast way. A song found a while ago (pointed
+    /// at, or made ready ahead) is first tried at the address found then;
+    /// when that no longer works (on another network, say), the song is
+    /// found afresh, still the fast way, before yt-dlp is tried.
+    async fn prepare_direct(&self, direct: &Direct, video_id: &str) -> Result<Prepared, String> {
+        let started = Instant::now();
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let found = direct.find(video_id).await?;
+            let remembered = found.took.is_zero();
+            let located = Located {
+                source: found.source,
+                info: found.info,
+                format: found.format,
+                premium: found.premium,
+                duration_seconds: found.duration_seconds,
+                details_problem: None,
+            };
+            match self.begin(video_id, located, started.elapsed(), true).await {
+                Ok(prepared) => return Ok(prepared),
+                Err(problem) => {
+                    // The address stopped working.
+                    direct.forget(video_id);
+                    if !remembered || tries >= 2 {
+                        return Err(problem);
+                    }
+                    log::info!(
+                        "a song's address found earlier no longer works ({problem}); finding it again"
+                    );
+                }
+            }
+        }
+    }
+
     /// Starts the download and waits for the first part.
     async fn begin(
         &self,
@@ -263,10 +279,11 @@ impl Preparer {
     }
 
     /// Finds a song's audio ahead of time, the fast way only, so playing it
-    /// later starts at once. Does nothing without the fast way.
+    /// later starts at once. Does nothing without the fast way, or while it
+    /// is getting ready (see [`Direct::find_ahead`]).
     pub async fn warm(&self, video_id: &str) {
         if let Some(direct) = &self.direct
-            && let Err(e) = direct.find(video_id).await
+            && let Err(e) = direct.find_ahead(video_id).await
         {
             log::debug!("could not find a song ahead of time: {e}");
         }

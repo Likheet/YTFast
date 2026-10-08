@@ -84,6 +84,11 @@ pub struct Playback {
     pub info: Option<PlayerInfo>,
     /// The video an Up next request was last sent for (asked once).
     pub asked_more_for: Option<String>,
+    /// The stretches of the song listened to, from and to (in seconds),
+    /// before the last jump; and where the one now playing began. They are
+    /// what the listening report says (YouTube's player does the same).
+    pub listened: Vec<(f64, f64)>,
+    pub listening_from: f64,
 }
 
 /// What happens at the end of a song.
@@ -107,6 +112,8 @@ impl Default for Playback {
             report: None,
             info: None,
             asked_more_for: None,
+            listened: Vec::new(),
+            listening_from: 0.0,
         }
     }
 }
@@ -319,6 +326,22 @@ pub struct App {
     /// The window's size has been looked at (see
     /// [`App::mend_window_size`]).
     window_checked: bool,
+    /// The latest loading of each page: its answers carry that number
+    /// ([`Request::Page`]), and an older loading's are dropped.
+    page_loads: HashMap<Route, u64>,
+    /// Numbers the page loadings.
+    loads: u64,
+    /// The text search suggestions were last asked for.
+    suggesting: String,
+    /// A jump asked for in the song playing (its entry, the second): the
+    /// seek line shows it until the player gets there.
+    pub seeking: Option<(u64, f64, Instant)>,
+    /// The page shown was opened anew (not by Back or Forward): it starts
+    /// at its top.
+    pub fresh_page: std::cell::Cell<bool>,
+    /// "/" just opened the search box: its character, arriving in the next
+    /// frame, is not typed there.
+    drop_slash: bool,
 }
 
 /// The song row under the pointer, and since when.
@@ -359,12 +382,25 @@ impl App {
         let wake = move || ctx.request_repaint();
         let backend = Backend::start(wake.clone(), demo).expect("YtFast's folders can be made");
         let audio = Audio::start(wake.clone(), demo);
-        audio.send(Command::Volume(settings.volume));
-        backend.send(Request::FastWay(settings.fast_way));
 
         let mut info = now_playing::App::new("ytfast", "YTFast");
         info.can_raise = true;
         let controls = Some(now_playing::NowPlaying::start(info, wake));
+        Self::with(backend, audio, controls, script_fonts, settings, demo)
+    }
+
+    /// The app around a backend and a player already started (stand-ins,
+    /// in the tests).
+    fn with(
+        backend: Backend,
+        audio: Audio,
+        controls: Option<now_playing::NowPlaying>,
+        script_fonts: crate::theme::ScriptFonts,
+        settings: Settings,
+        demo: bool,
+    ) -> Self {
+        audio.send(Command::Volume(settings.volume));
+        backend.send(Request::FastWay(settings.fast_way));
 
         let remembered = settings.browser.as_deref().and_then(Browser::parse);
         let auth = match (demo, remembered) {
@@ -431,6 +467,12 @@ impl App {
             edits_in_flight: HashMap::new(),
             like_before: HashMap::new(),
             window_checked: false,
+            page_loads: HashMap::new(),
+            loads: 0,
+            suggesting: String::new(),
+            seeking: None,
+            fresh_page: std::cell::Cell::new(false),
+            drop_slash: false,
         }
     }
 
@@ -471,23 +513,46 @@ impl App {
     }
 
     /// The account's playlists (ID without `VL`, title), from the
-    /// Library, for "Add to playlist".
+    /// Library, for "Add to playlist". The Library also holds playlists
+    /// saved from other people, which YouTube does not let the account
+    /// change: a playlist's line under its name begins with whose it is, so
+    /// those naming the account are kept. If none does (a channel named
+    /// unlike the account), all are.
     pub fn own_playlists(&self) -> Vec<(String, String)> {
         let Some(Loadable::Ready(page)) = self.pages.get(&Route::Library) else {
             return Vec::new();
         };
-        page.sections
+        let playlists: Vec<&ytfast_core::read::Card> = page
+            .sections
             .iter()
             .flat_map(|s| &s.items)
             .filter_map(|item| match item {
-                ytfast_core::read::Item::Card(card) => match &card.open {
+                Item::Card(card) => match &card.open {
                     Some(Target::Browse { id, .. }) => {
                         let id = id.strip_prefix("VL")?;
                         // Liked Music and Episodes are not edited this way.
-                        (id != "LM" && id != "SE").then(|| (id.to_string(), card.title.clone()))
+                        (id != "LM" && id != "SE").then_some(card)
                     }
                     _ => None,
                 },
+                Item::Track(_) => None,
+            })
+            .collect();
+        let account = match &self.auth {
+            Auth::SignedIn { name } if !name.is_empty() => Some(name.as_str()),
+            _ => None,
+        };
+        let whose = |card: &&ytfast_core::read::Card| {
+            account.is_some_and(|name| card.subtitle.split(" \u{2022} ").any(|part| part == name))
+        };
+        let own: Vec<&ytfast_core::read::Card> = playlists.iter().copied().filter(whose).collect();
+        let chosen = if own.is_empty() { playlists } else { own };
+        chosen
+            .into_iter()
+            .filter_map(|card| match &card.open {
+                Some(Target::Browse { id, .. }) => {
+                    Some((id.strip_prefix("VL")?.to_string(), card.title.clone()))
+                }
                 _ => None,
             })
             .collect()
@@ -579,7 +644,15 @@ impl App {
             .as_ref()
             .and_then(|e| e.track.thumbnail.as_ref())
             .map(|t| t.sized(120));
-        let Some(cover) = cover else { return };
+        let Some(cover) = cover else {
+            // A song with no cover: the last song's colours fade out.
+            let backdrop = self.backdrop.get_mut();
+            if backdrop.current.is_some() && self.playback.entry.is_some() {
+                backdrop.previous = backdrop.current.take();
+                backdrop.since = ctx.input(|i| i.time);
+            }
+            return;
+        };
         let Some(colors) = self.images.get_mut().summary(&cover, &self.backend) else {
             return;
         };
@@ -631,6 +704,15 @@ impl App {
         }
         if warmed.insert(video_id.to_string()) {
             self.backend.send(Request::Warm(video_id.to_string()));
+        }
+    }
+
+    /// Where the song playing is, for the seek line and the time: a jump
+    /// asked for shows at once, before the player gets there.
+    pub fn shown_position(&self) -> f64 {
+        match self.seeking {
+            Some((entry, to, _)) if self.audio_status.entry == Some(entry) => to,
+            _ => self.audio_status.position,
         }
     }
 
@@ -725,7 +807,12 @@ impl App {
                         };
                     }
                 }
-                Event::Page(route, result) => {
+                Event::Page(route, load, result) => {
+                    // An older loading of the page, or one let go while it
+                    // loaded: not wanted any more.
+                    if self.page_loads.get(&route) != Some(&load) {
+                        continue;
+                    }
                     // The top search result is the likeliest song to be
                     // played next.
                     if let (Route::Search(_), Ok(page)) = (&route, &result)
@@ -735,9 +822,12 @@ impl App {
                     }
                     let loaded = match result {
                         Ok(page) => Loadable::Ready(page),
+                        // A refresh that failed keeps what was shown.
+                        Err(_) if matches!(self.pages.get(&route), Some(Loadable::Ready(_))) => {
+                            continue;
+                        }
                         Err(message) => Loadable::Failed(message),
                     };
-                    // A page let go while it loaded is not wanted any more.
                     if let Some(slot) = self.pages.get_mut(&route) {
                         *slot = loaded;
                     }
@@ -755,7 +845,12 @@ impl App {
                     ticket,
                     result,
                 } => self.playlist_arrived(playlist_id, mode, ticket, result),
-                Event::Suggestions(text, found) => self.suggestions = (text, found),
+                // Only for what was last typed: an answer for older text,
+                // arriving late, would replace the right one.
+                Event::Suggestions(text, found) if text == self.suggesting => {
+                    self.suggestions = (text, found);
+                }
+                Event::Suggestions(..) => {}
                 Event::Lyrics(video_id, lyrics) => {
                     let state = match lyrics {
                         Some(lyrics) if !lyrics.lines.is_empty() => {
@@ -816,11 +911,21 @@ impl App {
                         // change.
                         Edit::CreatePlaylist { title, .. } => {
                             self.notify(format!("Made the playlist {title}"));
-                            self.load(Route::Library);
+                            self.refresh(Route::Library);
                         }
-                        Edit::RenamePlaylist { .. }
-                        | Edit::DeletePlaylist { .. }
-                        | Edit::Save { .. } => self.load(Route::Library),
+                        Edit::RenamePlaylist { .. } | Edit::DeletePlaylist { .. } => {
+                            self.refresh(Route::Library);
+                        }
+                        // An album saved shows in Library > Albums and its
+                        // songs in Library > Songs too.
+                        Edit::Save { .. } => {
+                            for route in [Route::Library, Route::LibraryAlbums, Route::LibrarySongs]
+                            {
+                                if self.pages.contains_key(&route) {
+                                    self.refresh(route);
+                                }
+                            }
+                        }
                         Edit::AddToPlaylist { playlist_id, .. } => {
                             self.reload_playlist(&playlist_id);
                         }
@@ -836,16 +941,46 @@ impl App {
                         _ => {}
                     }
                 }
-                Event::MoreRows { route, tracks } => {
+                Event::MoreRows {
+                    route,
+                    load,
+                    tracks,
+                } => {
+                    if self.page_loads.get(&route) != Some(&load) {
+                        continue;
+                    }
+                    // A long list playing from its first songs gets the
+                    // rest as they arrive.
+                    if route.playlist().is_some() && route.playlist() == self.queue.source {
+                        let playable: Vec<Track> =
+                            tracks.iter().filter(|t| t.playable).cloned().collect();
+                        let added = if self.queue.shuffled() {
+                            self.queue.insert_shuffled(playable)
+                        } else {
+                            self.queue.append(playable)
+                        };
+                        if added > 0 {
+                            self.queue_grew();
+                        }
+                    }
                     if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
                         add_rows(page, tracks);
                     }
                 }
                 Event::Image(url, picture) => self.images.borrow_mut().arrived(ctx, url, picture),
+                Event::ImageSkipped(url) => self.images.borrow_mut().skipped(&url),
             }
         }
 
         self.audio_status = self.audio.status();
+        // A jump shown until the player gets there (or a minute passes).
+        if let Some((entry, to, asked)) = self.seeking
+            && (self.audio_status.entry != Some(entry)
+                || (self.audio_status.position - to).abs() < 1.0
+                || asked.elapsed() > Duration::from_secs(60))
+        {
+            self.seeking = None;
+        }
         if let Some(ended) = self.audio.take_ended()
             && self.playback.entry.as_ref().is_some_and(|e| e.id == ended)
         {
@@ -871,8 +1006,15 @@ impl App {
         entry: u64,
         result: Result<crate::backend::Ready, crate::backend::Failure>,
     ) {
-        let Some(current) = self.playback.entry.clone().filter(|e| e.id == entry) else {
-            // An answer about a song no longer wanted.
+        // An answer about a song no longer wanted, or a second one about the
+        // song playing (it was asked for twice): it must not start again.
+        let preparing = self.playback.state == PlayState::Preparing;
+        let Some(current) = self
+            .playback
+            .entry
+            .clone()
+            .filter(|e| e.id == entry && preparing)
+        else {
             return;
         };
         match result {
@@ -1058,6 +1200,13 @@ impl App {
     // ---- Playing ----
 
     fn play_tracks(&mut self, tracks: Vec<Track>, start: usize, source: Option<String>) {
+        // Songs YouTube no longer offers stay on their page but do not play.
+        if tracks.get(start).is_some_and(|t| !t.playable) {
+            self.notify(UNAVAILABLE);
+            return;
+        }
+        let start = tracks.iter().take(start).filter(|t| t.playable).count();
+        let tracks: Vec<Track> = tracks.into_iter().filter(|t| t.playable).collect();
         // What the user chose last plays: not a playlist still loading.
         self.wanted_playlist = None;
         if let Some(entry) = self.queue.replace(tracks, start, source).cloned() {
@@ -1085,11 +1234,37 @@ impl App {
 
     /// Reports how long the current song was listened to.
     fn finish_report(&mut self) {
-        if let Some(report) = self.playback.report.take()
-            && let Some(url) = report.listened(0.0, self.audio_status.position)
-        {
+        if let Some(url) = self.listened_report() {
             self.backend.send(Request::Report(url));
         }
+    }
+
+    /// The report of how long the current song was listened to (its
+    /// stretches, see [`Playback::listened`]), once.
+    fn listened_report(&mut self) -> Option<String> {
+        let report = self.playback.report.take()?;
+        let mut stretches = std::mem::take(&mut self.playback.listened);
+        let at = self.audio_status.position;
+        if at > self.playback.listening_from || stretches.is_empty() {
+            stretches.push((self.playback.listening_from, at));
+        }
+        report.listened_to(&stretches)
+    }
+
+    /// Jumps to `to` seconds in the song playing: the stretch listened to
+    /// so far ends here, and the seek line shows `to` until the player gets
+    /// there.
+    fn jump(&mut self, to: f64) {
+        let at = self.audio_status.position;
+        if at > self.playback.listening_from {
+            let from = self.playback.listening_from;
+            self.playback.listened.push((from, at));
+        }
+        self.playback.listening_from = to;
+        if let Some(entry) = &self.playback.entry {
+            self.seeking = Some((entry.id, to, Instant::now()));
+        }
+        self.audio.send(Command::Seek(to));
     }
 
     fn next(&mut self) {
@@ -1121,6 +1296,8 @@ impl App {
     /// Plays the current song again from the start, as a new play.
     fn play_again(&mut self) {
         self.finish_report();
+        self.playback.listened.clear();
+        self.playback.listening_from = 0.0;
         if let Some(info) = &self.playback.info {
             let report = PlayReport::new(info);
             if let Some(url) = report.started(0.0) {
@@ -1146,9 +1323,15 @@ impl App {
 
     fn previous(&mut self) {
         if self.audio_status.position > 3.0 {
-            self.audio.send(Command::Seek(0.0));
-        } else if let Some(entry) = self.queue.back().cloned() {
-            self.start(entry);
+            self.jump(0.0);
+            return;
+        }
+        let current = self.queue.current().map(|e| e.id);
+        match self.queue.back().cloned() {
+            // The first song: back to its start (not fetched again).
+            Some(entry) if Some(entry.id) == current => self.jump(0.0),
+            Some(entry) => self.start(entry),
+            None => {}
         }
     }
 
@@ -1212,8 +1395,30 @@ impl App {
     pub fn load(&mut self, route: Route) {
         self.touch(&route);
         self.pages.insert(route.clone(), Loadable::Loading);
-        self.backend.send(Request::Page(route));
+        self.ask_for_page(route);
         self.trim_pages();
+    }
+
+    /// Loads a page again, as YouTube now has it, while what it showed
+    /// stays on screen until the new one arrives (no spinner under the
+    /// user, and menus built from it keep working).
+    fn refresh(&mut self, route: Route) {
+        if matches!(self.pages.get(&route), Some(Loadable::Ready(_))) {
+            self.ask_for_page(route);
+        } else {
+            self.load(route);
+        }
+    }
+
+    /// Asks for a page, as a new loading of it: answers for older ones are
+    /// dropped.
+    fn ask_for_page(&mut self, route: Route) {
+        self.loads += 1;
+        self.page_loads.insert(route.clone(), self.loads);
+        self.backend.send(Request::Page {
+            route,
+            load: self.loads,
+        });
     }
 
     /// Marks a page as just shown, for [`App::trim_pages`].
@@ -1239,7 +1444,8 @@ impl App {
     }
 
     /// Shows the page for the current route, loading it when it is not
-    /// here (never loaded, let go, or failed).
+    /// here (never loaded, let go, or failed). History grows as songs play:
+    /// it is loaded again each time it is shown.
     fn show_current(&mut self) {
         let route = self.route.clone();
         if route.is_local() {
@@ -1247,6 +1453,10 @@ impl App {
         }
         match self.pages.get(&route) {
             None | Some(Loadable::Failed(_)) => self.load(route),
+            Some(Loadable::Ready(_)) if route == Route::History => {
+                self.touch(&route);
+                self.refresh(route);
+            }
             Some(_) => self.touch(&route),
         }
     }
@@ -1260,6 +1470,9 @@ impl App {
         let old = std::mem::replace(&mut self.route, route);
         self.back.push(old);
         self.forward.clear();
+        // A page opened anew starts at its top (Back and Forward return to
+        // where it was left).
+        self.fresh_page.set(true);
         self.show_current();
     }
 
@@ -1357,8 +1570,10 @@ impl App {
             }
             Action::Shuffle { mut tracks, source } => {
                 use rand::seq::SliceRandom;
+                tracks.retain(|t| t.playable);
                 tracks.shuffle(&mut rand::rng());
                 self.play_tracks(tracks, 0, source);
+                self.queue.set_shuffled();
             }
             Action::Open(target, track) => self.open(target, track),
             Action::Play(target, track) => self.play(target, track),
@@ -1366,7 +1581,7 @@ impl App {
             Action::Next => self.next(),
             Action::Previous => self.previous(),
             Action::Seek(to) => {
-                self.audio.send(Command::Seek(to));
+                self.jump(to);
                 if let Some(controls) = &self.controls {
                     controls.seeked(Duration::from_secs_f64(to.max(0.0)));
                 }
@@ -1386,10 +1601,18 @@ impl App {
                 };
                 self.apply(Action::SetVolume(to));
             }
+            // The song playing, chosen in Up next: pause or play it, rather
+            // than start it over (and count another play).
+            Action::JumpTo(id) if self.playback.entry.as_ref().is_some_and(|e| e.id == id) => {
+                self.toggle_pause();
+            }
             Action::JumpTo(id) => {
                 if let Some(entry) = self.queue.jump(id).cloned() {
                     self.start(entry);
                 }
+            }
+            Action::PlayNext(track) | Action::AddToQueue(track) if !track.playable => {
+                self.notify(UNAVAILABLE);
             }
             Action::PlayNext(track) => {
                 self.notify(format!("\u{201c}{}\u{201d} plays next", track.title));
@@ -1450,6 +1673,7 @@ impl App {
             Action::Suggest(text) => {
                 // Words being typed show in their own script at once.
                 self.script_fonts.want_for(&text);
+                self.suggesting.clone_from(&text);
                 self.backend.send(Request::Suggest(text));
             }
             Action::QueuePlaylist(playlist_id, mode) => self.ask_for_playlist(playlist_id, mode),
@@ -1545,15 +1769,15 @@ impl App {
                     Repeat::One => Repeat::Off,
                 };
             }
-            Action::ChooseBrowser(browser) => {
-                if let Auth::Choosing { browser: chosen }
-                | Auth::Failed {
+            Action::ChooseBrowser(browser) => match &mut self.auth {
+                Auth::Choosing { browser: chosen } => *chosen = browser,
+                // Another browser after a failed sign-in: the old error was
+                // that browser's, and goes.
+                Auth::Failed {
                     browser: chosen, ..
-                } = &mut self.auth
-                {
-                    *chosen = browser;
-                }
-            }
+                } if *chosen != browser => self.auth = Auth::Choosing { browser },
+                _ => {}
+            },
             Action::SignIn => {
                 let browser = match &self.auth {
                     Auth::Choosing { browser } | Auth::Failed { browser, .. } => *browser,
@@ -1566,7 +1790,9 @@ impl App {
                 };
             }
             Action::SignOut => {
-                self.finish_report();
+                // The last song's listening time goes with the sign-out, so
+                // it is sent before the sign-in is let go.
+                let last_report = self.listened_report();
                 self.audio.send(Command::Stop);
                 self.queue.clear();
                 self.playback = Playback::default();
@@ -1579,7 +1805,7 @@ impl App {
                 self.edits_in_flight.clear();
                 self.like_before.clear();
                 self.settings.browser = None;
-                self.backend.send(Request::SignOut);
+                self.backend.send(Request::SignOut { last_report });
                 self.auth = Auth::Choosing {
                     browser: default_browser(),
                 };
@@ -1594,37 +1820,75 @@ impl App {
         if !matches!(self.auth, Auth::SignedIn { .. }) {
             return;
         }
-        let typing = ctx.egui_wants_keyboard_input();
+        // Typing in a text box (the search box, a dialog's name): its keys
+        // are its own. (egui's `egui_wants_keyboard_input` is true for any
+        // widget with the focus, a button too.)
+        let typing = ctx.text_edit_focused();
+        // Escape closes a dialog (or leaves the search box) first.
         if self.now_playing
+            && !typing
+            && self.dialog.get_mut().is_none()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
             self.act(Action::CloseNowPlaying);
         }
-        let (play, search) = ctx.input_mut(|i| {
-            let play = !typing && i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
-            let search = i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)
-                || (!typing && i.consume_key(egui::Modifiers::NONE, egui::Key::Slash));
-            (play, search)
+        // Back and Forward as in a browser: the mouse's side buttons, and
+        // Alt+Left/Right (Cmd+[ and Cmd+] on a Mac).
+        let (back, forward) = ctx.input_mut(|i| {
+            use egui::{Key, Modifiers, PointerButton};
+            let mac = cfg!(target_os = "macos");
+            let back = i.pointer.button_pressed(PointerButton::Extra1)
+                || (!mac && i.consume_key(Modifiers::ALT, Key::ArrowLeft))
+                || (mac && i.consume_key(Modifiers::COMMAND, Key::OpenBracket));
+            let forward = i.pointer.button_pressed(PointerButton::Extra2)
+                || (!mac && i.consume_key(Modifiers::ALT, Key::ArrowRight))
+                || (mac && i.consume_key(Modifiers::COMMAND, Key::CloseBracket));
+            (back, forward)
         });
+        if back && self.can_go_back() {
+            self.act(Action::Back);
+        }
+        if forward && self.can_go_forward() {
+            self.act(Action::Forward);
+        }
+        // A button the keyboard has moved to takes Space (to press it) and
+        // the arrow keys (to move on), as in a browser.
+        let focused = ctx.memory(|m| m.focused().is_some());
+        let (play, slash, search) = ctx.input_mut(|i| {
+            let play =
+                !typing && !focused && i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+            let slash = !typing && i.consume_key(egui::Modifiers::NONE, egui::Key::Slash);
+            if slash {
+                // The key's "/" would land in the search box it opens.
+                i.events
+                    .retain(|e| !matches!(e, egui::Event::Text(text) if text == "/"));
+            }
+            let search = slash || i.consume_key(egui::Modifiers::COMMAND, egui::Key::F);
+            (play, slash, search)
+        });
+        // The "/" may come a frame after its key, too.
+        self.drop_slash = slash;
         if play {
             self.act(Action::TogglePause);
         }
         if !typing {
             use egui::{Key, Modifiers};
             let pressed = |key, modifiers| ctx.input_mut(|i| i.consume_key(modifiers, key));
-            let position = self.audio_status.position;
+            let position = self.shown_position();
             let volume = self.settings.volume;
-            if pressed(Key::ArrowLeft, Modifiers::NONE) {
-                self.act(Action::Seek((position - 10.0).max(0.0)));
-            }
-            if pressed(Key::ArrowRight, Modifiers::NONE) {
-                self.act(Action::Seek(position + 10.0));
-            }
-            if pressed(Key::ArrowUp, Modifiers::NONE) {
-                self.act(Action::SetVolume((volume + 0.1).min(1.0)));
-            }
-            if pressed(Key::ArrowDown, Modifiers::NONE) {
-                self.act(Action::SetVolume((volume - 0.1).max(0.0)));
+            if !focused {
+                if pressed(Key::ArrowLeft, Modifiers::NONE) {
+                    self.act(Action::Seek((position - 10.0).max(0.0)));
+                }
+                if pressed(Key::ArrowRight, Modifiers::NONE) {
+                    self.act(Action::Seek(position + 10.0));
+                }
+                if pressed(Key::ArrowUp, Modifiers::NONE) {
+                    self.act(Action::SetVolume((volume + 0.1).min(1.0)));
+                }
+                if pressed(Key::ArrowDown, Modifiers::NONE) {
+                    self.act(Action::SetVolume((volume - 0.1).max(0.0)));
+                }
             }
             if pressed(Key::N, Modifiers::SHIFT) {
                 self.act(Action::Next);
@@ -1671,9 +1935,9 @@ impl App {
                 now_playing::Command::PlayPause => Some(Action::TogglePause),
                 now_playing::Command::Next => Some(Action::Next),
                 now_playing::Command::Previous => Some(Action::Previous),
-                now_playing::Command::SeekBy(ms) => Some(Action::Seek(
-                    self.audio_status.position + ms as f64 / 1000.0,
-                )),
+                now_playing::Command::SeekBy(ms) => {
+                    Some(Action::Seek(self.shown_position() + ms as f64 / 1000.0))
+                }
                 now_playing::Command::SetPosition { track_id, position } => {
                     // Only for the song playing now.
                     let here = current.as_deref() == Some(track_id.as_str());
@@ -1703,7 +1967,7 @@ impl App {
                 _ => now_playing::Playback::Stopped,
             },
             track,
-            position: Duration::from_secs_f64(self.audio_status.position.max(0.0)),
+            position: Duration::from_secs_f64(self.shown_position().max(0.0)),
             volume: Some(f64::from(self.settings.volume)),
             ..now_playing::State::default()
         };
@@ -1741,7 +2005,7 @@ fn words(event: &Event) -> Vec<&str> {
     let mut words = Vec::new();
     match event {
         Event::SignedIn { name } => words.push(name.as_str()),
-        Event::Page(_, Ok(found)) | Event::Related(_, Ok(found)) => page(found, &mut words),
+        Event::Page(_, _, Ok(found)) | Event::Related(_, Ok(found)) => page(found, &mut words),
         Event::MoreRows { tracks, .. }
         | Event::UpNext {
             result: Ok(tracks), ..
@@ -1788,6 +2052,23 @@ const MAX_SKIPS: usize = 5;
 /// How long a notice shows.
 const NOTICE_TIME: Duration = Duration::from_secs(4);
 
+/// The widest texture egui makes (see `raw_input_hook`). The covers are
+/// far smaller.
+const MAX_TEXTURE_SIDE: usize = 4096;
+
+/// "YTFast 0.4.0 (abc1234)": the version, and the commit it was built from
+/// ("+" when built with changes not yet committed).
+pub const VERSION: &str = concat!(
+    "YTFast ",
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("YTFAST_COMMIT"),
+    ")"
+);
+
+/// What choosing a song YouTube no longer offers says.
+const UNAVAILABLE: &str = "This song is not available.";
+
 /// The window's first size, and the least it can be made, in points.
 pub const WINDOW_SIZE: [f32; 2] = [1280.0, 820.0];
 pub const MIN_WINDOW_SIZE: [f32; 2] = [960.0, 600.0];
@@ -1833,6 +2114,26 @@ impl eframe::App for App {
         }
     }
 
+    /// egui sizes its text atlas (in memory and on the graphics card) as
+    /// wide as the card allows, 16384 pixels on most: 4096 is plenty for
+    /// one window's text and keeps it small.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        raw_input.max_texture_side = raw_input
+            .max_texture_side
+            .map(|side| side.min(MAX_TEXTURE_SIDE));
+        if std::mem::take(&mut self.drop_slash) {
+            raw_input
+                .events
+                .retain(|e| !matches!(e, egui::Event::Text(text) if text == "/"));
+        }
+    }
+
+    /// Where pages were scrolled to is not kept for the next run: a page
+    /// opens at its top, as on YouTube Music.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         // What is changed in the demo is not kept: it is for trying things.
         if !self.demo {
@@ -1841,7 +2142,10 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.finish_report();
+        // Sent before the backend stops with the window.
+        if let Some(url) = self.listened_report() {
+            self.backend.report_before_closing(url);
+        }
         self.backend.forget_sign_in();
     }
 }
@@ -1867,5 +2171,350 @@ fn open_full_disk_access() {
     let page = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
     if let Err(e) = std::process::Command::new("open").arg(page).spawn() {
         log::warn!("could not open System Settings: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The app's own rules, with stand-ins for the backend and the player:
+    //! what it asks for is read back, and answers are handed to it as the
+    //! next frame would take them in.
+
+    use super::*;
+    use crate::backend::{Failure, Ready};
+
+    struct Harness {
+        app: App,
+        ctx: egui::Context,
+        requests: tokio::sync::mpsc::UnboundedReceiver<Request>,
+        events: std::sync::mpsc::Sender<Event>,
+        commands: std::sync::mpsc::Receiver<Command>,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            let (backend, requests, events) = Backend::for_tests();
+            let (audio, commands) = Audio::for_tests();
+            let fonts = crate::theme::install(&ctx);
+            let app = App::with(backend, audio, None, fonts, Settings::default(), false);
+            let mut harness = Self {
+                app,
+                ctx,
+                requests,
+                events,
+                commands,
+            };
+            // What starting up sent.
+            harness.requests();
+            harness.commands();
+            harness
+        }
+
+        /// Hands the app an answer, and lets it take it in.
+        fn answer(&mut self, event: Event) {
+            self.events.send(event).expect("the app is listening");
+            self.frame();
+        }
+
+        /// The start of a frame: answers and the player's news are taken in.
+        fn frame(&mut self) {
+            self.app.handle_events(&self.ctx);
+        }
+
+        fn act(&mut self, action: Action) {
+            self.app.apply(action);
+        }
+
+        /// What the app has asked the backend for since the last look.
+        fn requests(&mut self) -> Vec<Request> {
+            std::iter::from_fn(|| self.requests.try_recv().ok()).collect()
+        }
+
+        /// What the app has told the player since the last look.
+        fn commands(&mut self) -> Vec<Command> {
+            self.commands.try_iter().collect()
+        }
+
+        /// The queue entry playing (or being got ready), and its song.
+        fn entry(&self) -> (u64, &str) {
+            let entry = self.app.playback.entry.as_ref().expect("a song");
+            (entry.id, entry.track.video_id.as_str())
+        }
+
+        /// Plays `songs` from the first, and lets it get ready.
+        fn play(&mut self, songs: &[&str]) {
+            self.act(Action::PlayTracks {
+                tracks: songs.iter().map(|id| song(id)).collect(),
+                start: 0,
+                source: None,
+            });
+            self.ready();
+        }
+
+        /// The song being got ready is ready.
+        fn ready(&mut self) {
+            let (entry, _) = self.entry();
+            self.answer(Event::Prepared {
+                entry,
+                result: Ok(ready()),
+            });
+        }
+    }
+
+    fn song(id: &str) -> Track {
+        Track {
+            video_id: id.to_string(),
+            title: id.to_uppercase(),
+            duration_seconds: Some(200),
+            ..Track::default()
+        }
+    }
+
+    fn ready() -> Ready {
+        Ready {
+            data: ytfast_core::stream::SongData::complete(Vec::new()),
+            gain: 1.0,
+            info: PlayerInfo::default(),
+            format: "test".into(),
+            premium: true,
+            length: Some(200.0),
+            find_time: Duration::ZERO,
+            start_time: Duration::ZERO,
+            direct: true,
+        }
+    }
+
+    fn failed(song_only: bool) -> Result<Ready, Failure> {
+        Err(Failure {
+            message: "no".into(),
+            song_only,
+        })
+    }
+
+    fn plays(commands: &[Command]) -> usize {
+        commands
+            .iter()
+            .filter(|c| matches!(c, Command::Play { .. }))
+            .count()
+    }
+
+    #[test]
+    fn an_answer_about_a_song_no_longer_wanted_changes_nothing() {
+        let mut h = Harness::new();
+        h.act(Action::PlayTracks {
+            tracks: vec![song("a"), song("b")],
+            start: 0,
+            source: None,
+        });
+        let (first, _) = h.entry();
+        h.act(Action::Next);
+        h.commands();
+        h.answer(Event::Prepared {
+            entry: first,
+            result: Ok(ready()),
+        });
+        assert_eq!(h.entry().1, "b");
+        assert_eq!(h.app.playback.state, PlayState::Preparing);
+        assert_eq!(plays(&h.commands()), 0);
+    }
+
+    #[test]
+    fn a_second_answer_about_the_song_playing_does_not_start_it_again() {
+        let mut h = Harness::new();
+        h.play(&["a"]);
+        assert_eq!(plays(&h.commands()), 1);
+        h.ready();
+        assert_eq!(plays(&h.commands()), 0);
+    }
+
+    #[test]
+    fn a_song_that_cannot_play_is_skipped() {
+        let mut h = Harness::new();
+        h.act(Action::PlayTracks {
+            tracks: vec![song("a"), song("b")],
+            start: 0,
+            source: None,
+        });
+        let (entry, _) = h.entry();
+        h.answer(Event::Prepared {
+            entry,
+            result: failed(true),
+        });
+        assert_eq!(h.entry().1, "b");
+        assert_eq!(h.app.playback.state, PlayState::Preparing);
+    }
+
+    #[test]
+    fn a_failure_not_of_the_song_stops_and_keeps_the_queue() {
+        let mut h = Harness::new();
+        h.act(Action::PlayTracks {
+            tracks: vec![song("a"), song("b")],
+            start: 0,
+            source: None,
+        });
+        let (entry, _) = h.entry();
+        h.answer(Event::Prepared {
+            entry,
+            result: failed(false),
+        });
+        assert_eq!(h.entry().1, "a");
+        assert!(matches!(h.app.playback.state, PlayState::Failed(_)));
+        assert_eq!(h.app.queue.entries().len(), 2);
+        // Play tries the same song again.
+        h.requests();
+        h.act(Action::TogglePause);
+        assert_eq!(h.entry().1, "a");
+        assert!(
+            h.requests()
+                .iter()
+                .any(|r| matches!(r, Request::Prepare { play: true, .. }))
+        );
+    }
+
+    #[test]
+    fn songs_that_cannot_play_stop_being_skipped_after_a_few() {
+        let mut h = Harness::new();
+        let songs: Vec<String> = (0..10).map(|n| format!("s{n}")).collect();
+        h.act(Action::PlayTracks {
+            tracks: songs.iter().map(|id| song(id)).collect(),
+            start: 0,
+            source: None,
+        });
+        for _ in 0..=MAX_SKIPS {
+            let (entry, _) = h.entry();
+            h.answer(Event::Prepared {
+                entry,
+                result: failed(true),
+            });
+        }
+        assert!(matches!(h.app.playback.state, PlayState::Failed(_)));
+        assert_eq!(h.entry().1, format!("s{MAX_SKIPS}"));
+    }
+
+    #[test]
+    fn repeat_all_goes_back_to_the_first_song() {
+        let mut h = Harness::new();
+        h.app.settings.repeat = Repeat::All;
+        h.play(&["a", "b"]);
+        let (first, _) = h.entry();
+        h.act(Action::Next);
+        h.ready();
+        let (last, _) = h.entry();
+        h.app.audio.set_status(|s| s.ended = Some(last));
+        h.frame();
+        assert_eq!(h.entry(), (first, "a"));
+        assert_eq!(h.app.playback.state, PlayState::Preparing);
+    }
+
+    #[test]
+    fn repeat_one_plays_the_song_again_from_its_start() {
+        let mut h = Harness::new();
+        h.app.settings.repeat = Repeat::One;
+        h.play(&["a", "b"]);
+        let (entry, _) = h.entry();
+        h.commands();
+        h.app.audio.set_status(|s| s.ended = Some(entry));
+        h.frame();
+        assert_eq!(h.entry(), (entry, "a"));
+        let commands = h.commands();
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, Command::Seek(to) if *to == 0.0))
+        );
+        assert_eq!(plays(&commands), 0);
+    }
+
+    #[test]
+    fn more_songs_are_asked_for_once_per_last_song() {
+        let mut h = Harness::new();
+        h.play(&["a"]);
+        h.ready();
+        let asked = h
+            .requests()
+            .iter()
+            .filter(|r| matches!(r, Request::UpNext { video_id, .. } if video_id == "a"))
+            .count();
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn a_late_answer_does_not_undo_the_users_like() {
+        let mut h = Harness::new();
+        h.act(Action::Rate("a".into(), LikeState::Liked));
+        h.answer(Event::Liked("a".into(), LikeState::Neutral));
+        assert_eq!(h.app.likes.get("a"), Some(&LikeState::Liked));
+    }
+
+    #[test]
+    fn a_refused_like_is_taken_back_unless_a_newer_choice_stands() {
+        let mut h = Harness::new();
+        let rate = |like| Edit::Rate {
+            video_id: "a".into(),
+            like,
+        };
+        h.act(Action::Rate("a".into(), LikeState::Liked));
+        h.act(Action::Rate("a".into(), LikeState::Disliked));
+        // The first change is refused: the second still stands.
+        h.answer(Event::EditFailed(rate(LikeState::Liked), "no".into()));
+        assert_eq!(h.app.likes.get("a"), Some(&LikeState::Disliked));
+        // The second is refused too: back to as it was before both.
+        h.answer(Event::EditFailed(rate(LikeState::Disliked), "no".into()));
+        assert_eq!(h.app.likes.get("a"), None);
+    }
+
+    #[test]
+    fn suggestions_for_older_text_are_not_shown() {
+        let mut h = Harness::new();
+        h.act(Action::Suggest("fad".into()));
+        h.act(Action::Suggest("faded".into()));
+        h.answer(Event::Suggestions("faded".into(), vec!["faded".into()]));
+        h.answer(Event::Suggestions("fad".into(), vec!["fade".into()]));
+        assert_eq!(h.app.suggestions.0, "faded");
+        assert_eq!(h.app.suggestions.1, ["faded"]);
+    }
+
+    #[test]
+    fn an_older_loading_of_a_page_is_dropped() {
+        let mut h = Harness::new();
+        h.app.load(Route::Home);
+        h.app.load(Route::Home);
+        let loads: Vec<u64> = h
+            .requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Page { load, .. } => Some(load),
+                _ => None,
+            })
+            .collect();
+        let [older, newer] = loads[..] else {
+            panic!("two loadings: {loads:?}");
+        };
+        h.answer(Event::Page(Route::Home, older, Err("old".into())));
+        assert!(matches!(
+            h.app.pages.get(&Route::Home),
+            Some(Loadable::Loading)
+        ));
+        h.answer(Event::Page(Route::Home, newer, Err("new".into())));
+        assert!(matches!(
+            h.app.pages.get(&Route::Home),
+            Some(Loadable::Failed(message)) if message == "new"
+        ));
+    }
+
+    #[test]
+    fn pages_kept_are_limited_but_the_sidebars_stay() {
+        let mut h = Harness::new();
+        for route in [Route::Home, Route::Library, Route::Liked] {
+            h.app.load(route);
+        }
+        for n in 0..(MAX_PAGES + 10) {
+            h.app.load(Route::browse(format!("VLtest{n}"), None));
+        }
+        assert!(h.app.pages.len() <= MAX_PAGES);
+        for route in [Route::Home, Route::Library, Route::Liked] {
+            assert!(h.app.pages.contains_key(&route), "{route:?} kept");
+        }
     }
 }

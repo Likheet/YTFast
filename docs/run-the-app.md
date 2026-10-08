@@ -18,10 +18,23 @@ with your Premium account. YTFast uses that sign-in.
 ## Get the app
 
 1. Go to the repository on GitHub, open the **Actions** tab, and click the
-   newest run with a green tick.
+   newest run with a green tick that is marked **main** (the branch name
+   shows beside each run). Runs marked with any other name are unfinished
+   work that has not been accepted yet. To see only main's runs, choose
+   **main** in the **Branch** menu above the list.
 2. Scroll down to **Artifacts** and download:
    - `YTFast-for-Windows` on the Windows laptop, or
    - `YTFast-for-Mac` on the Mac.
+
+   Beside the app are this guide (`HOW-TO-RUN.md`) and
+   `THIRD-PARTY-NOTICES.txt`, the licences of the work YTFast is built
+   with. You need not do anything with them.
+
+GitHub keeps these downloads for 30 days. If main's newest run shows no
+Artifacts (or says they have expired), make a fresh one: on the
+**Actions** tab, click **CI** on the left, then **Run workflow**, leave
+the branch on **main**, and click the green **Run workflow** button. When
+the new run has its green tick, its Artifacts are there to download.
 
 ## Windows
 
@@ -30,7 +43,7 @@ with your Premium account. YTFast uses that sign-in.
 2. Double-click **YTFast.exe**.
 3. If Windows says "Windows protected your PC", click **More info**, then
    **Run anyway**. Windows asks this because YTFast is not signed with a
-   paid certificate. It asks only once.
+   paid certificate. It asks once for each new copy you download.
 4. Choose **Firefox** and click **Continue**.
 
 To keep it handy, move `YTFast.exe` to a folder of your choice (for example
@@ -45,8 +58,9 @@ taskbar**.
 3. Open it. The first time, your Mac says it could not check the app. Click
    **Done**. Then open **System Settings**, click **Privacy & Security**,
    scroll down, and click **Open Anyway** next to the message about YTFast.
-   Confirm with your password or Touch ID. You do this only once: YTFast is
-   not signed by Apple because that needs a paid developer account.
+   Confirm with your password or Touch ID. You do this once for each new
+   copy you download: YTFast is not signed by Apple because that needs a
+   paid developer account.
 4. Choose your browser and click **Continue**.
    - **Chrome, Edge or Brave:** your Mac asks whether to allow access to
      "Chrome Safe Storage" (or the browser's own). Type your Mac password and
@@ -54,8 +68,8 @@ taskbar**.
    - **Safari:** your Mac refuses at first, and again after each new copy
      downloaded from GitHub. Click **Open Full Disk Access** under the
      message, turn on **YTFast** in the list that opens, and let your Mac
-     reopen it. (A copy that Claude builds on your Mac keeps the
-     permission.)
+     reopen it. (A copy that Claude builds on your Mac should keep the
+     permission from one build to the next; that is not yet confirmed.)
 
 ## The first time
 
@@ -183,8 +197,9 @@ asked about the song playing, when the Lyrics tab is open.
 
 YTFast keeps its files here. Delete the folders to remove them:
 
-- Mac: `~/Library/Application Support/YtFast` and `~/Library/Caches/YtFast`
-- Windows: `%LOCALAPPDATA%\YtFast`
+- Mac: `~/Library/Application Support/YtFast` (your settings are in it
+  too) and `~/Library/Caches/YtFast`
+- Windows: `%LOCALAPPDATA%\YtFast`, and your settings in `%APPDATA%\ytfast`
 
 ## If something goes wrong
 

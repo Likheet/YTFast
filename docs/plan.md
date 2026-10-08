@@ -114,9 +114,11 @@ programs).
 ### Designed in from the start (expensive to add later)
 
 4. **The sign-in is a master key.** The saved cookies are as powerful as being
-   signed in to Google in a browser. Only YouTube's cookies are kept, in
-   private files or the system's password store, never in logs, reports,
-   chats or git.
+   signed in to Google in a browser. Only YouTube's cookies are kept: in
+   memory, and in a private file only while YTFast (or the check) runs.
+   The file is deleted when it closes, and one left by a run that did not
+   close properly is deleted at the next start. They are never put in the
+   system's password store, logs, reports, chats or git.
 5. **Expiring audio links.** YouTube's audio links stop working after a few
    hours and depend on the network. YTFast downloads each song whole into
    memory (it plays while the rest arrives, which takes seconds), so

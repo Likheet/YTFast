@@ -43,13 +43,21 @@ impl Thumb {
     }
 
     /// The address for a square picture of `pixels` pixels. Google's image
-    /// servers take the size in the address (`=w226-h226-...`); other
-    /// pictures (video stills) come as they are.
+    /// servers take the size in the address (`=w226-h226-...`). A video's
+    /// still (a music video's or an episode's) comes in a few fixed sizes:
+    /// the 320 by 180 one for small pictures (a row's), else the one
+    /// YouTube gave.
     pub fn sized(&self, pixels: u32) -> String {
         let resizable =
             self.url.contains("googleusercontent.com") || self.url.contains("ggpht.com");
         match self.url.rfind("=w") {
             Some(at) if resizable => format!("{}=w{pixels}-h{pixels}-l90-rj", &self.url[..at]),
+            _ if pixels <= SMALL_STILL.1 && self.width > SMALL_STILL.0 => {
+                video_id_of_still(&self.url).map_or_else(
+                    || self.url.clone(),
+                    |id| format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg"),
+                )
+            }
             _ => self.url.clone(),
         }
     }
@@ -66,6 +74,25 @@ impl Thumb {
             _ => self.url.clone(),
         }
     }
+}
+
+/// The size of the smaller still every YouTube video has
+/// (`mqdefault.jpg`): wide, without black bars.
+const SMALL_STILL: (u32, u32) = (320, 180);
+
+/// The video of a still on YouTube's image server
+/// (`https://i.ytimg.com/vi/<video>/sddefault.jpg?...`).
+fn video_id_of_still(url: &str) -> Option<&str> {
+    let path = url.strip_prefix("https://i.ytimg.com/")?;
+    let rest = path
+        .strip_prefix("vi/")
+        .or_else(|| path.strip_prefix("vi_webp/"))?;
+    let id = rest.split('/').next()?;
+    (!id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    .then_some(id)
 }
 
 /// What kind of page a card opens.
@@ -150,27 +177,51 @@ pub struct Card {
     pub open: Option<Target>,
     /// What its play button plays, when it has one.
     pub play: Option<Target>,
+    /// An episode's podcast (the tile's second title), shown as the
+    /// episode's artist when it plays.
+    pub podcast: Option<String>,
 }
 
 impl Card {
     /// The song a click on this card plays, for a card of one song (a tile
-    /// on Home or Explore), with the card's name, artist and cover. `None`
-    /// for a card that opens a page.
+    /// on Home or Explore) or an episode, with the card's name, artist and
+    /// cover. `None` for a card that opens a page.
     pub fn song(&self) -> Option<Track> {
-        let Some(Target::Watch {
-            video_id: Some(video_id),
-            ..
-        }) = self.open.as_ref().or(self.play.as_ref())
-        else {
-            return None;
+        let single = |target: Option<&Target>| match target {
+            Some(Target::Watch {
+                video_id: Some(video_id),
+                ..
+            }) => Some(video_id.clone()),
+            _ => None,
         };
+        // An episode's tile opens the episode's page, and its play button
+        // plays the episode alone.
+        let episode = matches!(
+            self.open,
+            Some(Target::Browse {
+                kind: PageKind::Episode,
+                ..
+            })
+        );
+        let video_id = match &self.open {
+            None => single(self.play.as_ref()),
+            Some(_) if episode => single(self.play.as_ref()),
+            open => single(open.as_ref()),
+        }?;
         let byline = Byline::parse(&self.subtitle);
+        let (artists, album, duration_seconds) = if episode {
+            // An episode's subtitle is when it came out and how long it
+            // is ("2d ago • 15 min").
+            (self.podcast.clone().unwrap_or_default(), None, None)
+        } else {
+            (byline.artists, byline.album, byline.duration_seconds)
+        };
         Some(Track {
-            video_id: video_id.clone(),
+            video_id,
             title: self.title.clone(),
-            artists: byline.artists,
-            album: byline.album,
-            duration_seconds: byline.duration_seconds,
+            artists,
+            album,
+            duration_seconds,
             thumbnail: self.thumbnail.clone(),
             ..Track::default()
         })
@@ -206,7 +257,7 @@ pub enum Shape {
 }
 
 impl Section {
-    /// The section's songs, in order.
+    /// The section's songs, in order, greyed-out ones included.
     pub fn tracks(&self) -> Vec<Track> {
         self.items
             .iter()
@@ -243,6 +294,37 @@ pub struct Header {
     /// The account's own playlist: it can be renamed and deleted, and
     /// songs removed from it.
     pub editable: bool,
+    /// What the header's buttons play, when it has any: read them with
+    /// [`Header::play`], [`Header::shuffle`] and [`Header::radio`]. Kept
+    /// apart so that a page (which the app keeps many of) stays small.
+    pub buttons: Option<Box<HeaderButtons>>,
+}
+
+impl Header {
+    /// What the header's round play button plays: an album's or a
+    /// playlist's songs, or an episode.
+    pub fn play(&self) -> Option<&Target> {
+        self.buttons.as_ref()?.play.as_ref()
+    }
+
+    /// An artist's Shuffle: their songs, shuffled (a playlist `RDAO...`).
+    pub fn shuffle(&self) -> Option<&Target> {
+        self.buttons.as_ref()?.shuffle.as_ref()
+    }
+
+    /// An artist's Mix: a radio of their songs and others like them (a
+    /// playlist `RDEM...`).
+    pub fn radio(&self) -> Option<&Target> {
+        self.buttons.as_ref()?.radio.as_ref()
+    }
+}
+
+/// What a header's buttons play ([`Header::buttons`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeaderButtons {
+    pub play: Option<Target>,
+    pub shuffle: Option<Target>,
+    pub radio: Option<Target>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -252,14 +334,16 @@ pub struct Page {
 }
 
 impl Page {
-    /// Every song on the page, in order (for playing a whole album).
+    /// Every song on the page, in order (for playing a whole album),
+    /// greyed-out ones included ([`Track::playable`]).
     pub fn tracks(&self) -> Vec<Track> {
         self.sections.iter().flat_map(Section::tracks).collect()
     }
 
-    /// An album's songs come without a picture or an album name: they are
-    /// the album's, as YouTube Music shows them.
-    pub fn fill_album_songs(&mut self) {
+    /// An album's songs come without a picture or a link to their album:
+    /// they are the album's (its page is `album_id`, `MPREb_...`), as
+    /// YouTube Music shows them.
+    pub fn fill_album_songs(&mut self, album_id: &str) {
         let Some(header) = &self.header else { return };
         for section in &mut self.sections {
             for item in &mut section.items {
@@ -270,8 +354,19 @@ impl Page {
                     if track.album.is_none() {
                         track.album = Some(header.title.clone());
                     }
+                    if track.album_id.is_none() && album_id.starts_with("MPRE") {
+                        track.album_id = Some(album_id.to_string());
+                    }
                 }
             }
+        }
+    }
+
+    /// Puts more of the page's list at its end: the next items of a long
+    /// list in the library ([`more_items`]).
+    pub fn extend_list(&mut self, items: Vec<Item>) {
+        if let Some(list) = self.sections.last_mut() {
+            list.items.extend(items);
         }
     }
 
@@ -352,6 +447,7 @@ fn chips(reply: &Value) -> Option<Section> {
                 round: false,
                 open: Some(open),
                 play: None,
+                podcast: None,
             }))
         })
         .collect();
@@ -418,6 +514,22 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
             shelf
                 .pointer("/header/musicCarouselShelfBasicHeaderRenderer/title/runs/0/navigationEndpoint")
                 .and_then(Target::from_endpoint)
+        })
+        .or_else(|| {
+            // A list's "Show all" under it (an artist's Top songs), or its
+            // title's link. Search's "Show all" searches instead, and is
+            // not read here.
+            if key != "musicShelfRenderer" {
+                return None;
+            }
+            shelf
+                .get("bottomEndpoint")
+                .and_then(Target::from_endpoint)
+                .or_else(|| {
+                    shelf
+                        .pointer("/title/runs/0/navigationEndpoint")
+                        .and_then(Target::from_endpoint)
+                })
         });
 
     let mut items = Vec::new();
@@ -445,7 +557,25 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
     }]
 }
 
+/// The rows shelves and grids hold.
+const ITEMS: [&str; 4] = [
+    "musicResponsiveListItemRenderer",
+    "musicTwoRowItemRenderer",
+    "musicNavigationButtonRenderer",
+    "musicMultiRowListItemRenderer",
+];
+
+/// One row of a shelf or grid: a song, or a tile. A tile that leads
+/// nowhere is left out: the library's "New playlist" opens a dialog of
+/// YouTube's own, not a page (ytmusicapi skips it too).
 fn item(row: &Value) -> Option<Item> {
+    match any_item(row)? {
+        Item::Card(card) if card.open.is_none() && card.play.is_none() => None,
+        item => Some(item),
+    }
+}
+
+fn any_item(row: &Value) -> Option<Item> {
     if let Some(list_row) = row.get("musicResponsiveListItemRenderer") {
         return match track(list_row) {
             Some(t) => Some(Item::Track(t)),
@@ -463,6 +593,7 @@ fn item(row: &Value) -> Option<Item> {
             round: false,
             open: button.get("clickCommand").and_then(Target::from_endpoint),
             play: None,
+            podcast: None,
         }));
     }
     if let Some(episode) = row.get("musicMultiRowListItemRenderer") {
@@ -475,9 +606,39 @@ fn item(row: &Value) -> Option<Item> {
                 .pointer("/title/runs/0/navigationEndpoint")
                 .and_then(Target::from_endpoint),
             play: play_button(episode),
+            podcast: episode
+                .get("secondTitle")
+                .and_then(text)
+                .filter(|p| !p.trim().is_empty()),
         }));
     }
     None
+}
+
+/// The next items of a long list (the library's playlists, albums or
+/// artists), from a reply with more of it ([`super::item_continuation`]
+/// says where they come from).
+pub fn more_items(reply: &Value) -> Vec<Item> {
+    fn rows(node: &Value) -> Option<&Vec<Value>> {
+        match node {
+            Value::Object(map) => {
+                // Older replies: `continuationContents` with `items` (a
+                // grid) or `contents` (a list). Newer ones:
+                // `continuationItems`.
+                let own = ["items", "contents", "continuationItems"]
+                    .iter()
+                    .find_map(|key| map.get(*key).and_then(Value::as_array))
+                    .filter(|rows| {
+                        rows.iter()
+                            .any(|row| ITEMS.iter().any(|kind| row.get(*kind).is_some()))
+                    });
+                own.or_else(|| map.values().find_map(rows))
+            }
+            Value::Array(items) => items.iter().find_map(rows),
+            _ => None,
+        }
+    }
+    rows(reply).into_iter().flatten().filter_map(item).collect()
 }
 
 /// The target of the play button drawn over a picture.
@@ -501,6 +662,7 @@ fn two_row_card(row: &Value) -> Option<Card> {
             .get("navigationEndpoint")
             .and_then(Target::from_endpoint),
         play: row.get("thumbnailOverlay").and_then(play_button),
+        podcast: None,
     })
 }
 
@@ -527,14 +689,15 @@ fn list_row_card(row: &Value) -> Option<Card> {
             .get("navigationEndpoint")
             .and_then(Target::from_endpoint),
         play: row.get("overlay").and_then(play_button),
+        podcast: None,
     })
 }
 
 /// The big "Top result" card of a search.
 fn top_result(shelf: &Value) -> Option<Item> {
     let title = shelf.get("title").and_then(text)?;
-    let open = shelf
-        .pointer("/title/runs/0/navigationEndpoint")
+    let title_link = shelf.pointer("/title/runs/0/navigationEndpoint");
+    let open = title_link
         .and_then(Target::from_endpoint)
         .or_else(|| shelf.get("onTap").and_then(Target::from_endpoint));
     let subtitle = shelf.get("subtitle").and_then(text).unwrap_or_default();
@@ -552,6 +715,15 @@ fn top_result(shelf: &Value) -> Option<Item> {
                 links.add(node);
             }
         }
+        // Whether it is a song or a music video, as its link says.
+        let kind = TrackKind::from_music_video_type(
+            [title_link, shelf.get("onTap")]
+                .into_iter()
+                .flatten()
+                .find_map(|link| find_key(link, "watchEndpointMusicConfig"))
+                .and_then(|c| c.get("musicVideoType"))
+                .and_then(Value::as_str),
+        );
         return Some(Item::Track(Track {
             video_id: video_id.clone(),
             set_video_id: None,
@@ -559,10 +731,11 @@ fn top_result(shelf: &Value) -> Option<Item> {
             artists: byline.artists,
             album: byline.album.or(links.album),
             duration_seconds: byline.duration_seconds,
-            kind: TrackKind::Unknown,
+            kind,
             thumbnail,
             artist_id: links.artist_id,
             album_id: links.album_id,
+            playable: true,
         }));
     }
     Some(Item::Card(Card {
@@ -572,6 +745,7 @@ fn top_result(shelf: &Value) -> Option<Item> {
         round: shelf.get("thumbnail").is_some_and(is_round),
         open,
         play: play_button(shelf),
+        podcast: None,
     }))
 }
 
@@ -592,6 +766,20 @@ fn header(key: &str, h: &Value, reply: &Value) -> Header {
         round: key == "musicImmersiveHeaderRenderer",
         ..Header::default()
     };
+    // The round play button, and an artist's Shuffle and Mix buttons.
+    let target_of = |name: &str| {
+        h.get(name)
+            .and_then(|b| find_key(b, "navigationEndpoint"))
+            .and_then(Target::from_endpoint)
+    };
+    let buttons = HeaderButtons {
+        play: play_button(h),
+        shuffle: target_of("playButton"),
+        radio: target_of("startRadioButton"),
+    };
+    if buttons != HeaderButtons::default() {
+        header.buttons = Some(Box::new(buttons));
+    }
     // An artist's (or a channel's) Subscribe button.
     if let Some(button) = find_key(h, "subscribeButtonRenderer") {
         header.channel_id = button
@@ -693,12 +881,42 @@ fn save_button(h: &Value) -> (Option<String>, Option<bool>) {
     (None, saved)
 }
 
-/// The songs of an Up next or radio list (the `next` reply). Unplayable
-/// rows are left out; where a song also exists as a video, the song is
-/// kept.
-pub fn up_next(reply: &Value) -> Vec<Track> {
+/// The queue's lists in a `next` reply: the first, or (in a reply with
+/// more of it) the next.
+fn queue_panels(reply: &Value) -> Vec<&Value> {
     let mut panels = Vec::new();
     collect(reply, "playlistPanelRenderer", &mut panels);
+    collect(reply, "playlistPanelContinuation", &mut panels);
+    panels
+}
+
+/// Where the next songs of a queue come from (the `next` reply's
+/// continuation, as ytmusicapi's `get_watch_playlist` follows it), when
+/// there are more: a playlist's (`nextContinuationData`) or a radio's
+/// (`nextRadioContinuationData`). The token goes in the address
+/// (`ctoken`), with the same request.
+pub fn queue_continuation(reply: &Value) -> Option<String> {
+    queue_panels(reply).into_iter().find_map(|panel| {
+        panel
+            .get("continuations")?
+            .as_array()?
+            .iter()
+            .find_map(|c| {
+                c.get("nextContinuationData")
+                    .or_else(|| c.get("nextRadioContinuationData"))
+            })?
+            .get("continuation")?
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// The songs of an Up next or radio list (the `next` reply, or a reply
+/// with more of it). Unplayable rows are left out; where a song also
+/// exists as a video, the song is kept.
+pub fn up_next(reply: &Value) -> Vec<Track> {
+    let panels = queue_panels(reply);
     let rows = panels
         .into_iter()
         .filter_map(|p| p.get("contents").and_then(Value::as_array))
@@ -746,6 +964,7 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
             thumbnail: video.get("thumbnail").and_then(Thumb::best),
             artist_id: links.artist_id,
             album_id: links.album_id,
+            playable: true,
         })
     })
     .collect()
@@ -841,6 +1060,35 @@ mod tests {
     }
 
     #[test]
+    fn an_episode_tile_plays_its_episode() {
+        let page = page(&fixture("explore.json"));
+        assert_eq!(page.sections[3].title, "Popular episodes");
+        let Item::Card(episode) = &page.sections[3].items[0] else {
+            panic!("a card")
+        };
+        // It opens the episode's page...
+        assert!(matches!(
+            &episode.open,
+            Some(Target::Browse {
+                kind: PageKind::Episode,
+                ..
+            })
+        ));
+        // ...and its play button plays the episode, named, with its
+        // podcast as the artist and its picture.
+        let song = episode.song().expect("the episode");
+        assert_eq!(song.video_id, "C1HSXeW-8MU");
+        assert_eq!(
+            song.title,
+            "Tom Swarbrick Starts to Doubt That Diversity Is Our Strength"
+        );
+        assert_eq!(song.artists, "The Podcast of the Lotus Eaters");
+        assert_eq!(song.album, None);
+        assert_eq!(song.thumbnail, episode.thumbnail);
+        assert!(song.playable);
+    }
+
+    #[test]
     fn real_album_page() {
         let page = page(&fixture("album.json"));
         let header = page.header.clone().expect("a header");
@@ -863,13 +1111,19 @@ mod tests {
                 .iter()
                 .all(|t| t.album.as_deref().is_none_or(|a| !a.ends_with("plays")))
         );
-        // Filled in from the album.
+        // Filled in from the album, with a link to it for "Go to album".
+        assert!(tracks.iter().all(|t| t.album_id.is_none()));
         let mut page = page;
-        page.fill_album_songs();
+        page.fill_album_songs("MPREb_album17");
         for track in page.tracks() {
             assert_eq!(track.album.as_deref(), Some("17"));
             assert_eq!(track.thumbnail, header.thumbnail);
+            assert_eq!(track.album_id.as_deref(), Some("MPREb_album17"));
         }
+        // Only an album's page is linked to.
+        let mut other = super::page(&fixture("album.json"));
+        other.fill_album_songs("VLPLsomething");
+        assert!(other.tracks().iter().all(|t| t.album_id.is_none()));
     }
 
     #[test]
@@ -886,6 +1140,15 @@ mod tests {
                 .items
                 .iter()
                 .all(|i| matches!(i, Item::Track(_)))
+        );
+        // Top songs' "Show all": the artist's whole list of top songs.
+        assert_eq!(
+            page.sections[0].more,
+            Some(Target::Browse {
+                id: "VLOLAK5uy_nEdP9bp8c7oZ_p_4F7ipSRnfZt32crS94".into(),
+                kind: PageKind::Playlist,
+                params: Some("ggMCCAI%3D".into()),
+            })
         );
     }
 
@@ -915,6 +1178,9 @@ mod tests {
         assert!(
             matches!(&search.sections[0].items[0], Item::Track(t) if t.video_id == "searchSong1")
         );
+        // Search's lists have no page with all of them.
+        assert_eq!(search.sections[1].more, None);
+        assert_eq!(search.sections[0].more, None);
         let songs = search.sections[1].tracks();
         assert_eq!(songs[0].artists, "Daft Punk");
         assert_eq!(songs[0].album.as_deref(), Some("Discovery"));
@@ -934,7 +1200,8 @@ mod tests {
 
     #[test]
     fn up_next_list() {
-        let tracks = up_next(&fixture("next_synthetic.json"));
+        let reply = fixture("next_synthetic.json");
+        let tracks = up_next(&reply);
         let ids: Vec<&str> = tracks.iter().map(|t| t.video_id.as_str()).collect();
         // The video counterpart and the unplayable row are left out.
         assert_eq!(ids, ["nextSong001", "nextSong002"]);
@@ -942,6 +1209,46 @@ mod tests {
         assert_eq!(tracks[0].album.as_deref(), Some("Album One"));
         assert_eq!(tracks[0].duration_seconds, Some(215));
         assert_eq!(tracks[1].kind, TrackKind::Song);
+        // Nothing after these.
+        assert_eq!(queue_continuation(&reply), None);
+    }
+
+    #[test]
+    fn a_queue_in_batches() {
+        // A playlist's queue in the layout ytmusicapi's
+        // `get_watch_playlist` reads: the first songs, and where the next
+        // come from.
+        let row = |id: &str| {
+            serde_json::json!({"playlistPanelVideoRenderer": {
+                "videoId": id,
+                "title": {"runs": [{"text": id}]},
+                "longBylineText": {"runs": [{"text": "A singer"}]}
+            }})
+        };
+        let first = serde_json::json!({"contents": {"singleColumnMusicWatchNextResultsRenderer": {"tabbedRenderer": {
+            "watchNextTabbedResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"musicQueueRenderer": {"content": {
+                "playlistPanelRenderer": {
+                    "contents": [row("queueSong01"), row("queueSong02")],
+                    "continuations": [{"nextContinuationData": {"continuation": "BATCH2"}}]
+                }
+            }}}}}]}
+        }}}});
+        assert_eq!(up_next(&first).len(), 2);
+        assert_eq!(queue_continuation(&first).as_deref(), Some("BATCH2"));
+        // The reply with more: its songs, and (a radio's) next token.
+        let more = serde_json::json!({"continuationContents": {"playlistPanelContinuation": {
+            "contents": [row("queueSong03")],
+            "continuations": [{"nextRadioContinuationData": {"continuation": "BATCH3"}}]
+        }}});
+        let ids: Vec<String> = up_next(&more).into_iter().map(|t| t.video_id).collect();
+        assert_eq!(ids, ["queueSong03"]);
+        assert_eq!(queue_continuation(&more).as_deref(), Some("BATCH3"));
+        // The last: no token.
+        let last = serde_json::json!({"continuationContents": {"playlistPanelContinuation": {
+            "contents": [row("queueSong04")]
+        }}});
+        assert_eq!(queue_continuation(&last), None);
+        assert_eq!(queue_continuation(&Value::Null), None);
     }
 
     #[test]
@@ -954,11 +1261,31 @@ mod tests {
             thumb.sized(96),
             "https://lh3.googleusercontent.com/abc=w96-h96-l90-rj"
         );
+        // A music video's still, as a playlist row gives it: the smaller
+        // still for a row, the one given for a large picture.
         let still = Thumb {
-            url: "https://i.ytimg.com/vi/x/hqdefault.jpg".into(),
+            url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/sddefault.jpg?sqp=-oaymwEWCJADEOEBIAQqCghqEJQEGHgg6AJIWg&rs=AMzJL3lNNudXg7f4Qf7PiE9tvCAkHTjJ0w".into(),
+            width: 400,
+        };
+        assert_eq!(
+            still.sized(120),
+            "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg"
+        );
+        assert_eq!(still.sized(60), still.sized(120));
+        assert_eq!(still.sized(226), still.url);
+        assert_eq!(still.sized(544), still.url);
+        // A still no larger than the smaller one stays as it is.
+        let small = Thumb {
+            url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg".into(),
+            width: 120,
+        };
+        assert_eq!(small.sized(60), small.url);
+        // Pictures elsewhere come as they are.
+        let other = Thumb {
+            url: "https://a.example/vi/x/hqdefault.jpg".into(),
             width: 480,
         };
-        assert_eq!(still.sized(96), still.url);
+        assert_eq!(other.sized(96), other.url);
         let best = Thumb::best(&serde_json::json!({ "thumbnails": [
             { "url": "//a.example/small", "width": 60 },
             { "url": "https://a.example/big", "width": 544 }
@@ -978,6 +1305,21 @@ mod tests {
         assert_eq!(artist.library_id, None);
         assert_eq!(artist.saved, None);
         assert!(!artist.editable);
+        // Its own Shuffle (all their songs, shuffled) and Mix.
+        assert_eq!(
+            artist.shuffle(),
+            Some(&Target::Watch {
+                video_id: Some("G2PDJTkFiA8".into()),
+                playlist_id: Some("RDAOA703AE9PNaNYb3T-XAhR9g".into()),
+            })
+        );
+        assert_eq!(
+            artist.radio(),
+            Some(&Target::Watch {
+                video_id: None,
+                playlist_id: Some("RDEMA703AE9PNaNYb3T-XAhR9g".into()),
+            })
+        );
         // An album (signed out): its own playlist, from the play button.
         let album = page(&fixture("album.json")).header.unwrap();
         assert_eq!(
@@ -987,6 +1329,19 @@ mod tests {
         assert_eq!(album.saved, Some(false));
         assert_eq!(album.channel_id, None);
         assert!(!album.editable);
+        // Its play button plays the album; no Shuffle or Mix of an artist.
+        assert!(matches!(
+            album.play(),
+            Some(Target::Watch { playlist_id: Some(p), .. })
+                if p == "OLAK5uy_kW9hN-oBmekJ06jhhfStpwRd5pcRKIztY"
+        ));
+        assert_eq!(album.shuffle(), None);
+        assert_eq!(album.radio(), None);
+        // A page with neither (a mood's) keeps no buttons at all.
+        let mood = page(&serde_json::json!({
+            "header": {"musicHeaderRenderer": {"title": {"runs": [{"text": "Chill"}]}}}
+        }));
+        assert_eq!(mood.header.unwrap().buttons, None);
         // The account's own playlist: editable, and no Save button.
         let own = page(&fixture("playlist_signed_in_premium.json"))
             .header
@@ -1054,7 +1409,10 @@ mod tests {
             "contents": [
                 {"musicCarouselShelfRenderer": {
                     "header": {"musicCarouselShelfBasicHeaderRenderer": {"title": {"runs": [{"text": "Listen again"}]}}},
-                    "contents": [{"musicTwoRowItemRenderer": {"title": {"runs": [{"text": "An album"}]}}}]
+                    "contents": [{"musicTwoRowItemRenderer": {
+                        "title": {"runs": [{"text": "An album"}]},
+                        "navigationEndpoint": {"browseEndpoint": {"browseId": "MPREb_album01"}}
+                    }}]
                 }}
             ],
             "header": {"chipCloudRenderer": {"chips": [
@@ -1147,6 +1505,105 @@ mod tests {
         assert_eq!(tracks[0].artist_id.as_deref(), Some("UCartist0001"));
         assert_eq!(tracks[0].album_id.as_deref(), Some("MPREb_album0001"));
         assert_eq!(tracks[0].album.as_deref(), Some("Album One"));
+    }
+
+    #[test]
+    fn a_video_as_the_top_result_says_so() {
+        // The top result's link says what it plays, as ytmusicapi reads
+        // it: in the title's link, or else in `onTap`.
+        let top = |title_link: Value, on_tap: Value| {
+            let reply = serde_json::json!({"contents": [{"musicCardShelfRenderer": {
+                "title": {"runs": [{"text": "Never Gonna Give You Up", "navigationEndpoint": title_link}]},
+                "subtitle": {"runs": [{"text": "Video"}, {"text": " • "}, {"text": "Rick Astley"}, {"text": " • "}, {"text": "3:33"}]},
+                "onTap": on_tap
+            }}]});
+            match page(&reply).sections[0].items.first() {
+                Some(Item::Track(t)) => t.clone(),
+                other => panic!("a song, not {other:?}"),
+            }
+        };
+        let watch = |kind: Option<&str>| {
+            let mut endpoint = serde_json::json!({"watchEndpoint": {"videoId": "dQw4w9WgXcQ"}});
+            if let Some(kind) = kind {
+                endpoint["watchEndpoint"]["watchEndpointMusicSupportedConfigs"] =
+                    serde_json::json!({"watchEndpointMusicConfig": {"musicVideoType": kind}});
+            }
+            endpoint
+        };
+        let video = top(watch(Some("MUSIC_VIDEO_TYPE_OMV")), Value::Null);
+        assert_eq!(video.kind, TrackKind::MusicVideo);
+        assert_eq!(video.artists, "Rick Astley");
+        let video = top(watch(None), watch(Some("MUSIC_VIDEO_TYPE_OMV")));
+        assert_eq!(video.kind, TrackKind::MusicVideo);
+        let song = top(watch(Some("MUSIC_VIDEO_TYPE_ATV")), Value::Null);
+        assert_eq!(song.kind, TrackKind::Song);
+        assert_eq!(top(watch(None), Value::Null).kind, TrackKind::Unknown);
+    }
+
+    #[test]
+    fn the_library_grid_and_its_next_items() {
+        // The library's playlists in the layout ytmusicapi's
+        // `get_library_playlists` reads. Its first tile ("New playlist")
+        // opens a dialog, not a page or a song: left out.
+        let tile = |name: &str, id: &str| {
+            serde_json::json!({"musicTwoRowItemRenderer": {
+                "title": {"runs": [{"text": name}]},
+                "subtitle": {"runs": [{"text": "Playlist"}]},
+                "navigationEndpoint": {"browseEndpoint": {
+                    "browseId": id,
+                    "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {
+                        "pageType": "MUSIC_PAGE_TYPE_PLAYLIST"
+                    }}
+                }}
+            }})
+        };
+        let first = serde_json::json!({"contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {
+            "contents": [{"gridRenderer": {
+                "items": [
+                    {"musicTwoRowItemRenderer": {
+                        "title": {"runs": [{"text": "New playlist"}]},
+                        "navigationEndpoint": {"commandExecutorCommand": {"commands": []}}
+                    }},
+                    tile("Liked Music", "VLLM"),
+                    tile("Road trip", "VLPLroad")
+                ],
+                "continuations": [{"nextContinuationData": {"continuation": "GRID2"}}]
+            }}]
+        }}}}]}}});
+        let mut page = page(&first);
+        let names = |page: &Page| -> Vec<String> {
+            page.sections
+                .iter()
+                .flat_map(|s| &s.items)
+                .map(|i| match i {
+                    Item::Card(c) => c.title.clone(),
+                    Item::Track(t) => t.title.clone(),
+                })
+                .collect()
+        };
+        assert_eq!(names(&page), ["Liked Music", "Road trip"]);
+        assert_eq!(page.sections[0].shape, Shape::Grid);
+        // The next items, at the end of the same grid.
+        let more = serde_json::json!({"continuationContents": {"gridContinuation": {
+            "items": [tile("Gym", "VLPLgym"), tile("Sleep", "VLPLsleep")]
+        }}});
+        page.extend_list(more_items(&more));
+        assert_eq!(names(&page), ["Liked Music", "Road trip", "Gym", "Sleep"]);
+        // A newer reply with more: its items, not the token's row.
+        let newer = serde_json::json!({"onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+            tile("Focus", "VLPLfocus"),
+            {"continuationItemRenderer": {"continuationEndpoint": {"continuationCommand": {"token": "GRID3"}}}}
+        ]}}]});
+        assert_eq!(more_items(&newer).len(), 1);
+        // The library's artists: a list of rows that open their pages.
+        let artists = serde_json::json!({"continuationContents": {"musicShelfContinuation": {"contents": [
+            {"musicResponsiveListItemRenderer": {
+                "navigationEndpoint": {"browseEndpoint": {"browseId": "MPLAUCartist01"}},
+                "flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "An artist"}]}}}]
+            }}
+        ]}}});
+        assert!(matches!(&more_items(&artists)[..], [Item::Card(c)] if c.title == "An artist"));
+        assert!(more_items(&Value::Null).is_empty());
     }
 
     #[test]

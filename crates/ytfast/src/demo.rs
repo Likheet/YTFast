@@ -72,6 +72,7 @@ fn song(i: usize) -> Track {
         thumbnail: thumb(album),
         artist_id: Some(id_for(artist, PageKind::Artist)),
         album_id: Some(id_for(album, PageKind::Album)),
+        playable: true,
     }
 }
 
@@ -130,6 +131,7 @@ fn card(title: &str, subtitle: &str, kind: PageKind) -> Item {
             video_id: None,
             playlist_id: Some(playlist_id),
         }),
+        podcast: None,
     })
 }
 
@@ -176,10 +178,16 @@ pub fn page(route: &Route) -> Page {
                 "Playlists",
                 vec![
                     card("Liked Music", "Auto playlist", PageKind::Playlist),
-                    card("Road trip", "Playlist • 14 songs", PageKind::Playlist),
-                    card("Late night", "Playlist • 14 songs", PageKind::Playlist),
-                    card("Gym", "Playlist • 14 songs", PageKind::Playlist),
-                    card("Sunday morning", "Playlist • 14 songs", PageKind::Playlist),
+                    // Whose each is, then how long, as the Library shows
+                    // them.
+                    card("Road trip", "Demo listener • 14 songs", PageKind::Playlist),
+                    card("Late night", "Demo listener • 14 songs", PageKind::Playlist),
+                    card("Gym", "Demo listener • 14 songs", PageKind::Playlist),
+                    card(
+                        "Sunday morning",
+                        "Demo listener • 14 songs",
+                        PageKind::Playlist,
+                    ),
                 ],
                 Shape::Grid,
             )],
@@ -200,7 +208,8 @@ pub fn page(route: &Route) -> Page {
             }
         }
         Route::Browse { id, .. } => browse(id),
-        Route::Search(query) | Route::SearchOnly(query, _) => search(query),
+        Route::Search(query) => search(query),
+        Route::SearchOnly(query, kind) => search_only(query, *kind),
         Route::LibrarySongs | Route::History => Page {
             header: None,
             sections: vec![section("", songs(3, 16))],
@@ -335,7 +344,8 @@ fn browse(id: &str) -> Page {
                     owner: artist.into(),
                     thumbnail: thumb(name),
                     round: false,
-                    library_id: Some(format!("OLAKdemo{}", seed(name))),
+                    // Its own songs, when queued from its menu.
+                    library_id: Some(format!("demo-album-{name}")),
                     saved: Some(false),
                     ..Header::default()
                 }),
@@ -493,6 +503,50 @@ fn search(query: &str) -> Page {
     }
 }
 
+/// Search with one kind of result: its section alone, as the real
+/// filtered search shows it.
+fn search_only(query: &str, kind: crate::backend::SearchKind) -> Page {
+    use crate::backend::SearchKind;
+    let all = search(query);
+    let sections = match kind {
+        // Every song found, top result included, in one list.
+        SearchKind::Songs => {
+            let songs = all
+                .sections
+                .iter()
+                .flat_map(|s| s.items.iter())
+                .filter(|i| matches!(i, Item::Track(_)))
+                .cloned()
+                .collect();
+            vec![section("", songs)]
+        }
+        SearchKind::Albums | SearchKind::Artists => {
+            let title = kind.label();
+            all.sections
+                .into_iter()
+                .filter(|s| s.title == title)
+                .map(|s| Section {
+                    title: String::new(),
+                    ..s
+                })
+                .collect()
+        }
+        SearchKind::Playlists => vec![shaped(
+            "",
+            vec![card(
+                &format!("{query} mix"),
+                "Playlist • YouTube Music",
+                PageKind::Playlist,
+            )],
+            Shape::List,
+        )],
+    };
+    Page {
+        header: None,
+        sections,
+    }
+}
+
 /// The songs a "play" button plays: an album's or playlist's own songs.
 pub fn playlist_songs(playlist_id: &str) -> Vec<Track> {
     let route = if playlist_id == "LM" {
@@ -620,5 +674,33 @@ mod tests {
                 .iter()
                 .all(|t| t.album.as_deref() == Some("Postcards"))
         );
+        // An album's menu queues the album's own songs.
+        let page = browse("demo-album-Postcards");
+        let id = page.header.and_then(|h| h.library_id).expect("an ID");
+        assert_eq!(playlist_songs(&id), album);
+    }
+
+    #[test]
+    fn filtered_search_shows_only_its_kind() {
+        use crate::backend::SearchKind;
+        let only = |kind| page(&Route::SearchOnly("glass".into(), kind));
+        let songs = only(SearchKind::Songs);
+        assert!(!songs.tracks().is_empty());
+        assert!(
+            songs
+                .sections
+                .iter()
+                .flat_map(|s| &s.items)
+                .all(|i| matches!(i, Item::Track(_)))
+        );
+        for kind in [
+            SearchKind::Albums,
+            SearchKind::Artists,
+            SearchKind::Playlists,
+        ] {
+            let page = only(kind);
+            assert!(page.tracks().is_empty(), "{kind:?} has no songs");
+            assert!(!page.sections.is_empty(), "{kind:?} finds something");
+        }
     }
 }

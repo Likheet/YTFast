@@ -9,7 +9,7 @@ page.
 For YouTube Music **Premium** accounts, on **Mac (Apple Silicon)** and
 **Windows**.
 
-## Status: the third version of the app
+## Status: version 0.4.0
 
 The app is laid out as YouTube Music itself is, with its sizes and colours:
 the bar across the top with search and your account; the menu on the left
@@ -23,9 +23,13 @@ playlists. Songs start in about a second.
 
 The second version ran on the owner's Windows laptop with a real account:
 almost everything worked and it was quick, but the sign-in had to be
-redone about every hour and the look was unfinished. This version reads
-the browser's sign-in again by itself and has the new look; both are
-still to be tried with a real account.
+redone about every hour and the look was unfinished. The third version
+reads the browser's sign-in again by itself (seen working overnight with
+the owner's account) and has the new look. Version 0.4.0 follows a review
+of the whole code: the music keeps going with the window minimised, the
+sound never waits for the network, a problem every song has stops the
+queue instead of skipping through it, and long lists stay quick. Its
+changes are still to be tried with a real account.
 
 **Run the app:** [docs/run-the-app.md](docs/run-the-app.md)
 
@@ -77,7 +81,11 @@ Paolino), [ytmusicapi](https://github.com/sigma67/ytmusicapi) (MIT),
 inspired by [Better Lyrics](https://betterlyrics.org)' Even Better Lyrics
 Plus theme, recreated without its code. Lyrics come partly from
 [LRCLIB](https://lrclib.net). Icons are from [Lucide](https://lucide.dev)
-(ISC).
+(ISC), and the font is [Inter](https://github.com/rsms/inter) (SIL Open
+Font License). The licence texts for these and for the Rust libraries
+YTFast is built from are in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which comes with every
+download.
 
 YTFast is an independent project, not affiliated with YouTube or Google.
 YouTube and YouTube Music are trademarks of Google LLC. Using unofficial

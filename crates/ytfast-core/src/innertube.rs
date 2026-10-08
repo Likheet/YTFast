@@ -28,6 +28,15 @@ const CLIENT_NAME_ID: &str = "67";
 const FALLBACK_CLIENT_VERSION: &str = "1.20260707.12.00";
 /// The songs saved in the library: a long list, like a playlist.
 pub(crate) const LIBRARY_SONGS: &str = "FEmusic_liked_videos";
+/// The language YouTube answers in.
+const LANGUAGE: &str = "en";
+/// The most further batches of a queue asked for when a whole playlist or
+/// album is queued (a few hundred songs in all). A listener's pace: one
+/// click, a handful of requests.
+const MAX_QUEUE_BATCHES: usize = 5;
+/// The most further batches of one part of the library (its playlists,
+/// albums or artists) read when it loads, a few dozen items each.
+const MAX_LIBRARY_BATCHES: usize = 9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -199,9 +208,11 @@ impl Session {
         let client = &mut context["client"];
         client["clientName"] = json!(CLIENT_NAME);
         client["clientVersion"] = json!(version);
-        if client.get("hl").is_none() {
-            client["hl"] = json!("en");
-        }
+        // Always English, whatever the account's language: YtFast's own
+        // words are English, and the readers tell a song's artist from its
+        // album and its play count by YouTube's English words ("Song •
+        // Artist • Album • 1.2M plays").
+        client["hl"] = json!(LANGUAGE);
         context
     }
 
@@ -419,7 +430,7 @@ impl Session {
         let reply = self.call("browse", body).await?;
         let mut page = read::page(&reply);
         if browse_id.starts_with("MPRE") {
-            page.fill_album_songs();
+            page.fill_album_songs(browse_id);
         }
         // Only lists of songs go on (playlists, the library's songs); other
         // pages' tokens load more shelves.
@@ -457,7 +468,45 @@ impl Session {
 
     /// The playlists saved in the library.
     pub async fn library_playlists(&self) -> Result<Page, ApiError> {
-        self.page("FEmusic_liked_playlists", None).await
+        self.library_page("FEmusic_liked_playlists").await
+    }
+
+    /// One part of the library (`FEmusic_liked_playlists`...), with the
+    /// rest of its list: YouTube sends a long one a few dozen items at a
+    /// time, as ytmusicapi's `get_library_playlists` reads it. At most
+    /// `MAX_LIBRARY_BATCHES` more are asked for; when one of them fails,
+    /// the items already read are kept.
+    pub(crate) async fn library_page(&self, browse_id: &str) -> Result<Page, ApiError> {
+        let body = json!({ "browseId": browse_id });
+        let reply = self.call("browse", body.clone()).await?;
+        let mut page = read::page(&reply);
+        let mut next = read::item_continuation(&reply);
+        for _ in 0..MAX_LIBRARY_BATCHES {
+            let Some(from) = next.take() else { break };
+            let reply = match &from {
+                Continuation::Body(token) => {
+                    self.call("browse", json!({ "continuation": token })).await
+                }
+                Continuation::Address(token) => {
+                    let query = [("ctoken", token.as_str()), ("continuation", token)];
+                    self.call_with("browse", &query, body.clone()).await
+                }
+            };
+            let reply = match reply {
+                Ok(reply) => reply,
+                Err(e) => {
+                    log::warn!("the rest of the library's {browse_id} did not load: {e}");
+                    break;
+                }
+            };
+            let items = read::more_items(&reply);
+            if items.is_empty() {
+                break;
+            }
+            page.extend_list(items);
+            next = read::item_continuation(&reply);
+        }
+        Ok(page)
     }
 
     /// Search results, grouped the way YouTube Music groups them (top
@@ -482,7 +531,10 @@ impl Session {
     }
 
     /// The songs of a playlist or album to play, by its playlist ID
-    /// (`OLAK5uy_...`, `PL...`, `RDCLAK...`).
+    /// (`OLAK5uy_...`, `PL...`, `RDCLAK...`). YouTube sends a long one in
+    /// batches; up to `MAX_QUEUE_BATCHES` more are asked for, as
+    /// ytmusicapi's `get_watch_playlist` does. When one of them fails, the
+    /// songs already read are kept.
     pub async fn playlist_queue(&self, playlist_id: &str) -> Result<Vec<Track>, ApiError> {
         let body = json!({
             "enablePersistentPlaylistPanel": true,
@@ -490,7 +542,27 @@ impl Session {
             "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
             "playlistId": playlist_id,
         });
-        Ok(read::up_next(&self.call("next", body).await?))
+        let reply = self.call("next", body.clone()).await?;
+        let mut tracks = read::up_next(&reply);
+        let mut next = read::queue_continuation(&reply);
+        for _ in 0..MAX_QUEUE_BATCHES {
+            let Some(token) = next.take() else { break };
+            let query = [("ctoken", token.as_str()), ("continuation", token.as_str())];
+            let reply = match self.call_with("next", &query, body.clone()).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    log::warn!("the rest of a playlist to queue did not load: {e}");
+                    break;
+                }
+            };
+            let more = read::up_next(&reply);
+            if more.is_empty() {
+                break;
+            }
+            tracks.extend(more);
+            next = read::queue_continuation(&reply);
+        }
+        Ok(tracks)
     }
 
     /// What YouTube says about one song: whether it plays for this account,
@@ -755,7 +827,9 @@ mod tests {
             ..WebConfig::default()
         });
         let context = s.context();
-        assert_eq!(context["client"]["hl"], "de");
+        // The account's country stays; the language is always English,
+        // which the readers understand.
+        assert_eq!(context["client"]["hl"], "en");
         assert_eq!(context["client"]["gl"], "AU");
         assert_eq!(context["client"]["clientVersion"], "1.2");
         assert_eq!(context["user"]["lockedSafetyMode"], false);
@@ -774,7 +848,7 @@ mod tests {
         let context = s.context_as("ANDROID_MUSIC", "7.21.50");
         assert_eq!(context["client"]["clientName"], "ANDROID_MUSIC");
         assert_eq!(context["client"]["clientVersion"], "7.21.50");
-        assert_eq!(context["client"]["hl"], "de");
+        assert_eq!(context["client"]["hl"], "en");
         assert_eq!(context["client"]["visitorData"], "v");
         assert_eq!(context["user"]["lockedSafetyMode"], false);
         // The usual calls are unchanged.

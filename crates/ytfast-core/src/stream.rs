@@ -3,11 +3,13 @@
 //!
 //! The download fills a [`SongData`]; the decoder reads it through a
 //! [`SongReader`], which waits when it gets ahead of the download. Once the
-//! whole song has arrived it stays in memory, so pausing for hours or
-//! changing Wi-Fi cannot break it (YouTube's stream addresses expire, but
-//! nothing more needs fetching).
+//! whole song has arrived it stays, so pausing for hours or changing Wi-Fi
+//! cannot break it (YouTube's stream addresses expire, but nothing more
+//! needs fetching). A song stays in memory, or, when it is long (a mix, a
+//! podcast), in a temporary file that is deleted when it is let go.
 
-use std::io::{self, Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -16,9 +18,15 @@ use crate::redact;
 /// Downloads are fetched in pieces this size. YouTube slows down single
 /// requests for whole files; players ask for ranges.
 const PIECE: u64 = 2 * 1024 * 1024;
-/// No song's audio should be anywhere near this; a guard against a runaway
-/// download.
-const MAX_SIZE: u64 = 200 * 1024 * 1024;
+/// Songs larger than this (about 20 minutes at 256 kbps) are kept in a
+/// temporary file rather than in memory: an hour-long mix would otherwise
+/// take over 100 MB, and twice that when made ready ahead.
+const IN_MEMORY: u64 = 40 * 1024 * 1024;
+/// No song's audio should be anywhere near these; guards against a runaway
+/// download. In memory (only when no temporary file could be made), and on
+/// disk (about 18 hours at 256 kbps).
+const MAX_IN_MEMORY: u64 = 200 * 1024 * 1024;
+const MAX_ON_DISK: u64 = 2 * 1024 * 1024 * 1024;
 /// How long a reader waits for bytes that have not arrived before giving
 /// up (the network stalled).
 const READ_WAIT: Duration = Duration::from_secs(20);
@@ -31,29 +39,144 @@ const STALL: Duration = Duration::from_secs(8);
 const RETRIES: u32 = 3;
 const RETRY_PAUSE: Duration = Duration::from_millis(500);
 
-#[derive(Default)]
+/// Where a song's bytes are kept.
+enum Store {
+    Memory(Vec<u8>),
+    /// A temporary file with `len` bytes written, deleted when closed (by
+    /// the system too, should YtFast stop unexpectedly).
+    Disk {
+        file: File,
+        len: u64,
+    },
+}
+
+impl Store {
+    fn len(&self) -> u64 {
+        match self {
+            Self::Memory(bytes) => bytes.len() as u64,
+            Self::Disk { len, .. } => *len,
+        }
+    }
+
+    fn append(&mut self, chunk: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Memory(bytes) => bytes.extend_from_slice(chunk),
+            Self::Disk { file, len } => {
+                file.seek(SeekFrom::Start(*len))?;
+                file.write_all(chunk)?;
+                *len += chunk.len() as u64;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads from `at` into `buf`, as much as is there.
+    fn read_at(&mut self, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+        let count = buf.len().min(self.len().saturating_sub(at) as usize);
+        match self {
+            Self::Memory(bytes) => {
+                let start = at as usize;
+                buf[..count].copy_from_slice(&bytes[start..start + count]);
+                Ok(count)
+            }
+            Self::Disk { file, .. } => {
+                file.seek(SeekFrom::Start(at))?;
+                file.read(&mut buf[..count])
+            }
+        }
+    }
+
+    /// Moves the bytes so far into a temporary file, where the rest will go
+    /// too.
+    fn move_to_disk(&mut self) -> io::Result<()> {
+        let Self::Memory(bytes) = self else {
+            return Ok(());
+        };
+        let mut file = tempfile::tempfile()?;
+        file.write_all(bytes)?;
+        let len = bytes.len() as u64;
+        *self = Self::Disk { file, len };
+        Ok(())
+    }
+}
+
 struct State {
-    bytes: Vec<u8>,
+    store: Store,
     /// The whole size, once known.
     total: Option<u64>,
     done: bool,
     failed: Option<String>,
+    /// Songs larger than this go to disk: [`IN_MEMORY`], smaller in tests.
+    in_memory: u64,
+    /// No temporary file could be made, so the song stays in memory.
+    no_disk: bool,
+}
+
+impl State {
+    fn new(in_memory: u64) -> Self {
+        Self {
+            store: Store::Memory(Vec::new()),
+            total: None,
+            done: false,
+            failed: None,
+            in_memory,
+            no_disk: false,
+        }
+    }
+
+    /// Makes ready for a song of `size` bytes: on disk when it is large.
+    fn make_room(&mut self, size: u64) {
+        if size > self.in_memory {
+            self.spill();
+        }
+        if let Store::Memory(bytes) = &mut self.store
+            && size <= MAX_IN_MEMORY
+        {
+            bytes.reserve_exact((size as usize).saturating_sub(bytes.len()));
+        }
+    }
+
+    /// Moves the song to disk, unless it is there already or no temporary
+    /// file can be made.
+    fn spill(&mut self) {
+        if self.no_disk || matches!(self.store, Store::Disk { .. }) {
+            return;
+        }
+        if let Err(e) = self.store.move_to_disk() {
+            log::warn!("a long song is kept in memory: no temporary file could be made ({e})");
+            self.no_disk = true;
+        }
+    }
+
+    /// The most a song kept this way may take.
+    fn limit(&self) -> u64 {
+        match self.store {
+            Store::Memory(_) => MAX_IN_MEMORY,
+            Store::Disk { .. } => MAX_ON_DISK,
+        }
+    }
 }
 
 /// A song's bytes, filled by a download and read by the player.
-#[derive(Default)]
 pub struct SongData {
     state: Mutex<State>,
     arrived: Condvar,
+}
+
+impl Default for SongData {
+    fn default() -> Self {
+        Self::empty(IN_MEMORY)
+    }
 }
 
 impl std::fmt::Debug for SongData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.lock();
         f.debug_struct("SongData")
-            .field("have", &state.bytes.len())
+            .field("have", &state.store.len())
             .field("total", &state.total)
             .field("done", &state.done)
+            .field("on_disk", &matches!(state.store, Store::Disk { .. }))
             .finish()
     }
 }
@@ -61,15 +184,22 @@ impl std::fmt::Debug for SongData {
 impl SongData {
     /// An empty song, to be filled by [`fetch`].
     pub fn new(total: Option<u64>) -> Arc<Self> {
-        let data = Self::default();
-        {
-            let mut state = data.lock();
-            state.total = total;
-            if let Some(total) = total.filter(|t| *t <= MAX_SIZE) {
-                state.bytes.reserve_exact(total as usize);
-            }
+        Self::with_limit(total, IN_MEMORY)
+    }
+
+    fn with_limit(total: Option<u64>, in_memory: u64) -> Arc<Self> {
+        let data = Self::empty(in_memory);
+        if let Some(total) = total {
+            data.set_total(total);
         }
         Arc::new(data)
+    }
+
+    fn empty(in_memory: u64) -> Self {
+        Self {
+            state: Mutex::new(State::new(in_memory)),
+            arrived: Condvar::new(),
+        }
     }
 
     /// A song that has fully arrived.
@@ -77,10 +207,10 @@ impl SongData {
         let total = bytes.len() as u64;
         Arc::new(Self {
             state: Mutex::new(State {
-                bytes,
+                store: Store::Memory(bytes),
                 total: Some(total),
                 done: true,
-                failed: None,
+                ..State::new(IN_MEMORY)
             }),
             arrived: Condvar::new(),
         })
@@ -90,9 +220,25 @@ impl SongData {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push(&self, chunk: &[u8]) {
-        self.lock().bytes.extend_from_slice(chunk);
+    /// Adds the next bytes of the song. `Err` when they cannot be kept, or
+    /// the song is far larger than any song.
+    fn push(&self, chunk: &[u8]) -> Result<(), String> {
+        let mut state = self.lock();
+        let after = state.store.len() + chunk.len() as u64;
+        if after > state.in_memory {
+            // A song whose size was not said turns out long.
+            state.spill();
+        }
+        if after > state.limit() {
+            return Err("the stream was far larger than any song".into());
+        }
+        state
+            .store
+            .append(chunk)
+            .map_err(|e| format!("the song could not be kept: {e}"))?;
+        drop(state);
         self.arrived.notify_all();
+        Ok(())
     }
 
     /// The whole size, as the server says it (which wins over a size given
@@ -100,25 +246,24 @@ impl SongData {
     fn set_total(&self, total: u64) {
         let mut state = self.lock();
         state.total = Some(total);
-        let more = (total as usize).saturating_sub(state.bytes.len());
-        if total <= MAX_SIZE {
-            state.bytes.reserve_exact(more);
-        }
+        state.make_room(total);
     }
 
     fn finish(&self) {
         let mut state = self.lock();
         state.done = true;
-        let have = state.bytes.len() as u64;
+        let have = state.store.len();
         state.total = Some(have);
-        state.bytes.shrink_to_fit();
+        if let Store::Memory(bytes) = &mut state.store {
+            bytes.shrink_to_fit();
+        }
         drop(state);
         self.arrived.notify_all();
     }
 
     #[cfg(test)]
     pub(crate) fn push_for_test(&self, chunk: &[u8]) {
-        self.push(chunk);
+        self.push(chunk).unwrap();
     }
 
     #[cfg(test)]
@@ -133,7 +278,12 @@ impl SongData {
 
     /// Bytes arrived so far.
     pub fn len(&self) -> usize {
-        self.lock().bytes.len()
+        self.lock().store.len() as usize
+    }
+
+    #[cfg(test)]
+    fn on_disk(&self) -> bool {
+        matches!(self.lock().store, Store::Disk { .. })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -156,7 +306,7 @@ impl SongData {
         let deadline = Instant::now() + timeout;
         let mut state = self.lock();
         loop {
-            if state.bytes.len() >= len || state.done {
+            if state.store.len() >= len as u64 || state.done {
                 return Ok(());
             }
             if let Some(failed) = &state.failed {
@@ -179,9 +329,21 @@ impl SongData {
         self.wait_for(usize::MAX, timeout)
     }
 
-    /// A copy of every byte arrived so far.
+    /// A copy of every byte arrived so far (all in memory, even for a song
+    /// kept on disk). Should the temporary file fail to read, the copy
+    /// stops there.
     pub fn to_vec(&self) -> Vec<u8> {
-        self.lock().bytes.clone()
+        let mut state = self.lock();
+        let mut all = vec![0; state.store.len() as usize];
+        let mut have = 0;
+        while have < all.len() {
+            match state.store.read_at(have as u64, &mut all[have..]) {
+                Ok(read) if read > 0 => have += read,
+                _ => break,
+            }
+        }
+        all.truncate(have);
+        all
     }
 
     /// A reader from the start. `seekable` readers report the whole size,
@@ -211,13 +373,16 @@ impl Read for SongReader {
         let deadline = Instant::now() + READ_WAIT;
         let mut state = self.data.lock();
         loop {
-            let have = state.bytes.len() as u64;
-            if self.position < have {
-                let start = self.position as usize;
-                let count = buf.len().min(have as usize - start);
-                buf[..count].copy_from_slice(&state.bytes[start..start + count]);
-                self.position += count as u64;
-                return Ok(count);
+            if self.position < state.store.len() {
+                let read = state.store.read_at(self.position, buf)?;
+                if read == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "the song's temporary file ended early",
+                    ));
+                }
+                self.position += read as u64;
+                return Ok(read);
             }
             if state.done {
                 return Ok(0);
@@ -246,7 +411,7 @@ impl Seek for SongReader {
     fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
         let total = {
             let state = self.data.lock();
-            state.total.unwrap_or(state.bytes.len() as u64)
+            state.total.unwrap_or(state.store.len())
         };
         let target = match to {
             SeekFrom::Start(at) => Some(at),
@@ -276,7 +441,7 @@ impl symphonia::core::io::MediaSource for SongReader {
             return None;
         }
         let state = self.data.lock();
-        state.total.or(Some(state.bytes.len() as u64))
+        state.total.or(Some(state.store.len()))
     }
 }
 
@@ -461,14 +626,9 @@ async fn fetch_piece(
         let Some(song) = data.upgrade() else {
             return Ok(Piece::Unwanted);
         };
-        song.push(&chunk);
+        song.push(&chunk).map_err(Broke::Refused)?;
         got += chunk.len() as u64;
         *have += chunk.len() as u64;
-        if *have > MAX_SIZE {
-            return Err(Broke::Refused(
-                "the stream was far larger than any song".into(),
-            ));
-        }
     }
     if got == 0 {
         if *have == 0 {
@@ -498,9 +658,9 @@ mod tests {
         let data = SongData::new(Some(6));
         let writer = Arc::clone(&data);
         let feeder = std::thread::spawn(move || {
-            writer.push(b"abc");
+            writer.push_for_test(b"abc");
             std::thread::sleep(Duration::from_millis(50));
-            writer.push(b"def");
+            writer.push_for_test(b"def");
             writer.finish();
         });
         let mut all = Vec::new();
@@ -513,7 +673,7 @@ mod tests {
     #[test]
     fn a_failed_download_stops_the_reader() {
         let data = SongData::new(None);
-        data.push(b"ab");
+        data.push_for_test(b"ab");
         data.fail("gone".into());
         let mut reader = data.reader(false);
         let mut buf = [0u8; 8];
@@ -535,10 +695,63 @@ mod tests {
         assert_eq!(data.reader(false).byte_len(), None);
     }
 
+    /// Everything a reader gets, `piece` bytes at a time.
+    fn read_all(mut reader: SongReader, piece: usize) -> Vec<u8> {
+        let mut all = Vec::new();
+        let mut buf = vec![0u8; piece];
+        loop {
+            match reader.read(&mut buf).unwrap() {
+                0 => return all,
+                read => all.extend_from_slice(&buf[..read]),
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_song_is_kept_on_disk() {
+        let body: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        // Its size said beforehand: on disk from the start.
+        let data = SongData::with_limit(Some(body.len() as u64), 1000);
+        assert!(data.on_disk());
+        for part in body.chunks(777) {
+            data.push_for_test(part);
+        }
+        assert_eq!(data.len(), body.len());
+        // Read while still arriving, then whole.
+        let early = data.reader(false);
+        data.finish_for_test();
+        assert!(read_all(early, 100) == body);
+        assert!(data.to_vec() == body);
+        let mut reader = data.reader(true);
+        reader.seek(SeekFrom::Start(9_000)).unwrap();
+        assert!(read_all(reader, 333) == body[9_000..]);
+    }
+
+    #[test]
+    fn a_song_of_unsaid_size_moves_to_disk_when_long() {
+        let body: Vec<u8> = (0..5_000u32).map(|i| (i % 13) as u8).collect();
+        let data = SongData::with_limit(None, 2_000);
+        data.push_for_test(&body[..1_500]);
+        assert!(!data.on_disk());
+        // Partly read from memory, then the rest from disk.
+        let mut reader = data.reader(false);
+        let mut first = [0u8; 1_000];
+        assert_eq!(reader.read(&mut first).unwrap(), 1_000);
+        for part in body[1_500..].chunks(400) {
+            data.push_for_test(part);
+        }
+        assert!(data.on_disk());
+        data.finish_for_test();
+        let mut all = first.to_vec();
+        all.extend(read_all(reader, 64));
+        assert!(all == body);
+        assert!(data.to_vec() == body);
+    }
+
     #[test]
     fn waiting_for_part_of_a_song() {
         let data = SongData::new(Some(10));
-        data.push(&[0; 4]);
+        data.push_for_test(&[0; 4]);
         assert!(data.wait_for(4, Duration::from_millis(10)).is_ok());
         assert!(data.wait_for(5, Duration::from_millis(10)).is_err());
         data.finish();

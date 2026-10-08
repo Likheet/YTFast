@@ -149,6 +149,8 @@ mod tests {
 <script>ytcfg.set({"INNERTUBE_API_KEY":"key-123","INNERTUBE_CLIENT_VERSION":"1.20261001.01.00",
 "LOGGED_IN":true,"SESSION_INDEX":"1","DATASYNC_ID":"111||222","VISITOR_DATA":"visitor",
 "TRICKY":"a } brace and a \" quote {",
+"PLAYER_JS_URL":"/s/player/6740c111/player_ias.vflset/en_US/base.js",
+"WEB_PLAYER_CONTEXT_CONFIGS":{"WEB_PLAYER_CONTEXT_CONFIG_ID_MUSIC_WATCH":{"jsUrl":"/s/player/00000000/player_ias.vflset/en_US/base.js"}},
 "INNERTUBE_CONTEXT":{"client":{"clientName":"WEB_REMIX","clientVersion":"1.20261001.01.00","hl":"en"},"user":{"lockedSafetyMode":false}}});
 ytcfg.set("NOT_AN_OBJECT", 1);</script></html>"#;
 
@@ -164,6 +166,38 @@ ytcfg.set("NOT_AN_OBJECT", 1);</script></html>"#;
         assert_eq!(cfg.user_session_id.as_deref(), Some("222"));
         let context = cfg.innertube_context.unwrap();
         assert_eq!(context["client"]["clientName"], "WEB_REMIX");
+        // Where the player code is: the page's own key wins.
+        let player = cfg.player_js_url.as_deref();
+        assert_eq!(
+            player,
+            Some("/s/player/6740c111/player_ias.vflset/en_US/base.js")
+        );
+        assert_eq!(
+            crate::direct::player_id(player.unwrap()).as_deref(),
+            Some("6740c111")
+        );
+    }
+
+    #[test]
+    fn player_code_from_the_player_settings() {
+        // Without `PLAYER_JS_URL`, the player's own settings say where
+        // its code is, in a `ytcfg.set` of their own.
+        let page = r#"<script>ytcfg.set({"INNERTUBE_API_KEY":"key-123"});
+ytcfg.set({"WEB_PLAYER_CONTEXT_CONFIGS":{"WEB_PLAYER_CONTEXT_CONFIG_ID_MUSIC_WATCH":{
+"rootElementId":"movie_player","jsUrl":"/s/player/9a1b2c3d/player_ias.vflset/en_US/base.js",
+"cssUrl":"/s/player/9a1b2c3d/www-player.css"}}});</script>"#;
+        let cfg = WebConfig::from_html(page);
+        assert_eq!(cfg.api_key.as_deref(), Some("key-123"));
+        let player = cfg.player_js_url.expect("where the player is");
+        assert_eq!(
+            crate::direct::player_id(&player).as_deref(),
+            Some("9a1b2c3d")
+        );
+        // Neither: nothing, and the fast way falls back to yt-dlp.
+        assert_eq!(
+            WebConfig::from_html(r#"ytcfg.set({"INNERTUBE_API_KEY":"key-123"});"#).player_js_url,
+            None
+        );
     }
 
     #[test]

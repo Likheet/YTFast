@@ -89,7 +89,14 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 
 /// Whether `route` is the page showing (not hidden by the player page).
 fn showing(app: &App, route: &Route) -> bool {
-    !app.now_playing && app.route == *route
+    // Library stays lit on all its tabs, as on YouTube Music.
+    let library = |r: &Route| {
+        matches!(
+            r,
+            Route::Library | Route::LibrarySongs | Route::LibraryAlbums | Route::LibraryArtists
+        )
+    };
+    !app.now_playing && (app.route == *route || (*route == Route::Library && library(&app.route)))
 }
 
 /// Home, Explore, Library: an icon and a name, 48 high.

@@ -35,8 +35,10 @@ pub struct Images {
     bytes: usize,
 }
 
-/// The most memory covers may take. A full-size cover is about 0.5 MB.
-const BUDGET: usize = 64 * 1024 * 1024;
+/// The most memory covers may take (on the graphics card, and on a Mac in
+/// the app's own memory). A full-size cover (544 by 544) is about 1.2 MB;
+/// the covers on screen at once take about 15 to 25 MB on a 2x screen.
+const BUDGET: usize = 32 * 1024 * 1024;
 /// The most addresses remembered (failed and loading ones included).
 const MAX_ENTRIES: usize = 2000;
 
@@ -105,6 +107,14 @@ impl Images {
         match &self.cache.get(url)?.slot {
             Slot::Ready(_, summary) => Some(summary.clone()),
             _ => None,
+        }
+    }
+
+    /// A picture the backend skipped, as it had scrolled past: asked for
+    /// again when it next shows.
+    pub fn skipped(&mut self, url: &str) {
+        if let Some(gone) = self.cache.remove(url) {
+            self.bytes -= gone.bytes;
         }
     }
 

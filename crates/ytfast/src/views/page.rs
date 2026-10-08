@@ -99,29 +99,67 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 }
             });
         }
-        Some(Loadable::Ready(page)) => match &page.header {
-            // An album or a playlist, in a window wide enough for both
-            // columns.
-            Some(header) if in_two_columns(header, area.width()) => {
-                two_columns(app, ui, &route, page, header);
+        Some(Loadable::Ready(page)) => {
+            match &page.header {
+                // An album or a playlist, in a window wide enough for both
+                // columns.
+                Some(header) if in_two_columns(header, area.width()) => {
+                    two_columns(app, ui, &route, page, header);
+                }
+                _ => {
+                    from_top(app, egui::ScrollArea::vertical())
+                        .id_salt(("page", &route))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            scroll_by_keys(ui);
+                            one_column(app, ui, &route, page, margin);
+                        });
+                }
             }
-            _ => {
-                egui::ScrollArea::vertical()
-                    .id_salt(("page", &route))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| one_column(app, ui, &route, page, margin));
-            }
-        },
+            app.fresh_page.set(false);
+        }
+    }
+}
+
+/// A page opened anew starts at its top (Back and Forward return to where
+/// it was left).
+fn from_top(app: &App, area: egui::ScrollArea) -> egui::ScrollArea {
+    if app.fresh_page.get() {
+        area.vertical_scroll_offset(0.0)
+    } else {
+        area
+    }
+}
+
+/// Page Up and Page Down, Home and End scroll the page, as in a browser.
+fn scroll_by_keys(ui: &egui::Ui) {
+    // Home and End move in a text box instead.
+    if ui.ctx().text_edit_focused() {
+        return;
+    }
+    use egui::{Key, Modifiers};
+    let screen = ui.clip_rect().height() * 0.9;
+    // Further than any page reaches: the page stops at its end.
+    let all = 1.0e7;
+    let delta = ui.input_mut(|i| {
+        [
+            (Key::PageDown, -screen),
+            (Key::PageUp, screen),
+            (Key::End, -all),
+            (Key::Home, all),
+        ]
+        .into_iter()
+        .find(|(key, _)| i.consume_key(Modifiers::NONE, *key))
+        .map(|(_, delta)| delta)
+    });
+    if let Some(delta) = delta {
+        ui.scroll_with_delta(vec2(0.0, delta));
     }
 }
 
 /// The playlist songs on this page come from, for more songs later.
 fn source(route: &Route) -> Option<String> {
-    match route {
-        Route::Liked => Some("LM".into()),
-        Route::Browse { id, .. } => id.strip_prefix("VL").map(str::to_string),
-        _ => None,
-    }
+    route.playlist()
 }
 
 /// An album's page, whose songs are numbered. (The demo's albums have IDs
@@ -307,7 +345,7 @@ fn two_columns(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header:
             .max_rect(first)
             .layout(Layout::top_down(Align::Center)),
     );
-    egui::ScrollArea::vertical()
+    from_top(app, egui::ScrollArea::vertical())
         .id_salt(("page-header", route))
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -324,10 +362,11 @@ fn two_columns(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header:
             .max_rect(second)
             .layout(Layout::top_down(Align::Min)),
     );
-    egui::ScrollArea::vertical()
+    from_top(app, egui::ScrollArea::vertical())
         .id_salt(("page", route))
         .auto_shrink([false, false])
         .show(&mut second_ui, |ui| {
+            scroll_by_keys(ui);
             ui.set_max_width(second_width);
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.add_space(64.0);
@@ -463,7 +502,10 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
                 });
             }
 
-            ui.add_enabled_ui(count > 0, |ui| {
+            // A page with no songs listed (an episode's) plays what its
+            // header's own button plays.
+            let header_play = header.play().cloned().filter(|_| count == 0);
+            ui.add_enabled_ui(count > 0 || header_play.is_some(), |ui| {
                 if theme::round_button(
                     ui,
                     Icon::Play,
@@ -475,10 +517,13 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
                 )
                 .clicked()
                 {
-                    app.act(Action::PlayTracks {
-                        tracks: page.tracks(),
-                        start: 0,
-                        source: source(route),
+                    app.act(match header_play {
+                        Some(target) => Action::Play(target, None),
+                        None => Action::PlayTracks {
+                            tracks: page.tracks(),
+                            start: 0,
+                            source: source(route),
+                        },
                     });
                 }
             });
@@ -639,22 +684,37 @@ fn artist_header(
             .layout(Layout::left_to_right(Align::Center)),
     );
     row.spacing_mut().item_spacing.x = 8.0;
-    if count > 1 && theme::pill(&mut row, Some(Icon::Shuffle), "Shuffle", Pill::Filled).clicked() {
-        app.act(Action::Shuffle {
-            tracks: page.tracks(),
-            source: source(route),
-        });
-    }
-    // An artist's radio: their best-known song, then songs like it.
-    if count > 0
-        && theme::pill(&mut row, Some(Icon::Radio), "Radio", Pill::Filled).clicked()
-        && let Some(first) = page.tracks().into_iter().next()
+    // YouTube's own Shuffle (all the artist's songs) and Mix, as its
+    // buttons give them; else made from the top songs shown.
+    let shuffle = header.shuffle().cloned();
+    if (shuffle.is_some() || count > 1)
+        && theme::pill(&mut row, Some(Icon::Shuffle), "Shuffle", Pill::Filled).clicked()
     {
-        let radio = Target::Watch {
-            video_id: Some(first.video_id.clone()),
-            playlist_id: None,
-        };
-        app.act(Action::Play(radio, Some(first)));
+        match shuffle {
+            Some(target) => app.act(Action::Play(target, None)),
+            None => app.act(Action::Shuffle {
+                tracks: page.tracks(),
+                source: source(route),
+            }),
+        }
+    }
+    let mix = header.radio().cloned();
+    if (mix.is_some() || count > 0)
+        && theme::pill(&mut row, Some(Icon::Radio), "Radio", Pill::Filled).clicked()
+    {
+        match mix {
+            Some(target) => app.act(Action::Play(target, None)),
+            // Their best-known song, then songs like it.
+            None => {
+                if let Some(first) = page.tracks().into_iter().find(|t| t.playable) {
+                    let radio = Target::Watch {
+                        video_id: Some(first.video_id.clone()),
+                        playlist_id: None,
+                    };
+                    app.act(Action::Play(radio, Some(first)));
+                }
+            }
+        }
     }
     if let Some(channel) = &header.channel_id {
         let subscribed = app
@@ -835,13 +895,14 @@ fn section_block(
     let style = look.rows;
     // An album's own songs are numbered; shelves under it are not.
     let numbered = is_album(route) && section.title.is_empty();
-    for (start, track) in tracks.into_iter().enumerate() {
+    widgets::rows(ui, style, tracks.len(), |ui, start| {
+        let track = tracks[start];
         let is_playing = playing == Some(track.video_id.as_str());
         let number = numbered.then_some(start + 1);
         widgets::track_row(app, ui, style, track, number, is_playing, || {
             play_from(start)
         });
-    }
+    });
 }
 
 /// Search's best match, as YouTube Music's "Top result" card: a large
@@ -963,7 +1024,7 @@ fn top_result(app: &App, ui: &mut egui::Ui, route: &Route, item: &Item) {
     }
     match item {
         Item::Track(track) => {
-            response.context_menu(|ui| widgets::song_menu(app, ui, track, None));
+            response.context_menu(|ui| widgets::song_menu(app, ui, track, widgets::Place::Page));
         }
         Item::Card(card) => {
             response.context_menu(|ui| widgets::card_menu(app, ui, card));

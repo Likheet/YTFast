@@ -1,0 +1,13 @@
+# Proposes new versions of the actions CI uses (they are pinned to exact
+# commits in .github/workflows/ci.yml), at most once a month and all in one
+# pull request. CI runs on that pull request before anything is merged.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"

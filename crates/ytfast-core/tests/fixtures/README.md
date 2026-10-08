@@ -1,6 +1,7 @@
 # Test fixtures
 
-Replies from YouTube Music's internal API, used to test `src/read.rs`.
+Replies from YouTube Music's internal API, used to test the readers in
+`src/read/`.
 
 | File | Source |
 |---|---|

@@ -5,7 +5,8 @@
 //! for the pieces they need (a song row, a play button, a flag) wherever
 //! they are, instead of following one exact path, and return `None` or an
 //! empty list rather than failing. All reading of YouTube's JSON lives in
-//! this module, so a YouTube change means fixing one file.
+//! this module, so a YouTube change means fixing this one folder
+//! (`src/read/`) and nothing outside it.
 
 use serde_json::Value;
 
@@ -17,7 +18,10 @@ mod song;
 
 pub use edit::{created_playlist_id, edit_status};
 pub use formats::{StreamFormat, best_stream, stream_formats};
-pub use page::{Card, Header, Item, Page, PageKind, Section, Shape, Target, Thumb, page, up_next};
+pub use page::{
+    Card, Header, HeaderButtons, Item, Page, PageKind, Section, Shape, Target, Thumb, more_items,
+    page, queue_continuation, up_next,
+};
 pub use search::search_suggestions;
 pub use song::{Rating, SongDetails, lyrics, song_details};
 
@@ -105,8 +109,8 @@ impl TrackKind {
     }
 }
 
-/// A playable row from a list (a playlist, Liked songs, History, search).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A song's row from a list (a playlist, Liked songs, History, search).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Track {
     pub video_id: String,
     /// This row's own ID within a playlist. Two copies of a song in one
@@ -122,9 +126,33 @@ pub struct Track {
     pub artist_id: Option<String>,
     /// The album's page (`MPREb_...`), for "Go to album".
     pub album_id: Option<String>,
+    /// False for a row YouTube shows greyed out: a song it no longer
+    /// offers (taken down, or not offered in this country). The row stays
+    /// on its page, and can still be taken out of a playlist, but it does
+    /// not play.
+    pub playable: bool,
 }
 
-/// Every playable row in a reply, in YouTube's order. Rows without a video
+impl Default for Track {
+    /// An empty row that can be played.
+    fn default() -> Self {
+        Self {
+            video_id: String::new(),
+            set_video_id: None,
+            title: String::new(),
+            artists: String::new(),
+            album: None,
+            duration_seconds: None,
+            kind: TrackKind::default(),
+            thumbnail: None,
+            artist_id: None,
+            album_id: None,
+            playable: true,
+        }
+    }
+}
+
+/// Every song's row in a reply, in YouTube's order. Rows without a video
 /// (an artist or a playlist in search results) are skipped.
 pub fn tracks(reply: &Value) -> Vec<Track> {
     let mut rows = Vec::new();
@@ -132,7 +160,12 @@ pub fn tracks(reply: &Value) -> Vec<Track> {
     rows.into_iter().filter_map(track).collect()
 }
 
+/// How YouTube marks a row it no longer offers (ytmusicapi reads it as
+/// `isAvailable`).
+const GREYED_OUT: &str = "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT";
+
 pub(crate) fn track(row: &Value) -> Option<Track> {
+    let (removes_video, removes_row) = removal(row);
     let video_id = row
         .pointer("/playlistItemData/videoId")
         .and_then(Value::as_str)
@@ -143,20 +176,30 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
             if row.pointer("/navigationEndpoint/browseEndpoint").is_some() {
                 return None;
             }
-            // The play button or the title; never the menu, whose radio
-            // and "play next" entries name other things.
-            ["overlay", "flexColumns"].iter().find_map(|part| {
-                row.get(*part)
-                    .and_then(|n| find_key(n, "watchEndpoint"))
-                    .and_then(|w| w.get("videoId"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
+            // The play button or the title; never the menu's radio and
+            // "play next" entries, which name other things.
+            ["overlay", "flexColumns"]
+                .iter()
+                .find_map(|part| {
+                    row.get(*part)
+                        .and_then(|n| find_key(n, "watchEndpoint"))
+                        .and_then(|w| w.get("videoId"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                // A greyed-out row has no play button; its menu's "Remove
+                // from playlist" still names its song.
+                .or(removes_video)
         })?;
     let set_video_id = row
         .pointer("/playlistItemData/playlistSetVideoId")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .or(removes_row);
+    let playable = row
+        .get("musicItemRendererDisplayPolicy")
+        .and_then(Value::as_str)
+        != Some(GREYED_OUT);
 
     let columns: Vec<String> = row
         .get("flexColumns")
@@ -197,10 +240,11 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         }
     }
     // On an album's page the third column is the play count; on an
-    // artist's page the album is the fourth column.
+    // artist's page the album is the fourth column. An album named with
+    // four digits ("1989") is still found, by its link.
     let album = columns
         .get(2)
-        .filter(|c| !c.is_empty() && parse_duration(c).is_none() && !is_count_or_year(c))
+        .filter(|c| !c.is_empty() && parse_duration(c).is_none() && !is_count(c) && !is_year(c))
         .cloned()
         .or(byline.album)
         .or(links.album);
@@ -220,7 +264,27 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         thumbnail: row.get("thumbnail").and_then(Thumb::best),
         artist_id: links.artist_id,
         album_id: links.album_id,
+        playable,
     })
+}
+
+/// The song and the row's own ID from a playlist row's "Remove from
+/// playlist" entry, as ytmusicapi reads them: a greyed-out row may name
+/// them only there.
+fn removal(row: &Value) -> (Option<String>, Option<String>) {
+    let mut edits = Vec::new();
+    if let Some(menu) = row.get("menu") {
+        collect(menu, "playlistEditEndpoint", &mut edits);
+    }
+    let field =
+        |action: &Value, key: &str| action.get(key).and_then(Value::as_str).map(str::to_string);
+    edits
+        .iter()
+        .filter_map(|edit| edit.get("actions").and_then(Value::as_array))
+        .flatten()
+        .find(|action| action.get("action").and_then(Value::as_str) == Some("ACTION_REMOVE_VIDEO"))
+        .map(|action| (field(action, "removedVideoId"), field(action, "setVideoId")))
+        .unwrap_or_default()
 }
 
 /// The pages a song's text links to, for "Go to artist" and "Go to
@@ -335,9 +399,16 @@ impl Byline {
         for part in parts {
             if let Some(seconds) = parse_duration(part) {
                 byline.duration_seconds = Some(seconds);
-            } else if !is_count_or_year(part) {
+            } else if !is_count(part) {
                 rest.push(part);
             }
+        }
+        // The year comes last ("Artist • Album • 2019"). Four digits first
+        // are the artist's name (the band "1349"); an album named so
+        // ("1989") is kept when a year follows it, and is otherwise found
+        // by its link.
+        if rest.len() > 1 && rest.last().is_some_and(|part| is_year(part)) {
+            rest.pop();
         }
         byline.artists = rest.first().map(|s| s.to_string()).unwrap_or_default();
         byline.album = rest.get(1).map(|s| s.to_string());
@@ -345,14 +416,19 @@ impl Byline {
     }
 }
 
-/// "1.2M plays", "35K views", "2019": not an artist or an album.
-fn is_count_or_year(part: &str) -> bool {
+/// "1.2M plays", "35K views": not an artist or an album. The words are
+/// English: requests ask YouTube for English (`Session::context`).
+fn is_count(part: &str) -> bool {
     let lower = part.to_ascii_lowercase();
-    let year = part.len() == 4 && part.bytes().all(|b| b.is_ascii_digit());
-    year || lower.ends_with(" plays")
+    lower.ends_with(" plays")
         || lower.ends_with(" views")
         || lower.ends_with(" play")
         || lower.ends_with(" view")
+}
+
+/// "2019": four digits, which may be a year.
+fn is_year(part: &str) -> bool {
+    part.len() == 4 && part.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Where the next rows of a long list (a playlist, Liked Music) come from.
@@ -367,17 +443,33 @@ pub enum Continuation {
 /// Where the next rows of a list come from, when there are more. Works on
 /// a page's reply and on a reply with more rows.
 pub fn track_continuation(reply: &Value) -> Option<Continuation> {
-    fn search(node: &Value) -> Option<Continuation> {
+    list_continuation(reply, &["musicResponsiveListItemRenderer"])
+}
+
+/// Where the next items of a list of songs or tiles come from (the
+/// library's playlists, albums and artists), when there are more. Works
+/// on a page's reply and on a reply with more items ([`more_items`]).
+pub fn item_continuation(reply: &Value) -> Option<Continuation> {
+    list_continuation(
+        reply,
+        &["musicResponsiveListItemRenderer", "musicTwoRowItemRenderer"],
+    )
+}
+
+/// The continuation of the first list in `reply` whose rows include one of
+/// `kinds`.
+fn list_continuation(reply: &Value, kinds: &[&str]) -> Option<Continuation> {
+    fn search(node: &Value, kinds: &[&str]) -> Option<Continuation> {
         match node {
             Value::Object(map) => {
-                // Rows are in `contents`, or in `continuationItems` in a
-                // reply with more rows.
-                let rows = ["contents", "continuationItems"]
+                // Rows are in `contents` (`items` in a grid), or in
+                // `continuationItems` in a newer reply with more rows.
+                let rows = ["contents", "items", "continuationItems"]
                     .iter()
                     .find_map(|key| map.get(*key).and_then(Value::as_array))
                     .filter(|rows| {
                         rows.iter()
-                            .any(|r| r.get("musicResponsiveListItemRenderer").is_some())
+                            .any(|r| kinds.iter().any(|kind| r.get(*kind).is_some()))
                     });
                 if let Some(rows) = rows {
                     // Older replies: a `continuations` list next to the rows.
@@ -397,13 +489,13 @@ pub fn track_continuation(reply: &Value) -> Option<Continuation> {
                         return Some(next);
                     }
                 }
-                map.values().find_map(search)
+                map.values().find_map(|v| search(v, kinds))
             }
-            Value::Array(items) => items.iter().find_map(search),
+            Value::Array(items) => items.iter().find_map(|v| search(v, kinds)),
             _ => None,
         }
     }
-    search(reply)
+    search(reply, kinds)
 }
 
 /// What the `player` endpoint says about one song.
@@ -554,6 +646,7 @@ mod tests {
         assert_eq!(rows[0].album.as_deref(), Some("The Food Villain"));
         assert_eq!(rows[0].duration_seconds, Some(83));
         assert_eq!(rows[0].kind, TrackKind::Song);
+        assert!(rows.iter().all(|r| r.playable));
         // An older reply: the token goes in the address.
         assert!(matches!(
             track_continuation(&reply),
@@ -591,6 +684,97 @@ mod tests {
             ]}}]
         });
         assert_eq!(track_continuation(&last), None);
+    }
+
+    #[test]
+    fn greyed_out_rows_stay_but_do_not_play() {
+        // Rows of a playlist in the layout ytmusicapi reads: one as usual,
+        // one greyed out (a song no longer offered), and one greyed out
+        // that names its song only in its "Remove from playlist" entry.
+        let flex = |words: &str| serde_json::json!({"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": words}]}}});
+        let reply = serde_json::json!({"musicPlaylistShelfRenderer": {"contents": [
+            {"musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": "playable001", "playlistSetVideoId": "ROW1"},
+                "flexColumns": [flex("Still here"), flex("A singer")]
+            }},
+            {"musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": "greyedOut01", "playlistSetVideoId": "ROW2"},
+                "flexColumns": [flex("Gone"), flex("A singer")],
+                "musicItemRendererDisplayPolicy": "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT"
+            }},
+            {"musicResponsiveListItemRenderer": {
+                "flexColumns": [flex("Also gone"), flex("Another singer")],
+                "menu": {"menuRenderer": {"items": [
+                    {"menuNavigationItemRenderer": {
+                        "text": {"runs": [{"text": "Start radio"}]},
+                        "navigationEndpoint": {"watchEndpoint": {"videoId": "otherSong01", "playlistId": "RDAMVMotherSong01"}}
+                    }},
+                    {"menuServiceItemRenderer": {
+                        "text": {"runs": [{"text": "Remove from playlist"}]},
+                        "serviceEndpoint": {"playlistEditEndpoint": {
+                            "playlistId": "PLmine",
+                            "actions": [{"setVideoId": "ROW3", "action": "ACTION_REMOVE_VIDEO", "removedVideoId": "greyedOut02"}]
+                        }}
+                    }}
+                ]}},
+                "musicItemRendererDisplayPolicy": "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT"
+            }}
+        ]}});
+        let rows = tracks(&reply);
+        let ids: Vec<(&str, Option<&str>, bool)> = rows
+            .iter()
+            .map(|r| (r.video_id.as_str(), r.set_video_id.as_deref(), r.playable))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("playable001", Some("ROW1"), true),
+                ("greyedOut01", Some("ROW2"), false),
+                ("greyedOut02", Some("ROW3"), false),
+            ]
+        );
+        // The page keeps every row; what to play is the app's choice.
+        assert_eq!(page(&reply).tracks().len(), 3);
+        // A row made without a reply plays.
+        assert!(Track::default().playable);
+    }
+
+    #[test]
+    fn library_grids_say_where_more_comes_from() {
+        // The library's playlists in the layout ytmusicapi reads: a grid,
+        // and an older reply's token next to its items.
+        let tile = |name: &str, id: &str| {
+            serde_json::json!({"musicTwoRowItemRenderer": {
+                "title": {"runs": [{"text": name}]},
+                "navigationEndpoint": {"browseEndpoint": {"browseId": id}}
+            }})
+        };
+        let grid = serde_json::json!({"contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {
+            "contents": [{"gridRenderer": {
+                "items": [tile("Liked Music", "VLLM"), tile("Road trip", "VLPLroad")],
+                "continuations": [{"nextContinuationData": {"continuation": "GRID2"}}]
+            }}],
+            "continuations": [{"nextContinuationData": {"continuation": "MORE_SHELVES"}}]
+        }}}}]}}});
+        assert_eq!(
+            item_continuation(&grid),
+            Some(Continuation::Address("GRID2".into()))
+        );
+        // The songs' reader does not take a grid of tiles for a list.
+        assert_eq!(track_continuation(&grid), None);
+        // A newer reply with more: the items, then the token.
+        let newer = serde_json::json!({"onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+            tile("Gym", "VLPLgym"),
+            {"continuationItemRenderer": {"continuationEndpoint": {"continuationCommand": {"token": "GRID3"}}}}
+        ]}}]});
+        assert_eq!(
+            item_continuation(&newer),
+            Some(Continuation::Body("GRID3".into()))
+        );
+        // The last items: nothing after them.
+        let last = serde_json::json!({"continuationContents": {"gridContinuation": {"items": [tile("Sleep", "VLPLsleep")]}}});
+        assert_eq!(item_continuation(&last), None);
+        assert_eq!(item_continuation(&Value::Null), None);
     }
 
     #[test]
@@ -802,6 +986,45 @@ mod tests {
         assert_eq!(b.album, None);
         let b = Byline::parse("Rick Astley • Whenever You Need Somebody • 1987");
         assert_eq!(b.album.as_deref(), Some("Whenever You Need Somebody"));
+        assert_eq!(Byline::parse("Rick Astley • 1987").album, None);
+        assert_eq!(
+            Byline::parse("Daft Punk • Discovery • 2001 • 1.2M plays").album,
+            Some("Discovery".into())
+        );
+    }
+
+    #[test]
+    fn names_of_four_digits_are_not_years() {
+        // The band "1349": first, so the artist, not a year.
+        let b = Byline::parse("Song • 1349 • 3:45");
+        assert_eq!(b.artists, "1349");
+        let b = Byline::parse("1349 • Demonoir • 2010");
+        assert_eq!(b.artists, "1349");
+        assert_eq!(b.album.as_deref(), Some("Demonoir"));
+        // An album "1989" with its year after it.
+        let b = Byline::parse("Taylor Swift • 1989 • 2014");
+        assert_eq!(b.artists, "Taylor Swift");
+        assert_eq!(b.album.as_deref(), Some("1989"));
+        // Last, it may be a year; the row's link to it still names it.
+        let reply = serde_json::json!({"musicShelfRenderer": {"contents": [
+            {"musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": "abcdefghijk"},
+                "flexColumns": [
+                    {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Style"}]}}},
+                    {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [
+                        {"text": "Song"}, {"text": " • "},
+                        {"text": "Taylor Swift", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCtaylor01"}}},
+                        {"text": " • "},
+                        {"text": "1989", "navigationEndpoint": {"browseEndpoint": {"browseId": "MPREb_1989"}}},
+                        {"text": " • "}, {"text": "3:51"}
+                    ]}}}
+                ]
+            }}
+        ]}});
+        let rows = tracks(&reply);
+        assert_eq!(rows[0].artists, "Taylor Swift");
+        assert_eq!(rows[0].album.as_deref(), Some("1989"));
+        assert_eq!(rows[0].duration_seconds, Some(231));
     }
 
     #[test]

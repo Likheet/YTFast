@@ -37,7 +37,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 app,
                 ui,
                 "Even out loudness",
-                "Turn loud songs down to the level YouTube Music plays them at.",
+                "Turn loud songs down to the level YouTube Music plays them at, from the next song.",
                 app.settings.even_loudness,
                 Setting::EvenLoudness,
             );
@@ -55,7 +55,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 
             ui.add_space(18.0);
             heading(ui, "About");
-            text(ui, &format!("YTFast {}", env!("CARGO_PKG_VERSION")));
+            text(ui, crate::app::VERSION);
             text(
                 ui,
                 "Problems are noted in ytfast.log, in YTFast's cache folder. It has no passwords or cookies in it, so it is safe to send.",

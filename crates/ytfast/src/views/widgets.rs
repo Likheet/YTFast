@@ -10,16 +10,20 @@ use crate::theme::{self, Icon, PALETTE};
 /// Draws a cover in `rect`: the picture when it has arrived, a quiet
 /// placeholder until then. Round for artists.
 pub fn cover(app: &App, ui: &egui::Ui, rect: Rect, thumb: Option<&Thumb>, round: bool) {
-    let radius = if round {
+    cover_with(app, ui, rect, thumb, cover_radius(rect.width(), round));
+}
+
+/// How round a cover's corners are, by its width.
+fn cover_radius(width: f32, round: bool) -> CornerRadius {
+    if round {
         CornerRadius::same(255)
-    } else if rect.width() > 200.0 {
+    } else if width > 200.0 {
         CornerRadius::same(12)
-    } else if rect.width() > 64.0 {
+    } else if width > 64.0 {
         CornerRadius::same(6)
     } else {
         CornerRadius::same(4)
-    };
-    cover_with(app, ui, rect, thumb, radius);
+    }
 }
 
 /// [`cover`], with the corners' rounding chosen.
@@ -145,6 +149,36 @@ impl Row {
 /// How long the pointer rests on a song before it is found ahead of time.
 const WARM_AFTER: f32 = 0.35;
 
+/// Draws `count` song rows in `style` from the cursor down, but only those
+/// on screen (and one more at each end, so the keyboard can move on to
+/// them); the rest is empty space of the same height. A list of thousands
+/// of songs then costs no more each frame than a short one.
+///
+/// Each row must add exactly one widget of its own (`track_row_in` does):
+/// the rows not drawn are counted as one each, so every row keeps the same
+/// ID (its open menu, its keyboard focus) wherever the list is scrolled.
+pub fn rows(
+    ui: &mut egui::Ui,
+    style: Row,
+    count: usize,
+    mut row: impl FnMut(&mut egui::Ui, usize),
+) {
+    let step = style.height + style.gap + ui.spacing().item_spacing.y;
+    let top = ui.cursor().top();
+    let clip = ui.clip_rect();
+    let index = |y: f32| (((y - top) / step).max(0.0) as usize).min(count);
+    let first = index(clip.top()).saturating_sub(1);
+    let last = (index(clip.bottom()) + 2).min(count);
+    let (first, last) = (first.min(last), last);
+    ui.add_space(first as f32 * step);
+    ui.skip_ahead_auto_ids(first);
+    for index in first..last {
+        row(ui, index);
+    }
+    ui.add_space((count - last) as f32 * step);
+    ui.skip_ahead_auto_ids(count - last);
+}
+
 /// One song in a list. `number` (on an album's page) is shown instead of
 /// the cover; `playing` marks the song playing now.
 pub fn track_row(
@@ -156,10 +190,31 @@ pub fn track_row(
     playing: bool,
     on_click: impl FnOnce() -> Action,
 ) {
-    track_row_in(app, ui, style, track, number, playing, None, on_click);
+    track_row_in(
+        app,
+        ui,
+        style,
+        track,
+        number,
+        playing,
+        Place::Page,
+        on_click,
+    );
 }
 
-/// A song row in Up next (`queued` is its entry), whose menu edits the
+/// Where a song's menu was opened, which decides what it offers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// A row on the open page: on the account's own playlist, the song can
+    /// be taken out of it.
+    Page,
+    /// A song in Up next (its entry), whose menu edits the queue.
+    Queue(u64),
+    /// The song playing, in the player bar or at the top of Up next.
+    Playing,
+}
+
+/// A song row in Up next (`place` is its entry), whose menu edits the
 /// queue.
 #[allow(clippy::too_many_arguments)]
 pub fn track_row_in(
@@ -169,25 +224,47 @@ pub fn track_row_in(
     track: &Track,
     number: Option<usize>,
     playing: bool,
-    queued: Option<u64>,
+    place: Place,
     on_click: impl FnOnce() -> Action,
 ) {
+    let queued = matches!(place, Place::Queue(_));
+    // The playing song's menu does not edit the queue.
+    let place = if playing && queued {
+        Place::Playing
+    } else {
+        place
+    };
     let width = ui.available_width();
     let (slot, placed) =
         ui.allocate_exact_size(vec2(width, style.height + style.gap), Sense::hover());
     let rect = Rect::from_min_size(slot.min, vec2(width, style.height));
-    if !ui.is_rect_visible(rect) {
+    // A row just out of sight can still take the keyboard's focus, and is
+    // then scrolled into view.
+    let near = rect.expand2(vec2(0.0, style.height + style.gap));
+    if !ui.is_rect_visible(near) {
         return;
     }
     let id = placed.id.with("row");
     let response = ui.interact(rect, id, Sense::click());
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &track.title));
+    if response.gained_focus() {
+        response.scroll_to_me(None);
+    }
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    // Shift+F10 opens the menu of the row the keyboard is on.
+    if response.has_focus()
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10))
+    {
+        egui::Popup::open_id(ui.ctx(), id.with("menu-popup"));
+    }
     let menu_open = egui::Popup::is_id_open(ui.ctx(), id.with("menu-popup"));
     let hovered = ui.rect_contains_pointer(rect) || menu_open;
     let radius = if style.line { 0 } else { 8 };
     // The queue marks the song playing; every list marks the row pointed at.
-    if (playing && queued.is_some()) || hovered {
+    if (playing && queued) || hovered {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(radius), PALETTE.surface);
     }
@@ -198,7 +275,14 @@ pub fn track_row_in(
             egui::Stroke::new(1.0, PALETTE.outline),
         );
     }
-    if response.hovered() {
+    // A song YouTube no longer offers is shown dimmed, and does not play.
+    let playable = track.playable;
+    let (title_color, line_color) = if playable {
+        (PALETTE.text, PALETTE.secondary)
+    } else {
+        (PALETTE.dim, PALETTE.faint)
+    };
+    if response.hovered() && playable {
         // A song the pointer rests on is found ahead of time, so a click
         // starts it at once. Rows scrolled under a still pointer are only
         // passing: resting counts from when this row came under it.
@@ -220,7 +304,9 @@ pub fn track_row_in(
     let glyph = (style.art * 0.5).clamp(16.0, 24.0);
     match number {
         Some(_) if playing => theme::paint_icon(ui, Icon::Volume, art, glyph, PALETTE.text),
-        Some(_) if hovered => theme::paint_icon(ui, Icon::Play, art, glyph * 0.8, PALETTE.text),
+        Some(_) if hovered && playable => {
+            theme::paint_icon(ui, Icon::Play, art, glyph * 0.8, PALETTE.text);
+        }
         Some(number) => {
             ui.painter().text(
                 art.center(),
@@ -233,7 +319,11 @@ pub fn track_row_in(
         None => {
             let radius = CornerRadius::same(if style.art > 40.0 { 4 } else { 2 });
             cover_with(app, ui, art, track.thumbnail.as_ref(), radius);
-            if playing || hovered {
+            if !playable {
+                ui.painter()
+                    .rect_filled(art, radius, Color32::from_black_alpha(130));
+            }
+            if playing || (hovered && playable) {
                 ui.painter()
                     .rect_filled(art, radius, Color32::from_black_alpha(150));
                 let icon = if playing { Icon::Volume } else { Icon::Play };
@@ -267,6 +357,9 @@ pub fn track_row_in(
     let mut clicked_menu = false;
     if hovered {
         let menu_response = ui.interact(menu, id.with("menu"), Sense::click());
+        menu_response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More actions")
+        });
         if menu_response.hovered() {
             ui.painter()
                 .circle_filled(menu.center(), 16.0, PALETTE.surface);
@@ -275,7 +368,7 @@ pub fn track_row_in(
         clicked_menu = menu_response.clicked();
         egui::Popup::menu(&menu_response)
             .id(id.with("menu-popup"))
-            .show(|ui| song_menu(app, ui, track, queued.filter(|_| !playing)));
+            .show(|ui| song_menu(app, ui, track, place));
     }
 
     let text_left = art.right() + 16.0;
@@ -292,7 +385,7 @@ pub fn track_row_in(
             pos2(text_left, y),
             &track.title,
             title_font,
-            PALETTE.text,
+            title_color,
             column - 16.0,
         );
         theme::paint_line(
@@ -300,7 +393,7 @@ pub fn track_row_in(
             pos2(text_left + column, y),
             &track.artists,
             line.clone(),
-            PALETTE.secondary,
+            line_color,
             column - 16.0,
         );
         theme::paint_line(
@@ -308,7 +401,7 @@ pub fn track_row_in(
             pos2(text_left + 2.0 * column, y),
             track.album.as_deref().unwrap_or_default(),
             line,
-            PALETTE.secondary,
+            line_color,
             column - 16.0,
         );
     } else {
@@ -319,7 +412,7 @@ pub fn track_row_in(
                 pos2(text_left, rect.center().y - 9.0),
                 &track.title,
                 title_font,
-                PALETTE.text,
+                title_color,
                 space,
             );
         } else {
@@ -328,7 +421,7 @@ pub fn track_row_in(
                 pos2(text_left, rect.center().y - 20.0),
                 &track.title,
                 title_font,
-                PALETTE.text,
+                title_color,
                 space,
             );
             theme::paint_line(
@@ -336,7 +429,7 @@ pub fn track_row_in(
                 pos2(text_left, rect.center().y + 3.0),
                 &under,
                 line,
-                PALETTE.secondary,
+                line_color,
                 space,
             );
         }
@@ -344,7 +437,7 @@ pub fn track_row_in(
     if response.clicked() && !clicked_menu {
         app.act(on_click());
     }
-    response.context_menu(|ui| song_menu(app, ui, track, queued.filter(|_| !playing)));
+    response.context_menu(|ui| song_menu(app, ui, track, place));
 }
 
 /// The line under a song's title: "Artist", "Artist • Album" or
@@ -367,7 +460,7 @@ fn described(track: &Track, under: Under) -> String {
 }
 
 /// What a right-click on a song (or its ⋮ button) offers.
-pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, queued: Option<u64>) {
+pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
     theme::menu(ui);
     let item = |ui: &mut egui::Ui, text: &str, action: Action| {
         if ui.button(text).clicked() {
@@ -375,7 +468,9 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, queued: Option<u64
             ui.close();
         }
     };
-    if ui.button("Start radio").clicked() {
+    // A song YouTube no longer offers can only be taken out of a playlist
+    // (and unliked, or added elsewhere).
+    if track.playable && ui.button("Start radio").clicked() {
         let radio = Target::Watch {
             video_id: Some(track.video_id.clone()),
             playlist_id: None,
@@ -383,28 +478,27 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, queued: Option<u64
         app.act(Action::Play(radio, Some(track.clone())));
         ui.close();
     }
-    match queued {
-        // A song in Up next.
-        Some(id) => {
+    match place {
+        Place::Queue(id) => {
             item(ui, "Play next", Action::MoveNextInQueue(id));
             item(ui, "Move up", Action::ShiftInQueue(id, true));
             item(ui, "Move down", Action::ShiftInQueue(id, false));
             item(ui, "Remove from queue", Action::RemoveFromQueue(id));
         }
-        None => {
+        Place::Page | Place::Playing if track.playable => {
             item(ui, "Play next", Action::PlayNext(track.clone()));
             item(ui, "Add to queue", Action::AddToQueue(track.clone()));
         }
+        Place::Page | Place::Playing => {}
     }
     ui.separator();
     // As chosen in this run or as YouTube said; else every song on Liked
-    // Music is liked.
+    // Music's own page is liked.
+    let on_liked = place == Place::Page && app.route == crate::backend::Route::Liked;
     let liked = app
         .likes
         .get(&track.video_id)
-        .map_or(app.route == crate::backend::Route::Liked, |like| {
-            *like == crate::app::LikeState::Liked
-        });
+        .map_or(on_liked, |like| *like == crate::app::LikeState::Liked);
     if liked {
         item(
             ui,
@@ -419,7 +513,9 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, queued: Option<u64
         );
     }
     crate::views::playlists_menu(app, ui, track);
-    if queued.is_none()
+    // Only from the playlist's own page: the playing song may have come
+    // from anywhere.
+    if place == Place::Page
         && let Some(set_video_id) = &track.set_video_id
         && let Some(playlist_id) = app.editable_playlist()
     {
@@ -482,19 +578,21 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
         .animate_bool_with_time(response.id.with("hover"), hovered, 0.15);
     let mut play_clicked = false;
     if lit > 0.0 && card.play.is_some() {
-        let radius = if card.round {
-            CornerRadius::same(255)
-        } else {
-            CornerRadius::same(6)
-        };
+        // The same corners as the cover under it.
+        let radius = cover_radius(art.width(), card.round);
         ui.painter()
             .rect_filled(art, radius, Color32::from_black_alpha((60.0 * lit) as u8));
         let button =
             Rect::from_center_size(art.right_bottom() - vec2(32.0, 32.0), Vec2::splat(40.0));
-        let over_button = hovered
-            && ui
-                .interact(button, response.id.with("play"), Sense::click())
-                .clicked();
+        let play = ui.interact(button, response.id.with("play"), Sense::click());
+        play.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("Play {}", card.title),
+            )
+        });
+        let over_button = hovered && play.clicked();
         let grown = if ui.rect_contains_pointer(button) {
             1.15
         } else {

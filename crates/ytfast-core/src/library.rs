@@ -257,9 +257,11 @@ impl Session {
         Ok(read::lyrics(&reply))
     }
 
-    /// One part of the library (its first rows, for long lists).
+    /// One part of the library, with the rest of a long list up to a
+    /// limit (see `Session::library_page`). The whole of the library's
+    /// songs comes from [`Session::long_page`] instead.
     pub async fn library(&self, tab: LibraryTab) -> Result<Page, ApiError> {
-        self.page(tab.browse_id(), None).await
+        self.library_page(tab.browse_id()).await
     }
 
     /// Listening History as a page, grouped by when (Today, Yesterday...).

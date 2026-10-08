@@ -23,6 +23,9 @@ pub struct Queue {
     /// Where more songs come from when the queue runs out: the playlist or
     /// album being played, else a radio of the last song.
     pub source: Option<String>,
+    /// The queue was played shuffled: songs of its playlist that arrive
+    /// later go in among the songs to come, not at the end.
+    shuffled: bool,
 }
 
 impl Queue {
@@ -51,8 +54,44 @@ impl Queue {
         self.current = (!entries.is_empty()).then(|| start.min(entries.len() - 1));
         self.entries = entries;
         self.source = source;
+        self.shuffled = false;
         self.generation += 1;
         self.current()
+    }
+
+    /// Marks the queue as played shuffled (see [`Queue::insert_shuffled`]).
+    pub fn set_shuffled(&mut self) {
+        self.shuffled = true;
+    }
+
+    pub fn shuffled(&self) -> bool {
+        self.shuffled
+    }
+
+    /// Puts songs at random places among the songs still to come, skipping
+    /// any already in the queue (more of a playlist being played shuffled).
+    /// Returns how many were added.
+    pub fn insert_shuffled(&mut self, tracks: Vec<Track>) -> usize {
+        use rand::Rng;
+        let mut added = 0;
+        for track in tracks {
+            if self
+                .entries
+                .iter()
+                .any(|e| e.track.video_id == track.video_id)
+            {
+                continue;
+            }
+            let first = self.current.map_or(0, |i| i + 1);
+            let at = rand::rng().random_range(first..=self.entries.len());
+            let entry = self.entry(track);
+            self.entries.insert(at, entry);
+            added += 1;
+        }
+        if self.current.is_none() && !self.entries.is_empty() {
+            self.current = Some(0);
+        }
+        added
     }
 
     pub fn current(&self) -> Option<&Entry> {
@@ -213,6 +252,7 @@ impl Queue {
         self.entries.clear();
         self.current = None;
         self.source = None;
+        self.shuffled = false;
         self.generation += 1;
     }
 }
@@ -304,6 +344,24 @@ mod tests {
         empty.play_next_all(vec![song("x"), song("y"), song("z")]);
         assert_eq!(ids(&empty), ["x", "y", "z"]);
         assert_eq!(empty.current().unwrap().track.video_id, "x");
+    }
+
+    #[test]
+    fn songs_arriving_for_a_shuffle_go_among_those_to_come() {
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("b"), song("c")], 1, Some("PL".into()));
+        q.set_shuffled();
+        let added = q.insert_shuffled(vec![song("c"), song("d"), song("e")]);
+        assert_eq!(added, 2, "a song already queued is not added again");
+        // Nothing goes before the song playing.
+        assert_eq!(&ids(&q)[..2], ["a", "b"]);
+        assert_eq!(q.current().unwrap().track.video_id, "b");
+        let mut after: Vec<&str> = ids(&q)[2..].to_vec();
+        after.sort_unstable();
+        assert_eq!(after, ["c", "d", "e"]);
+        // A new queue is not a shuffle.
+        q.replace(vec![song("x")], 0, None);
+        assert!(!q.shuffled());
     }
 
     #[test]
