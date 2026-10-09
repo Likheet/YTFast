@@ -208,12 +208,21 @@ fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
             spread: 0,
             color: egui::Color32::from_black_alpha(26),
         });
+    // Dynamic Background: glass, corners 24.
+    let menu = if theme::dynamic() {
+        crate::dynamic::dialog_frame()
+    } else {
+        menu
+    };
     egui::Popup::menu(&response)
         .frame(menu)
         .width(300.0)
         .align(egui::RectAlign::BOTTOM_END)
         .gap(8.0)
         .show(|ui| {
+            if theme::dynamic() {
+                crate::dynamic::glass_behind(ui, crate::dynamic::RADIUS_PANEL_LG);
+            }
             ui.set_width(300.0);
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             // The header: 16 around, the photo 40 and 16 after it.
@@ -388,13 +397,16 @@ fn search_box(app: &App, ui: &mut egui::Ui, rect: Rect) {
     // Premium: always the field's colour, corners 12, outlined in the
     // accent while typing.
     let premium = theme::premium();
-    let fill = if (focused || open) && !premium {
+    // Dynamic Background: white@0.10 and corners 12 always; the list
+    // floats 16 below, so the box keeps its corners.
+    let dynamic = theme::dynamic();
+    let fill = if (focused || open) && !premium && !dynamic {
         PALETTE.window
     } else {
         PALETTE.field
     };
-    let round = if premium { 12 } else { 8 };
-    let corners = if open {
+    let round = if premium || dynamic { 12 } else { 8 };
+    let corners = if open && !dynamic {
         CornerRadius {
             nw: round,
             ne: round,
@@ -590,7 +602,19 @@ fn suggestions(
 
     // A row's fill under the pointer, or marked by the keys (with a blue
     // edge).
+    let dynamic = theme::dynamic();
     let fill = |ui: &egui::Ui, row: Rect, hovered: bool, is_marked: bool| {
+        if dynamic {
+            // Dynamic Background: white@0.10, corners 12, inset 8.
+            if hovered || is_marked {
+                ui.painter().rect_filled(
+                    row.shrink2(vec2(8.0, 0.0)),
+                    CornerRadius::same(crate::dynamic::RADIUS_PANEL),
+                    PALETTE.surface,
+                );
+            }
+            return;
+        }
         if hovered || is_marked {
             ui.painter().rect_filled(row, 0.0, PALETTE.surface);
         }
@@ -602,27 +626,45 @@ fn suggestions(
             );
         }
     };
+    // Dynamic Background: glass 16 below the box, corners 12, the theme's
+    // shadow (`dynamic::glass_behind` paints the glass).
+    let (at, corners, shadow) = if dynamic {
+        (
+            rect.left_bottom() + vec2(0.0, 16.0),
+            CornerRadius::same(crate::dynamic::RADIUS_PANEL),
+            crate::dynamic::SHADOW,
+        )
+    } else {
+        (
+            rect.left_bottom() - vec2(0.0, 1.0),
+            CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: 8,
+                se: 8,
+            },
+            egui::Shadow {
+                offset: [0, 8],
+                blur: 10,
+                spread: 1,
+                color: egui::Color32::from_black_alpha(36),
+            },
+        )
+    };
     let area = egui::Area::new(id.with("popup"))
         .order(egui::Order::Foreground)
-        .fixed_pos(rect.left_bottom() - vec2(0.0, 1.0))
+        .fixed_pos(at)
         .show(ui.ctx(), |ui| {
             Frame::new()
                 .fill(PALETTE.window)
                 .stroke(egui::Stroke::new(1.0, PALETTE.divider))
-                .corner_radius(CornerRadius {
-                    nw: 0,
-                    ne: 0,
-                    sw: 8,
-                    se: 8,
-                })
+                .corner_radius(corners)
                 .inner_margin(Margin::symmetric(0, 8))
-                .shadow(egui::Shadow {
-                    offset: [0, 8],
-                    blur: 10,
-                    spread: 1,
-                    color: egui::Color32::from_black_alpha(36),
-                })
+                .shadow(shadow)
                 .show(ui, |ui| {
+                    if dynamic {
+                        crate::dynamic::glass_behind(ui, crate::dynamic::RADIUS_PANEL);
+                    }
                     ui.set_width(rect.width() - 2.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     for (index, suggestion) in words.iter().enumerate() {

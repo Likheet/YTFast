@@ -43,6 +43,9 @@ pub struct Settings {
     pub library_order: BTreeMap<String, String>,
     /// The look the window wears (Settings, Theme).
     pub theme: crate::theme::Theme,
+    /// The Dynamic Background theme's colours move while a song plays
+    /// (off: they stay still).
+    pub moving_background: bool,
 }
 
 impl Default for Settings {
@@ -58,6 +61,7 @@ impl Default for Settings {
             shuffle: false,
             library_order: BTreeMap::new(),
             theme: crate::theme::Theme::default(),
+            moving_background: true,
         }
     }
 }
@@ -161,6 +165,7 @@ pub enum Setting {
     FastWay,
     Autoplay,
     EvenLoudness,
+    MovingBackground,
 }
 
 /// A small window asking one thing.
@@ -2058,6 +2063,7 @@ impl App {
                     }
                     Setting::Autoplay => s.autoplay = !s.autoplay,
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
+                    Setting::MovingBackground => s.moving_background = !s.moving_background,
                 }
             }
             Action::SetTheme(theme) => self.settings.theme = theme,
@@ -2601,6 +2607,8 @@ impl eframe::App for App {
         if self.styled != Some(self.settings.theme) {
             crate::theme::restyle(&ctx);
             self.styled = Some(self.settings.theme);
+            // Dynamic Background sets everything in Inter.
+            self.script_fonts.set_inter_first(crate::theme::dynamic());
         }
         self.scrolling.apply(&ctx);
         self.mend_window_size(&ctx);
@@ -2608,6 +2616,10 @@ impl eframe::App for App {
         self.images.get_mut().begin_frame();
         self.shortcuts(&ctx);
         self.want_song_extras();
+        // Dynamic Background: the song's cover behind everything.
+        if crate::theme::dynamic() {
+            crate::dynamic::paint(self, ui);
+        }
 
         views::show(self, ui);
 

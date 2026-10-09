@@ -33,8 +33,16 @@ pub fn show(app: &App, ui: &egui::Ui) {
         .fixed_pos(rect.min)
         .show(ui.ctx(), |ui| {
             let (bar, _) = ui.allocate_exact_size(size, Sense::click());
-            ui.painter()
-                .rect_filled(bar, CornerRadius::same(2), PALETTE.panel);
+            if crate::theme::dynamic() {
+                // Dynamic Background: glass, corners 24, the theme's shadow.
+                let corners = CornerRadius::same(crate::dynamic::RADIUS_PANEL_LG);
+                ui.painter()
+                    .add(crate::dynamic::SHADOW.as_shape(bar, corners));
+                crate::dynamic::glass(ui.painter(), bar, corners);
+            } else {
+                ui.painter()
+                    .rect_filled(bar, CornerRadius::same(2), PALETTE.panel);
+            }
             let y = bar.center().y;
             let mut x = bar.left() + 20.0;
             let spot = |x: f32| Rect::from_min_size(pos2(x, y - 20.0), Vec2::splat(40.0));

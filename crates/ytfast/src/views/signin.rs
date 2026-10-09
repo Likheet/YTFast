@@ -23,10 +23,16 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         );
         ui.add_space(28.0);
 
+        // Dynamic Background: a pane of white@0.05, corners 24.
+        let (fill, corners) = if theme::dynamic() {
+            (egui::Color32::from_white_alpha(13), 24)
+        } else {
+            (PALETTE.panel, 12)
+        };
         ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
             Frame::new()
-                .fill(PALETTE.panel)
-                .corner_radius(CornerRadius::same(12))
+                .fill(fill)
+                .corner_radius(CornerRadius::same(corners))
                 .inner_margin(Margin::same(24))
                 .show(ui, |ui| {
                     // (A window restored tiny has no room at all for a
