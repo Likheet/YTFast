@@ -1122,4 +1122,40 @@ mod tests {
         assert_eq!(parse_duration("1:2x"), None);
         assert_eq!(parse_duration("Song • 3:45"), None);
     }
+
+    #[test]
+    fn a_filtered_search_and_its_next_results() {
+        use serde_json::json;
+        // A song row as YouTube sends it, in a filtered search's one list
+        // and in the reply with the next ones (older replies: the token
+        // beside the rows).
+        let search = fixture("search.json");
+        let mut rows = Vec::new();
+        collect(&search, "musicResponsiveListItemRenderer", &mut rows);
+        let row = json!({"musicResponsiveListItemRenderer": rows[0].clone()});
+        let next = |token: &str| json!([{"nextContinuationData": {"continuation": token}}]);
+        let first = json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [{"tabRenderer": {
+            "content": {"sectionListRenderer": {"contents": [{"musicShelfRenderer": {
+                "title": {"runs": [{"text": "Songs"}]},
+                "contents": [row.clone(), row.clone()],
+                "continuations": next("first")
+            }}]}}
+        }}]}}});
+        assert_eq!(
+            item_continuation(&first),
+            Some(Continuation::Address("first".into()))
+        );
+        let more = json!({"continuationContents": {"musicShelfContinuation": {
+            "contents": [row.clone(), row.clone(), row],
+            "continuations": next("second")
+        }}});
+        assert_eq!(more_items(&more).len(), 3);
+        assert_eq!(
+            item_continuation(&more),
+            Some(Continuation::Address("second".into()))
+        );
+        // The last batch says nothing more.
+        let last = json!({"continuationContents": {"musicShelfContinuation": {"contents": []}}});
+        assert_eq!(item_continuation(&last), None);
+    }
 }

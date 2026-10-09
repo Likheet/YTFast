@@ -163,13 +163,13 @@ pub enum Setting {
 /// A small window asking one thing.
 #[derive(Clone, Debug)]
 pub enum Dialog {
-    /// A new playlist's name, description and privacy; `song` is added to
-    /// it when made.
+    /// A new playlist's name, description and privacy; `songs` are added
+    /// to it when made.
     NewPlaylist {
         name: String,
         description: String,
         privacy: Privacy,
-        song: Option<String>,
+        songs: Vec<String>,
     },
     /// Editing one of the account's own playlists (YouTube Music's Edit
     /// playlist).
@@ -183,10 +183,10 @@ pub enum Dialog {
         playlist_id: String,
         title: String,
     },
-    /// "Save to playlist": the account's playlists, to add `video_id` to
-    /// one, or a new playlist.
+    /// "Save to playlist": the account's playlists, to add songs to one,
+    /// or a new playlist.
     SaveToPlaylist {
-        video_id: String,
+        video_ids: Vec<String>,
     },
     /// An album's or playlist's whole description.
     Description {
@@ -249,16 +249,29 @@ pub enum Action {
     AddToQueue(Track),
     /// A short message above the player bar.
     Notify(String),
-    /// Add a song to one of the account's playlists.
+    /// Tick a song's box on a page, or untick it.
+    ToggleSelected(Track),
+    /// Untick every song.
+    ClearSelected,
+    /// The songs ticked, after the current one, in their order.
+    PlayNextAll(Vec<Track>),
+    /// The songs ticked, at the end of the queue.
+    AddToQueueAll(Vec<Track>),
+    /// A playlist's songs in another order (its Sort menu); `None` is
+    /// its own order, as YouTube keeps it.
+    SortPlaylist(Route, Option<PlaylistSort>),
+    /// Add songs to one of the account's playlists.
     AddToPlaylist {
         playlist_id: String,
         title: String,
-        video_id: String,
+        video_ids: Vec<String>,
     },
     /// Any other change to the account.
     Edit(Edit),
     /// Ask for search suggestions (with nothing typed, the past searches).
     Suggest(String),
+    /// The end of a search of one kind is in view: its next results.
+    MoreResults(Route),
     /// Show a Library tab in another order (one its sort button offers).
     SortLibrary(SortOrder),
     /// Remove a past search from the account's search history: its words,
@@ -279,10 +292,11 @@ pub enum Action {
     },
     DeletePlaylist(String),
     /// Take a row out of the playlist shown (by its own row ID).
+    /// Take songs out of a playlist: each its song ID and its row's own
+    /// (`set_video_id`).
     RemoveFromPlaylist {
         playlist_id: String,
-        video_id: String,
-        set_video_id: String,
+        songs: Vec<(String, String)>,
     },
     /// Save an album or playlist to the library, or take it out.
     ToggleSave {
@@ -296,9 +310,10 @@ pub enum Action {
     OpenLogFolder,
     /// Open System Settings at Full Disk Access (on a Mac).
     OpenFullDiskAccess,
-    /// Queue edits, by entry.
+    /// Queue edits, by entry. `MoveInQueue` puts it at a place (a row of
+    /// Up next dragged there).
     RemoveFromQueue(u64),
-    ShiftInQueue(u64, bool),
+    MoveInQueue(u64, usize),
     MoveNextInQueue(u64),
     /// Open the menu on the left, or close it to its icons.
     ToggleGuide,
@@ -316,6 +331,45 @@ pub enum Action {
     ChooseBrowser(Browser),
     SignIn,
     SignOut,
+}
+
+/// The orders a playlist's Sort menu offers besides its own. (YouTube
+/// Music's also offers newest and oldest added first, which YTFast cannot
+/// tell.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaylistSort {
+    Title,
+    Artist,
+    Album,
+}
+
+impl PlaylistSort {
+    pub const ALL: [Self; 3] = [Self::Title, Self::Artist, Self::Album];
+
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Title => "Title",
+            Self::Artist => "Artist",
+            Self::Album => "Album",
+        }
+    }
+
+    /// Puts `page`'s songs in this order (A to Z, as YouTube Music's).
+    fn apply(self, page: &mut Page) {
+        let key = |item: &Item| match item {
+            Item::Track(t) => match self {
+                Self::Title => t.title.to_lowercase(),
+                Self::Artist => t.artists.to_lowercase(),
+                Self::Album => t.album.clone().unwrap_or_default().to_lowercase(),
+            },
+            Item::Card(_) => String::new(),
+        };
+        for section in &mut page.sections {
+            if section.items.iter().any(|i| matches!(i, Item::Track(_))) {
+                section.items.sort_by_cached_key(key);
+            }
+        }
+    }
 }
 
 pub struct App {
@@ -366,6 +420,10 @@ pub struct App {
     pub dialog: RefCell<Option<Dialog>>,
     /// Search suggestions, for the text they were asked for.
     pub suggestions: (String, ytfast_core::read::Suggestions),
+    /// The songs ticked on the page shown, in the order they were ticked.
+    pub selected: Vec<Track>,
+    /// The order chosen for playlists in this run (their Sort menu).
+    pub playlist_sort: HashMap<Route, PlaylistSort>,
     /// Past searches removed in this run (lowercase), kept out of answers
     /// asked for before the removal reached YouTube. One per click on a
     /// suggestion's bin, so it stays small.
@@ -386,6 +444,9 @@ pub struct App {
     /// The latest loading of each page: its answers carry that number
     /// ([`Request::Page`]), and an older loading's are dropped.
     page_loads: HashMap<Route, u64>,
+    /// Searches of one kind whose next results are on their way (true) or
+    /// have all arrived (false); one entry per such page shown.
+    more_results: HashMap<Route, bool>,
     /// Numbers the page loadings.
     loads: u64,
     /// The text search suggestions were last asked for.
@@ -527,6 +588,8 @@ impl App {
             subscribed: HashMap::new(),
             dialog: RefCell::new(None),
             suggestions: (String::new(), Default::default()),
+            selected: Vec::new(),
+            playlist_sort: HashMap::new(),
             forgotten_searches: HashSet::new(),
             script_fonts,
             loud_volume,
@@ -534,6 +597,7 @@ impl App {
             like_before: HashMap::new(),
             window_checked: false,
             page_loads: HashMap::new(),
+            more_results: HashMap::new(),
             loads: 0,
             suggesting: String::new(),
             seeking: None,
@@ -900,7 +964,13 @@ impl App {
                         self.warm(&top.video_id);
                     }
                     let loaded = match result {
-                        Ok(page) => Loadable::Ready(page),
+                        Ok(mut page) => {
+                            // In the order chosen for it.
+                            if let Some(order) = self.playlist_sort.get(&route) {
+                                order.apply(&mut page);
+                            }
+                            Loadable::Ready(page)
+                        }
                         // A refresh that failed keeps what was shown.
                         Err(_) if matches!(self.pages.get(&route), Some(Loadable::Ready(_))) => {
                             continue;
@@ -1032,6 +1102,26 @@ impl App {
                         _ => {}
                     }
                 }
+                Event::MoreResults {
+                    route,
+                    load,
+                    items,
+                    done,
+                } => {
+                    if self.page_loads.get(&route) != Some(&load) {
+                        continue;
+                    }
+                    if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
+                        page.extend_list(items);
+                    }
+                    // Asked for again when the list's new end comes into
+                    // view, unless that was all.
+                    if done {
+                        self.more_results.insert(route, false);
+                    } else {
+                        self.more_results.remove(&route);
+                    }
+                }
                 Event::MoreRows {
                     route,
                     load,
@@ -1056,6 +1146,9 @@ impl App {
                     }
                     if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
                         add_rows(page, tracks);
+                        if let Some(order) = self.playlist_sort.get(&route) {
+                            order.apply(page);
+                        }
                     }
                 }
                 Event::Image(url, picture) => self.images.borrow_mut().arrived(ctx, url, picture),
@@ -1580,6 +1673,8 @@ impl App {
     fn ask_for_page(&mut self, route: Route) {
         self.loads += 1;
         self.page_loads.insert(route.clone(), self.loads);
+        // A fresh loading has its own next results.
+        self.more_results.remove(&route);
         // A Library tab in the order chosen for it.
         let order = route
             .library_tab()
@@ -1649,6 +1744,8 @@ impl App {
         let old = std::mem::replace(&mut self.route, route);
         self.back.push(old);
         self.forward.clear();
+        // Songs ticked belong to the page they were ticked on.
+        self.selected.clear();
         // A page opened anew starts at its top (Back and Forward return to
         // where it was left).
         self.fresh_page.set(true);
@@ -1720,6 +1817,7 @@ impl App {
                 } else if let Some(route) = self.back.pop() {
                     let old = std::mem::replace(&mut self.route, route);
                     self.forward.push(old);
+                    self.selected.clear();
                     self.show_current();
                 }
             }
@@ -1728,6 +1826,7 @@ impl App {
                 if let Some(route) = self.forward.pop() {
                     let old = std::mem::replace(&mut self.route, route);
                     self.back.push(old);
+                    self.selected.clear();
                     self.show_current();
                 }
             }
@@ -1814,12 +1913,56 @@ impl App {
                 self.queue_grew();
             }
             Action::Notify(text) => self.notify(text),
+            Action::ToggleSelected(track) => {
+                let same = |t: &Track| {
+                    t.video_id == track.video_id && t.set_video_id == track.set_video_id
+                };
+                if self.selected.iter().any(same) {
+                    self.selected.retain(|t| !same(t));
+                } else {
+                    self.selected.push(track);
+                }
+            }
+            Action::ClearSelected => self.selected.clear(),
+            Action::PlayNextAll(tracks) => {
+                let count = tracks.len();
+                // Each put right after the current one: the last first.
+                for track in tracks.into_iter().rev() {
+                    self.queue.play_next(track);
+                }
+                self.notify(format!("{count} songs play next"));
+                self.queue_grew();
+                self.selected.clear();
+            }
+            Action::AddToQueueAll(tracks) => {
+                let count = tracks.len();
+                for track in tracks {
+                    self.queue.add_to_end(track);
+                }
+                self.notify(format!("{count} songs added to the queue"));
+                self.queue_grew();
+                self.selected.clear();
+            }
+            Action::SortPlaylist(route, order) => match order {
+                Some(order) => {
+                    self.playlist_sort.insert(route.clone(), order);
+                    if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
+                        order.apply(page);
+                    }
+                }
+                // Its own order again, as YouTube has it.
+                None => {
+                    if self.playlist_sort.remove(&route).is_some() {
+                        self.refresh(route);
+                    }
+                }
+            },
             Action::RemoveFromQueue(id) => {
                 self.queue.remove(id);
                 self.prepare_next();
             }
-            Action::ShiftInQueue(id, up) => {
-                self.queue.shift(id, up);
+            Action::MoveInQueue(id, to) => {
+                self.queue.move_to(id, to);
                 self.prepare_next();
             }
             Action::MoveNextInQueue(id) => {
@@ -1847,12 +1990,12 @@ impl App {
             Action::AddToPlaylist {
                 playlist_id,
                 title,
-                video_id,
+                video_ids,
             } => {
                 self.notify(format!("Added to {title}"));
                 self.send_edit(Edit::AddToPlaylist {
                     playlist_id,
-                    video_id,
+                    video_ids,
                 });
             }
             Action::Edit(change) => self.send_edit(change),
@@ -1874,6 +2017,17 @@ impl App {
                     .insert(order.browse_id, order.params);
                 if let Some(route) = tab {
                     self.refresh(route);
+                }
+            }
+            Action::MoreResults(route) => {
+                // One request at a time, and none once all have come.
+                if !self.more_results.contains_key(&route)
+                    && let Some(load) = self.page_loads.get(&route).copied()
+                {
+                    let pages = &self.pages;
+                    self.more_results.retain(|r, _| pages.contains_key(r));
+                    self.more_results.insert(route.clone(), true);
+                    self.backend.send(Request::MoreResults { route, load });
                 }
             }
             Action::ForgetSearch { words, token } => {
@@ -1939,26 +2093,26 @@ impl App {
                 }
                 self.send_edit(Edit::DeletePlaylist { playlist_id });
             }
-            Action::RemoveFromPlaylist {
-                playlist_id,
-                video_id,
-                set_video_id,
-            } => {
+            Action::RemoveFromPlaylist { playlist_id, songs } => {
                 let route = Route::browse(format!("VL{playlist_id}"), None);
+                let gone = |t: &Track| {
+                    songs
+                        .iter()
+                        .any(|(_, row)| t.set_video_id.as_deref() == Some(row.as_str()))
+                };
                 if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
                     for section in &mut page.sections {
-                        section.items.retain(|item| {
-                            !matches!(item, Item::Track(t)
-                                if t.set_video_id.as_deref() == Some(set_video_id.as_str()))
-                        });
+                        section
+                            .items
+                            .retain(|item| !matches!(item, Item::Track(t) if gone(t)));
                     }
                 }
-                self.notify("Removed from the playlist");
-                self.send_edit(Edit::RemoveFromPlaylist {
-                    playlist_id,
-                    video_id,
-                    set_video_id,
+                self.notify(if songs.len() == 1 {
+                    "Removed from the playlist".to_string()
+                } else {
+                    format!("{} songs removed from the playlist", songs.len())
                 });
+                self.send_edit(Edit::RemoveFromPlaylist { playlist_id, songs });
             }
             Action::ToggleSave { playlist_id, save } => {
                 self.saved.insert(playlist_id.clone(), save);
@@ -2344,6 +2498,14 @@ fn words(event: &Event) -> Vec<&str> {
         }
         Event::Lyrics(_, Some(lyrics)) => {
             words.extend(lyrics.lines.iter().map(|line| line.text.as_str()));
+        }
+        Event::MoreResults { items, .. } => {
+            for item in items {
+                match item {
+                    Item::Track(t) => track(t, &mut words),
+                    Item::Card(c) => words.extend([c.title.as_str(), c.subtitle.as_str()]),
+                }
+            }
         }
         Event::Suggestions(_, found) => {
             words.extend(found.words.iter().map(|w| w.text.as_str()));
@@ -2813,6 +2975,120 @@ mod tests {
         h.answer(Event::Suggestions("fad".into(), words("fade")));
         assert_eq!(h.app.suggestions.0, "faded");
         assert_eq!(h.app.suggestions.1.words[0].text, "faded");
+    }
+
+    #[test]
+    fn ticked_songs_play_next_in_order_and_playlists_sort() {
+        let mut h = Harness::new();
+        h.play(&["a"]);
+        h.act(Action::ToggleSelected(song("c")));
+        h.act(Action::ToggleSelected(song("b")));
+        h.act(Action::ToggleSelected(song("d")));
+        h.act(Action::ToggleSelected(song("d")));
+        assert_eq!(h.app.selected.len(), 2);
+        h.act(Action::PlayNextAll(h.app.selected.clone()));
+        let order: Vec<&str> = h
+            .app
+            .queue
+            .entries()
+            .iter()
+            .map(|e| e.track.video_id.as_str())
+            .collect();
+        assert_eq!(order, ["a", "c", "b"]);
+        assert!(h.app.selected.is_empty());
+
+        // A playlist sorted by title, and back to its own order (asked for
+        // again).
+        let route = Route::browse("VLPLx".into(), None);
+        h.app.load(route.clone());
+        let load = h
+            .requests()
+            .into_iter()
+            .find_map(|r| match r {
+                Request::Page { load, .. } => Some(load),
+                _ => None,
+            })
+            .expect("the page is asked for");
+        let page = Page {
+            sections: vec![Section {
+                items: ["b", "c", "a"].map(|v| Item::Track(song(v))).to_vec(),
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        h.answer(Event::Page(route.clone(), load, Ok(page)));
+        h.act(Action::SortPlaylist(
+            route.clone(),
+            Some(PlaylistSort::Title),
+        ));
+        let titles = |h: &Harness| match h.app.pages.get(&route) {
+            Some(Loadable::Ready(page)) => page.tracks().into_iter().map(|t| t.title).collect(),
+            _ => Vec::new(),
+        };
+        assert_eq!(titles(&h), ["A", "B", "C"]);
+        h.act(Action::SortPlaylist(route.clone(), None));
+        assert!(
+            h.requests()
+                .iter()
+                .any(|r| matches!(r, Request::Page { route: r, .. } if *r == route))
+        );
+    }
+
+    #[test]
+    fn a_search_of_one_kind_asks_for_more_one_batch_at_a_time() {
+        let mut h = Harness::new();
+        let route = Route::SearchOnly("glass".into(), "songs".into());
+        h.app.load(route.clone());
+        let load = h
+            .requests()
+            .into_iter()
+            .find_map(|r| match r {
+                Request::Page { load, .. } => Some(load),
+                _ => None,
+            })
+            .expect("the page is asked for");
+        let page = Page {
+            sections: vec![Section {
+                title: "Songs".into(),
+                items: vec![Item::Track(song("a"))],
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        h.answer(Event::Page(route.clone(), load, Ok(page)));
+        let asked = |h: &mut Harness| {
+            h.requests()
+                .iter()
+                .filter(|r| matches!(r, Request::MoreResults { .. }))
+                .count()
+        };
+        // The end in view frame after frame: one request until it answers.
+        h.act(Action::MoreResults(route.clone()));
+        h.act(Action::MoreResults(route.clone()));
+        assert_eq!(asked(&mut h), 1);
+        h.answer(Event::MoreResults {
+            route: route.clone(),
+            load,
+            items: vec![Item::Track(song("b"))],
+            done: false,
+        });
+        let shown = |h: &Harness| match h.app.pages.get(&route) {
+            Some(Loadable::Ready(page)) => page.tracks().len(),
+            _ => 0,
+        };
+        assert_eq!(shown(&h), 2);
+        // The new end in view: the next batch, which is the last.
+        h.act(Action::MoreResults(route.clone()));
+        assert_eq!(asked(&mut h), 1);
+        h.answer(Event::MoreResults {
+            route: route.clone(),
+            load,
+            items: vec![Item::Track(song("c"))],
+            done: true,
+        });
+        assert_eq!(shown(&h), 3);
+        h.act(Action::MoreResults(route.clone()));
+        assert_eq!(asked(&mut h), 0);
     }
 
     #[test]

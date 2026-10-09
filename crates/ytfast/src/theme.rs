@@ -209,6 +209,18 @@ pub const PAGE_FOOT: f32 = 112.0;
 /// YouTube Music's large titles (`display-1`: shelves, pages, an album's
 /// or an artist's name) in a window `window` wide: 24 under 1150, 28 to
 /// 1363 (measured at 1280), 34 to 1577, 45 from 1578.
+/// YouTube Music's `--ytmusic-responsive-font-size`: 14, and 16 from a
+/// window 1364 wide. Cards, song rows, Up next, the player bar's song and
+/// the suggestions take it; their lines are 1.2 times as tall.
+pub fn responsive(window: f32) -> f32 {
+    if window >= 1364.0 { 16.0 } else { 14.0 }
+}
+
+/// [`responsive`] for the window `ui` is in.
+pub fn text_size(ui: &egui::Ui) -> f32 {
+    responsive(ui.ctx().content_rect().width())
+}
+
 pub fn display1(window: f32) -> f32 {
     if window >= 1578.0 {
         45.0
@@ -281,8 +293,6 @@ fastframe_icons::icons! {
         SavedToLibrary => "bookmark-fill",
         RemoveFromQueue => "remove-from-queue",
         RemoveFromPlaylist => "playlist-remove",
-        MoveUp => "arrow-upward",
-        MoveDown => "arrow-downward",
         Edit => "edit",
         Delete => "delete",
         // Explore's three buttons (MUSIC_NEW_RELEASE, TRENDING_UP,
@@ -307,6 +317,8 @@ fastframe_icons::icons! {
         Explicit => "explicit",
         /// A sort button's chevron.
         ExpandMore => "expand-more",
+        /// A playlist's Sort.
+        Sort => "sort",
     }
 }
 
@@ -588,6 +600,16 @@ pub fn menu(ui: &mut egui::Ui) {
 /// in, its words regular 14 at 50 in, white@0.05 under the pointer (or
 /// the keyboard). Named `text` for screen readers.
 pub fn menu_item(ui: &mut egui::Ui, icon: Icon, text: &str) -> Response {
+    menu_entry(ui, Some(icon), text)
+}
+
+/// A menu's entry that is one of a choice: a tick in the icon's place
+/// when it is the one chosen.
+pub fn menu_choice(ui: &mut egui::Ui, chosen: bool, text: &str) -> Response {
+    menu_entry(ui, chosen.then_some(Icon::Check), text)
+}
+
+fn menu_entry(ui: &mut egui::Ui, icon: Option<Icon>, text: &str) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 48.0), Sense::click());
     let enabled = ui.is_enabled();
@@ -608,7 +630,9 @@ pub fn menu_item(ui: &mut egui::Ui, icon: Icon, text: &str) -> Response {
             egui::pos2(rect.left() + 16.0, rect.center().y - 9.0),
             Vec2::splat(18.0),
         );
-        paint_icon(ui, icon, spot, 18.0, icon_color);
+        if let Some(icon) = icon {
+            paint_icon(ui, icon, spot, 18.0, icon_color);
+        }
         let words = fit(
             ui,
             text,
