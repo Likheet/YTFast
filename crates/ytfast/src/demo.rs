@@ -709,6 +709,55 @@ fn browse(id: &str) -> Page {
                 ],
             }
         }
+        // As YouTube Music's page: sections of striped buttons in grids.
+        "mood" if name == "Moods & genres" => {
+            let striped = |names: &[(&str, u32)]| {
+                names
+                    .iter()
+                    .map(|(m, colour)| {
+                        plain(
+                            m,
+                            CardLook {
+                                stripe: Some(*colour),
+                                ..CardLook::default()
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let genres = [
+                ("Rock", 0xcccc00),
+                ("Pop", 0xff5ac6),
+                ("Hip-hop", 0xff8a00),
+                ("Indie & alternative", 0x7cc0ff),
+                ("Jazz", 0xb388ff),
+                ("Classical", 0xe0e0e0),
+                ("Electronic", 0x00e5b4),
+                ("Folk & acoustic", 0xa1887f),
+                ("R&B & soul", 0xf34a7b),
+                ("Country", 0xffd54f),
+            ];
+            Page {
+                sort: None,
+                header: Some(Header {
+                    title: name.into(),
+                    ..Header::default()
+                }),
+                // Grids' titles are the second size, as the reader marks
+                // them.
+                sections: [
+                    shaped("For you", striped(&MOODS[..5]), Shape::Grid),
+                    shaped("Moods & moments", striped(&MOODS), Shape::Grid),
+                    shaped("Genres", striped(&genres), Shape::Grid),
+                ]
+                .into_iter()
+                .map(|section| Section {
+                    small_title: true,
+                    ..section
+                })
+                .collect(),
+            }
+        }
         "mood" => Page {
             sort: None,
             header: Some(Header {
@@ -960,6 +1009,27 @@ fn monthly_audience(name: &str) -> String {
 
 /// Search with one kind of result: its section alone, as the real
 /// filtered search shows it.
+/// The next results of a search of one kind: more made-up songs (or
+/// cards), once.
+pub fn more_results(query: &str, params: &str) -> Vec<Item> {
+    let kind = params.strip_prefix("demo:").unwrap_or(params);
+    if kind == "Songs" {
+        let shown: Vec<String> = search_only(query, params)
+            .tracks()
+            .into_iter()
+            .map(|t| t.video_id)
+            .collect();
+        (0..SONGS.len())
+            .map(song)
+            .filter(|t| !shown.contains(&t.video_id))
+            .take(10)
+            .map(Item::Track)
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
 fn search_only(query: &str, params: &str) -> Page {
     let kind = params.strip_prefix("demo:").unwrap_or(params);
     let all = search(query);

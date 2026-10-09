@@ -331,6 +331,14 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                 );
             }
             sections(app, ui, route, page, &look);
+            // A search of one kind loads its next results once its end
+            // comes into view, as YouTube Music's does.
+            if matches!(route, Route::SearchOnly(..)) {
+                let (end, _) = ui.allocate_exact_size(vec2(1.0, 1.0), Sense::hover());
+                if ui.is_rect_visible(end) {
+                    app.act(Action::MoreResults(route.clone()));
+                }
+            }
             ui.add_space(theme::PAGE_FOOT);
         },
     );
@@ -345,6 +353,15 @@ pub fn sections(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, look: 
         // Search's filter buttons are drawn above (`search_chips`).
         if is_search_chips(section) {
             continue;
+        }
+        // A playlist's Sort, just over its songs (16 in, 16 above them).
+        let first_songs = page
+            .sections
+            .iter()
+            .position(|s| s.items.iter().any(|i| matches!(i, Item::Track(_))));
+        if route.playlist().is_some() && first_songs == Some(index) {
+            sort_control(app, ui, route);
+            ui.add_space(16.0);
         }
         section_block(app, ui, route, section, index, look);
         if index + 1 < count && section.top.is_none() {
@@ -362,6 +379,49 @@ pub fn sections(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, look: 
             ui.add_space(after);
         }
     }
+}
+
+/// A playlist's Sort, as YouTube Music's: 16 in, a sort icon 24 and 8
+/// after it "Sort" (14/500 white), 26.7 high; its menu lists the orders,
+/// a tick before the one shown (YouTube Music's newest and oldest added
+/// first are left out: YTFast cannot tell when a song was added).
+fn sort_control(app: &App, ui: &mut egui::Ui, route: &Route) {
+    use crate::app::PlaylistSort;
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.7), Sense::hover());
+    let words = ui
+        .painter()
+        .layout_no_wrap("Sort".into(), theme::medium(14.0), PALETTE.text);
+    let button = Rect::from_min_size(
+        pos2(row.left() + 16.0, row.top()),
+        vec2(24.0 + 8.0 + words.size().x, 26.7),
+    );
+    let response = ui.interact(button, ui.id().with(("sort", route)), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Sort"));
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let icon = Rect::from_min_size(
+        pos2(button.left(), button.center().y - 12.0),
+        Vec2::splat(24.0),
+    );
+    theme::paint_icon(ui, Icon::Sort, icon, 24.0, PALETTE.text);
+    ui.painter().galley(
+        pos2(icon.right() + 8.0, button.center().y - words.size().y / 2.0),
+        words,
+        PALETTE.text,
+    );
+    let chosen = app.playlist_sort.get(route).copied();
+    theme::menu_popup(&response).show(|ui| {
+        theme::menu(ui);
+        let choices = std::iter::once((None, "Default ordering"))
+            .chain(PlaylistSort::ALL.iter().map(|o| (Some(*o), o.words())));
+        for (order, words) in choices {
+            if theme::menu_choice(ui, order == chosen, words).clicked() {
+                app.act(Action::SortPlaylist(route.clone(), order));
+                ui.close();
+            }
+        }
+    });
 }
 
 /// Search's filter buttons: a section of chips that search.
@@ -866,7 +926,7 @@ fn header_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, heade
         );
     };
     // `--ytmusic-responsive-font-size`: 16 from 1364.
-    let words = if window >= 1364.0 { 16.0 } else { 14.0 };
+    let words = theme::responsive(window);
     if album && !header.owner.is_empty() {
         face(ui, 16.0, 4.0, theme::regular(words), words * 1.2);
         ui.add_space(16.0);
@@ -1161,7 +1221,7 @@ fn artist_header(
         3,
         size * 1.2,
     );
-    let words = if window >= 1364.0 { 16.0 } else { 14.0 };
+    let words = theme::responsive(window);
     let audience = theme::fit(
         ui,
         &header.subtitle,
@@ -1526,14 +1586,16 @@ fn section_block(
             });
         };
         // A signed-in Home's shelves: small words above the title (14
-        // `#aaa`, capitals, 2 above it), and a picture 56 before both (16
-        // after it, round when YouTube crops it so).
+        // `#aaa`, 16 from a window 1364 wide, capitals, 2 above it), and a
+        // picture 56 before both (16 after it, round when YouTube crops it
+        // so).
         let strapline = |ui: &mut egui::Ui| {
             if !section.strapline.is_empty() {
+                let size = theme::text_size(ui);
                 theme::label(
                     ui,
                     &section.strapline.to_uppercase(),
-                    theme::regular(14.0),
+                    theme::regular(size),
                     PALETTE.dim,
                 );
                 ui.add_space(2.0);
@@ -1630,6 +1692,24 @@ fn section_block(
                     }
                 });
             }
+            // The Moods & genres page: each section a grid of the same
+            // striped buttons, 4 across (5 from a window 1578 wide), 16
+            // apart both ways (`grid-type=moods_and_genres`; 238.3 wide at
+            // 1707, measured).
+            _ if section.shape == Shape::Grid
+                && !pictures
+                && cards.iter().any(|c| c.look.stripe.is_some()) =>
+            {
+                let window = ui.ctx().content_rect().width();
+                let columns: f32 = if window >= 1578.0 { 5.0 } else { 4.0 };
+                let width = (ui.available_width() - 16.0 * (columns - 1.0)) / columns;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(16.0, 16.0);
+                    for card in &cards {
+                        widgets::mood_button(app, ui, card, width);
+                    }
+                });
+            }
             _ if !pictures => {
                 if *route == Route::Home {
                     // Home's moods: 46 under the top bar, 12 apart.
@@ -1665,12 +1745,14 @@ fn section_block(
                 });
             }
             Shape::Grid => {
-                let (card, across, down) = if is_library(route) {
+                // The Library's grid keeps its words 14 at every width
+                // (`grid-type=library`).
+                let (card, across, down, text) = if is_library(route) {
                     let window = ui.ctx().content_rect().width();
                     let (card, gap) = library_grid(window, ui.available_width());
-                    (card, gap, 40.0)
+                    (card, gap, 40.0, 14.0)
                 } else {
-                    (look.card, CARD_GAP, 16.0)
+                    (look.card, CARD_GAP, 16.0, theme::text_size(ui))
                 };
                 // Cards line up by their tops, whatever their words' height.
                 ui.with_layout(
@@ -1678,7 +1760,7 @@ fn section_block(
                     |ui| {
                         ui.spacing_mut().item_spacing = vec2(across, down);
                         for item in &cards {
-                            widgets::card(app, ui, item, card);
+                            widgets::card_with_text(app, ui, item, card, text);
                         }
                     },
                 );
@@ -1859,24 +1941,29 @@ fn top_result(app: &App, ui: &mut egui::Ui, route: &Route, section: &Section, to
     // Its lines are 1.2 times the size apart (`theme::fit`).
     let name_height = name.size().y;
     let buttons = &top.buttons;
-    let block = name_height + 8.0 + 16.8 + if buttons.is_empty() { 0.0 } else { 12.0 + 36.0 };
+    // Its second line 14 (16 from a window 1364 wide) on a line 1.2 times
+    // as tall.
+    let words = theme::text_size(ui);
+    let line_height = words * 1.2;
+    let block =
+        name_height + 8.0 + line_height + if buttons.is_empty() { 0.0 } else { 12.0 + 36.0 };
     let mut y = rect.center().y - block / 2.0;
     ui.painter().galley(pos2(left, y), name, PALETTE.text);
     y += name_height + 8.0;
     let subtitle = theme::fit(
         ui,
         &top.subtitle,
-        theme::regular(14.0),
+        theme::regular(words),
         PALETTE.secondary,
         room,
         1,
     );
     ui.painter().galley(
-        pos2(left, y + (16.8 - subtitle.size().y) / 2.0),
+        pos2(left, y + (line_height - subtitle.size().y) / 2.0),
         subtitle,
         PALETTE.secondary,
     );
-    y += 16.8 + 12.0;
+    y += line_height + 12.0;
 
     let mut pressed = false;
     if !buttons.is_empty() {

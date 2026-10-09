@@ -663,10 +663,13 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
         _ => Shape::List,
     };
     let basic = shelf.pointer("/header/musicCarouselShelfBasicHeaderRenderer");
-    let small_title = basic
-        .and_then(|h| h.get("headerStyle"))
-        .and_then(Value::as_str)
-        == Some("MUSIC_CAROUSEL_SHELF_BASIC_HEADER_STYLE_DISPLAY_TWO");
+    // An artist's smaller shelves, and a grid's title (the Moods & genres
+    // page's "For you": 24/700, measured) are the second size.
+    let small_title = key == "gridRenderer"
+        || basic
+            .and_then(|h| h.get("headerStyle"))
+            .and_then(Value::as_str)
+            == Some("MUSIC_CAROUSEL_SHELF_BASIC_HEADER_STYLE_DISPLAY_TWO");
     let strapline = basic
         .and_then(|h| h.get("strapline"))
         .and_then(text)

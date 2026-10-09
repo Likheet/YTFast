@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::innertube::{ApiError, LIBRARY_SONGS, Session, next_body};
 use crate::lyrics::Lyrics;
-use crate::read::{self, Page, Rating, SongDetails};
+use crate::read::{self, Continuation, Item, Page, Rating, SongDetails};
 use crate::redact;
 
 /// YouTube Music's Android app, which YouTube sends timed lyrics to; the
@@ -282,10 +282,41 @@ impl Session {
     }
 
     /// Search results of one kind only (songs, albums...): `params` as a
-    /// filter button gives them ([`SearchFilter`] has some).
-    pub async fn search_filtered(&self, query: &str, params: &str) -> Result<Page, ApiError> {
+    /// filter button gives them ([`SearchFilter`] has some). With them,
+    /// where the next ones come from, asked for only when the list's end
+    /// is reached ([`Session::more_search_results`]), as YouTube Music
+    /// does.
+    pub async fn search_filtered(
+        &self,
+        query: &str,
+        params: &str,
+    ) -> Result<(Page, Option<Continuation>), ApiError> {
         let reply = self.call("search", search_body(query, params)).await?;
-        Ok(read::page(&reply))
+        Ok((read::page(&reply), read::item_continuation(&reply)))
+    }
+
+    /// The next results of a search of one kind, and where the ones after
+    /// them come from (`None` at the end).
+    pub async fn more_search_results(
+        &self,
+        query: &str,
+        params: &str,
+        from: &Continuation,
+    ) -> Result<(Vec<Item>, Option<Continuation>), ApiError> {
+        let reply = match from {
+            Continuation::Body(token) => {
+                self.call("search", json!({ "continuation": token }))
+                    .await?
+            }
+            // As ytmusicapi sends it: the search again, the token in the
+            // address.
+            Continuation::Address(token) => {
+                let query_args = [("ctoken", token.as_str()), ("continuation", token)];
+                self.call_with("search", &query_args, search_body(query, params))
+                    .await?
+            }
+        };
+        Ok((read::more_items(&reply), read::item_continuation(&reply)))
     }
 
     /// Whether the account likes a song, and where its lyrics and related

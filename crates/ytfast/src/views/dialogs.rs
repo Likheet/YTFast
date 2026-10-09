@@ -48,14 +48,14 @@ pub fn show(app: &App, ui: &egui::Ui) {
         .show(ui.ctx(), |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             match current {
-                Dialog::SaveToPlaylist { video_id } => {
-                    close = save_to_playlist(app, ui, video_id);
+                Dialog::SaveToPlaylist { video_ids } => {
+                    close = save_to_playlist(app, ui, video_ids);
                 }
                 Dialog::NewPlaylist {
                     name,
                     description,
                     privacy,
-                    song,
+                    songs,
                 } => {
                     let done = form(
                         ui,
@@ -69,7 +69,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
                             title: name.trim().to_string(),
                             description: description.trim().to_string(),
                             privacy: *privacy,
-                            video_ids: song.iter().cloned().collect(),
+                            video_ids: songs.clone(),
                         }));
                     }
                     close = done.is_some();
@@ -537,7 +537,7 @@ fn confirm(ui: &mut egui::Ui, question: &str, text: &str, main: &str) -> Option<
 /// a bar with the title and ×, then "All playlists" and the account's
 /// playlists, which scroll, and "New playlist" at the bottom right. True
 /// when it is done.
-fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_id: &str) -> bool {
+fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_ids: &[String]) -> bool {
     use egui::{Align2, Rect, Sense, pos2, vec2};
     let width = 382.0; // 384 with the border
     ui.set_width(width);
@@ -611,7 +611,7 @@ fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_id: &str) -> bool {
                     app.act(Action::AddToPlaylist {
                         playlist_id,
                         title: card.title.clone(),
-                        video_id: video_id.to_string(),
+                        video_ids: video_ids.to_vec(),
                     });
                     done = true;
                 }
@@ -642,7 +642,7 @@ fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_id: &str) -> bool {
             name: String::new(),
             description: String::new(),
             privacy: Privacy::default(),
-            song: Some(video_id.to_string()),
+            songs: video_ids.to_vec(),
         }));
         done = true;
     }
@@ -675,24 +675,30 @@ fn playlist_row(app: &App, ui: &mut egui::Ui, card: &ytfast_core::read::Card) ->
         );
         let left = cover.right() + 16.0;
         let room = (rect.right() - 24.0 - left).max(0.0);
-        // Two lines of 16.8, 4 apart, centred.
-        let top = rect.center().y - 18.8;
-        let title = theme::fit(ui, &card.title, theme::medium(14.0), PALETTE.text, room, 1);
+        // Two lines, 4 apart, centred: 14 (16 from a window 1364 wide) on
+        // lines 1.2 times as tall.
+        let size = theme::text_size(ui);
+        let line_height = size * 1.2;
+        let top = rect.center().y - line_height - 2.0;
+        let title = theme::fit(ui, &card.title, theme::medium(size), PALETTE.text, room, 1);
         let under = theme::fit(
             ui,
             &card.subtitle,
-            theme::regular(14.0),
+            theme::regular(size),
             PALETTE.secondary,
             room,
             1,
         );
         ui.painter().galley(
-            pos2(left, top + (16.8 - title.size().y) / 2.0),
+            pos2(left, top + (line_height - title.size().y) / 2.0),
             title,
             PALETTE.text,
         );
         ui.painter().galley(
-            pos2(left, top + 20.8 + (16.8 - under.size().y) / 2.0),
+            pos2(
+                left,
+                top + line_height + 4.0 + (line_height - under.size().y) / 2.0,
+            ),
             under,
             PALETTE.secondary,
         );
