@@ -94,9 +94,11 @@ pub const SHADOW: Shadow = Shadow {
 const SATURATE: f32 = 1.5;
 const BRIGHTNESS: f32 = 0.7;
 const SCALE: f32 = 1.2;
-/// The cover's blur, in the background texture's own pixels (64 across):
-/// 60 points on a cover drawn about 1536 wide at 1280.
-const BLUR: f32 = 2.5;
+/// The cover's blur, in the background texture's own pixels (64 across).
+/// The theme blurs 60 points on top of kawarp's ten blur passes, which
+/// leaves only the cover's broad areas of colour: matched by eye against
+/// the theme on music.youtube.com with the same cover (After Hours).
+const BLUR: f32 = 5.0;
 const SIDE: usize = 64;
 /// The side of the cover kept for the background (`backend::Picture::soft`).
 pub const SOFT: usize = 24;
