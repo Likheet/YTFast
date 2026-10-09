@@ -51,6 +51,16 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             for choice in Theme::ALL {
                 theme_choice(app, ui, choice);
             }
+            if app.settings.theme == Theme::DynamicBackground {
+                switch(
+                    app,
+                    ui,
+                    "Moving background",
+                    "The song's colours drift slowly while it plays. Off, they stay still, and YTFast draws the window less often.",
+                    app.settings.moving_background,
+                    Setting::MovingBackground,
+                );
+            }
 
             ui.add_space(18.0);
             heading(ui, "Account");

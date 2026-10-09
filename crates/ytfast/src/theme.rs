@@ -16,16 +16,23 @@ pub enum Theme {
     YouTubeMusic,
     /// A charcoal theme with rounder shapes and a warm accent.
     Premium,
+    /// The playing song's cover, blurred and slowly moving, behind the
+    /// whole window, with glass over it (`crate::dynamic`).
+    DynamicBackground,
 }
 
 impl Theme {
-    pub const ALL: [Self; 2] = [Self::YouTubeMusic, Self::Premium];
+    pub const ALL: [Self; 3] = [Self::YouTubeMusic, Self::Premium, Self::DynamicBackground];
 
     /// Its name, and what it is, as Settings lists it.
     pub fn words(self) -> (&'static str, &'static str) {
         match self {
             Self::YouTubeMusic => ("YouTube Music", "YouTube Music's own look"),
             Self::Premium => ("Premium", "Charcoal, rounder, with a warm accent"),
+            Self::DynamicBackground => (
+                "Dynamic Background",
+                "The playing song's colours behind everything, under glass",
+            ),
         }
     }
 }
@@ -44,6 +51,11 @@ pub fn set(theme: Theme) {
 /// Whether the Premium theme is being drawn.
 pub fn premium() -> bool {
     CURRENT.get() == Theme::Premium
+}
+
+/// Whether the Dynamic Background theme is being drawn.
+pub fn dynamic() -> bool {
+    CURRENT.get() == Theme::DynamicBackground
 }
 
 /// A theme's colours.
@@ -108,7 +120,13 @@ impl std::ops::Deref for CurrentPalette {
     type Target = Palette;
 
     fn deref(&self) -> &Palette {
-        if premium() { &PREMIUM } else { &YOUTUBE_MUSIC }
+        if premium() {
+            &PREMIUM
+        } else if dynamic() {
+            &crate::dynamic::PALETTE
+        } else {
+            &YOUTUBE_MUSIC
+        }
     }
 }
 
@@ -506,7 +524,7 @@ pub fn restyle(ctx: &egui::Context) {
 /// for other scripts come later, when needed (see [`ScriptFonts`]).
 pub fn install(ctx: &egui::Context) -> ScriptFonts {
     let rendering = fastframe_text::detect();
-    ctx.set_fonts(font_definitions(rendering, false));
+    ctx.set_fonts(font_definitions(rendering, false, false));
     egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
 
@@ -526,19 +544,25 @@ pub fn install(ctx: &egui::Context) -> ScriptFonts {
         rendering,
         state: Loading::NotWanted,
         unsure: std::collections::BTreeSet::new(),
+        inter_first: false,
     }
 }
 
 /// Inter at every weight and egui's own fonts (emoji among them), and with
 /// `scripts` the computer's fonts for the scripts Inter does not draw.
+/// Roboto goes in front of Inter unless `inter_first` (the Dynamic
+/// Background theme sets everything in Inter).
 fn font_definitions(
     rendering: fastframe_text::TextRendering,
     scripts: bool,
+    inter_first: bool,
 ) -> egui::FontDefinitions {
     let mut fonts = fastframe_fonts::FontSetup::default()
         .system_fallbacks(scripts)
         .definitions();
-    roboto(&mut fonts);
+    if !inter_first {
+        roboto(&mut fonts);
+    }
     rendering.apply_to(&mut fonts);
     fonts
 }
@@ -590,6 +614,8 @@ pub struct ScriptFonts {
     /// Characters seen that Inter and egui's own fonts may not draw, to
     /// look up in them (see [`ScriptFonts::check`]).
     unsure: std::collections::BTreeSet<char>,
+    /// Inter in front, without Roboto (see [`ScriptFonts::set_inter_first`]).
+    inter_first: bool,
 }
 
 enum Loading {
@@ -603,6 +629,22 @@ enum Loading {
 const MAX_UNSURE: usize = 256;
 
 impl ScriptFonts {
+    /// Sets everything in Inter (the Dynamic Background theme), or in
+    /// Roboto as YouTube Music does; the fonts change from the next frame.
+    pub fn set_inter_first(&mut self, inter_first: bool) {
+        if self.inter_first == inter_first {
+            return;
+        }
+        self.inter_first = inter_first;
+        self.ctx
+            .set_fonts(font_definitions(self.rendering, false, inter_first));
+        // The fonts for other scripts, once wanted, are read again in the
+        // new order on their own thread (a reading under way is let go).
+        if !matches!(self.state, Loading::NotWanted) {
+            self.read();
+        }
+    }
+
     /// Notes the characters in `text` the fonts in use may not draw.
     pub fn want_for(&mut self, text: &str) {
         if !matches!(self.state, Loading::NotWanted) {
@@ -633,11 +675,11 @@ impl ScriptFonts {
     /// Reads the fonts for other scripts, on a thread of their own.
     fn read(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let (ctx, rendering) = (self.ctx.clone(), self.rendering);
+        let (ctx, rendering, inter_first) = (self.ctx.clone(), self.rendering, self.inter_first);
         let reading = std::thread::Builder::new()
             .name("ytfast-fonts".into())
             .spawn(move || {
-                let _ = sender.send(font_definitions(rendering, true));
+                let _ = sender.send(font_definitions(rendering, true, inter_first));
                 ctx.request_repaint();
             });
         self.state = match reading {
@@ -725,6 +767,9 @@ pub fn menu_edge() -> Color32 {
 /// corners 2, 16 above and below the entries, and no shadow.
 /// Premium: the menu colour, corners 12, 6 all round.
 pub fn menu_frame() -> egui::Frame {
+    if dynamic() {
+        return crate::dynamic::menu_frame();
+    }
     if premium() {
         return egui::Frame::new()
             .fill(PALETTE.menu)
@@ -756,6 +801,9 @@ pub fn context_menu(response: &Response) -> egui::Popup<'_> {
 
 /// Sets a menu's width and spacing. Call it first inside a menu.
 pub fn menu(ui: &mut egui::Ui) {
+    if dynamic() {
+        crate::dynamic::glass_behind(ui, crate::dynamic::RADIUS_PANEL_LG);
+    }
     ui.set_width(MENU_WIDTH);
     ui.spacing_mut().item_spacing.y = 0.0;
 }
@@ -783,6 +831,12 @@ fn menu_entry(ui: &mut egui::Ui, icon: Option<Icon>, text: &str) -> Response {
             // Premium: a rounded fill a shade lighter.
             let (corners, hover) = if premium() {
                 (CornerRadius::same(8), PALETTE.surface_hover)
+            } else if dynamic() {
+                // Dynamic Background: white@0.10, corners 8.
+                (
+                    CornerRadius::same(crate::dynamic::RADIUS_HIGHLIGHT),
+                    PALETTE.surface,
+                )
             } else {
                 (CornerRadius::ZERO, Color32::from_white_alpha(13))
             };
@@ -937,6 +991,9 @@ pub fn round_button(
     color: Color32,
     tooltip: &str,
 ) -> Response {
+    if dynamic() && style == Round::Filled {
+        return crate::dynamic::round_filled(ui, icon, diameter, icon_size, tooltip);
+    }
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(diameter), Sense::click());
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
@@ -986,6 +1043,9 @@ pub fn round_button(
 /// A filter button ("Songs", "Albums", a mood): rounded, white at 10%;
 /// white with `#030303` words when chosen (the same weight).
 pub fn chip(ui: &mut egui::Ui, text: &str, chosen: bool, height: f32) -> Response {
+    if dynamic() {
+        return crate::dynamic::chip(ui, text, chosen, height);
+    }
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_string(), regular(14.0), PALETTE.text);
@@ -1056,6 +1116,9 @@ pub fn pill_sized(
     style: Pill,
     width: Option<f32>,
 ) -> Response {
+    if dynamic() {
+        return crate::dynamic::pill(ui, icon, text, style, width);
+    }
     let enabled = ui.is_enabled();
     let color = match style {
         _ if !enabled => PALETTE.disabled,
@@ -1170,6 +1233,9 @@ fn focus_ring(ui: &egui::Ui, rect: Rect, corners: CornerRadius) {
 /// the bar `#3ea6ff`@0.30; off, `#909090` and white@0.30. Named `name`
 /// for screen readers. Takes 36×20.
 pub fn toggle(ui: &mut egui::Ui, on: bool, name: &str) -> Response {
+    if dynamic() {
+        return crate::dynamic::toggle(ui, on, name);
+    }
     let (rect, response) = ui.allocate_exact_size(egui::vec2(36.0, 20.0), Sense::click());
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, name));
     if ui.is_rect_visible(rect) {

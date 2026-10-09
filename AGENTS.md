@@ -60,6 +60,9 @@ crates/ytfast/        the app: an egui window on fastframe
                       behind an album's page)
   src/lyrics.rs       lyrics as the player page shows them
   src/demo.rs         made-up music for `--demo`
+  src/dynamic.rs      the Dynamic Background theme's background, glass
+                      and buttons (its screens: views/dynamic.rs; see
+                      docs/look/dynamic-background.md)
   src/theme.rs        colours, fonts, icons, drawing helpers
   src/views/          what the window draws: backdrop, sidebar, top bar,
                       page, player bar, player page (now_playing), Up

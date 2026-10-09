@@ -38,7 +38,8 @@ pub fn list(app: &App, ui: &mut egui::Ui) {
         .id_salt("queue-list")
         .auto_shrink([false, false]);
     if shown != Some(playing) {
-        let step = Row::QUEUE.height + Row::QUEUE.gap;
+        let queue = Row::QUEUE.themed();
+        let step = queue.height + queue.gap;
         let offset = if current < 2 {
             0.0
         } else {
@@ -116,7 +117,8 @@ fn carry(
     }
     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     // Between which rows it would land.
-    let step = Row::QUEUE.height + Row::QUEUE.gap;
+    let queue = Row::QUEUE.themed();
+    let step = queue.height + queue.gap;
     let gap = ((pointer.y - top) / step + 0.5)
         .floor()
         .clamp(0.0, entries.len() as f32) as usize;
@@ -127,14 +129,18 @@ fn carry(
     );
     // The copy, over everything: its cover and words on `#212121`.
     let rect = Rect::from_min_size(
-        pos2(across.min, pointer.y - Row::QUEUE.height / 2.0),
-        vec2(across.span(), Row::QUEUE.height),
+        pos2(across.min, pointer.y - queue.height / 2.0),
+        vec2(across.span(), queue.height),
     );
     let layer = egui::LayerId::new(egui::Order::Tooltip, ui.id().with("queue-carried"));
     let ghost = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(rect));
-    ghost
-        .painter()
-        .rect_filled(rect, CornerRadius::same(4), PALETTE.panel);
+    if theme::dynamic() {
+        crate::dynamic::glass(ghost.painter(), rect, CornerRadius::same(8));
+    } else {
+        ghost
+            .painter()
+            .rect_filled(rect, CornerRadius::same(4), PALETTE.panel);
+    }
     let track = &entries[from].track;
     let art = Rect::from_min_size(
         pos2(rect.left() + 8.0, rect.center().y - 16.0),
