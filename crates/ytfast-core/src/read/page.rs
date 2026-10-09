@@ -204,6 +204,8 @@ pub struct CardLook {
     pub wide: bool,
     /// The chip chosen now (Home's mood being shown).
     pub chosen: bool,
+    /// Marked explicit (YouTube's "E" before its subtitle).
+    pub explicit: bool,
 }
 
 impl Card {
@@ -272,6 +274,13 @@ pub struct Section {
     /// Its title is YouTube Music's smaller one (`DISPLAY_TWO`), as an
     /// artist's shelves have.
     pub small_title: bool,
+    /// The small words above its title ("DEMO LISTENER", "SIMILAR TO"), as a
+    /// signed-in Home's shelves have.
+    pub strapline: String,
+    /// The picture before its title (the account's photo for "Listen
+    /// again", an artist's), and whether it is round.
+    pub picture: Option<Thumb>,
+    pub round_picture: bool,
 }
 
 /// What a search's top result card shows besides its picture and name.
@@ -390,6 +399,8 @@ pub struct HeaderButtons {
 pub struct Page {
     pub header: Option<Header>,
     pub sections: Vec<Section>,
+    /// Its sort button (the Library's tabs have one).
+    pub sort: Option<super::SortMenu>,
 }
 
 impl Page {
@@ -472,7 +483,11 @@ pub fn page(reply: &Value) -> Page {
     sections.extend(chips(reply));
     walk(reply, &mut sections, &mut None);
     sections.retain(|s| !s.items.is_empty());
-    Page { header, sections }
+    Page {
+        header,
+        sections,
+        sort: super::sort::sort_menu(reply),
+    }
 }
 
 /// The row of buttons above Home's shelves (Energize, Relax, Workout...),
@@ -647,10 +662,21 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
         "gridRenderer" => Shape::Grid,
         _ => Shape::List,
     };
-    let small_title = shelf
-        .pointer("/header/musicCarouselShelfBasicHeaderRenderer/headerStyle")
+    let basic = shelf.pointer("/header/musicCarouselShelfBasicHeaderRenderer");
+    let small_title = basic
+        .and_then(|h| h.get("headerStyle"))
         .and_then(Value::as_str)
         == Some("MUSIC_CAROUSEL_SHELF_BASIC_HEADER_STYLE_DISPLAY_TWO");
+    let strapline = basic
+        .and_then(|h| h.get("strapline"))
+        .and_then(text)
+        .unwrap_or_default();
+    let thumbnail = basic.and_then(|h| h.pointer("/thumbnail/musicThumbnailRenderer"));
+    let picture = thumbnail.and_then(Thumb::best);
+    let round_picture = thumbnail
+        .and_then(|t| t.get("thumbnailCrop"))
+        .and_then(Value::as_str)
+        == Some("MUSIC_THUMBNAIL_CROP_CIRCLE");
     vec![Section {
         title,
         items,
@@ -658,6 +684,9 @@ fn shelf(key: &str, shelf: &Value) -> Vec<Section> {
         shape,
         top,
         small_title,
+        strapline,
+        picture,
+        round_picture,
     }]
 }
 
@@ -808,6 +837,7 @@ fn two_row_card(row: &Value) -> Option<Card> {
         look: CardLook {
             wide: row.get("aspectRatio").and_then(Value::as_str)
                 == Some("MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_RECTANGLE_16_9"),
+            explicit: row.get("subtitleBadges").is_some_and(super::is_explicit),
             ..CardLook::default()
         },
     })
@@ -1332,6 +1362,16 @@ mod tests {
         let mut other = super::page(&fixture("album.json"));
         other.fill_album_songs("VLPLsomething");
         assert!(other.tracks().iter().all(|t| t.album_id.is_none()));
+        // A card YouTube marks explicit says so.
+        assert!(
+            page.sections
+                .iter()
+                .flat_map(|s| &s.items)
+                .any(|i| matches!(
+                    i,
+                    Item::Card(c) if c.look.explicit
+                ))
+        );
     }
 
     #[test]
@@ -1764,6 +1804,47 @@ mod tests {
         let header = page(&older).header.unwrap();
         assert_eq!(header.saved, Some(true));
         assert_eq!(header.library_id.as_deref(), Some("OLAK5uy_old"));
+    }
+
+    #[test]
+    fn a_shelf_header_with_its_strapline_and_picture() {
+        // As a signed-in Home's "Listen again" comes (keys seen on the live
+        // page; the words made up).
+        let reply = serde_json::json!({"contents": [{"musicCarouselShelfRenderer": {
+            "header": {"musicCarouselShelfBasicHeaderRenderer": {
+                "title": {"runs": [{"text": "Listen again"}]},
+                "strapline": {"runs": [{"text": "SAMPLE LISTENER"}]},
+                "headerStyle": "MUSIC_CAROUSEL_SHELF_BASIC_HEADER_STYLE_DEFAULT",
+                "thumbnail": {"musicThumbnailRenderer": {
+                    "thumbnail": {"thumbnails": [{"url": "https://yt3.ggpht.com/sample=s88", "width": 0, "height": 0}]},
+                    "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_CIRCLE"
+                }}
+            }},
+            "contents": [{"musicTwoRowItemRenderer": {
+                "title": {"runs": [{"text": "A playlist"}]},
+                "navigationEndpoint": {"browseEndpoint": {"browseId": "VLPLsample"}}
+            }}]
+        }}]});
+        let page = page(&reply);
+        let shelf = &page.sections[0];
+        assert_eq!(shelf.title, "Listen again");
+        assert_eq!(shelf.strapline, "SAMPLE LISTENER");
+        assert!(shelf.round_picture);
+        assert_eq!(
+            shelf.picture.as_ref().map(|p| p.url.as_str()),
+            Some("https://yt3.ggpht.com/sample=s88")
+        );
+        // A shelf without them has none.
+        let home = page_without_extras();
+        assert!(
+            home.sections
+                .iter()
+                .all(|s| s.strapline.is_empty() && s.picture.is_none())
+        );
+    }
+
+    fn page_without_extras() -> Page {
+        page(&fixture("artist.json"))
     }
 
     #[test]

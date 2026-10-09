@@ -5,7 +5,9 @@
 //! under a wide picture, everything else as shelves under one another.
 
 use egui::{Align, Color32, CornerRadius, Layout, Rect, Sense, UiBuilder, Vec2, pos2, vec2};
-use ytfast_core::read::{Card, Header, Item, Page, Section, Shape, Target, TopResult, Track};
+use ytfast_core::read::{
+    Card, Header, Item, Page, Section, Shape, SortMenu, Target, TopResult, Track,
+};
 
 use crate::app::{Action, App, Dialog, Loadable, QueueMode};
 use crate::backend::Route;
@@ -314,16 +316,7 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                     ui.add_space(6.0);
                     search_chips(app, ui, route, page, query);
                 }
-                (
-                    None,
-                    Route::Library
-                    | Route::LibrarySongs
-                    | Route::LibraryAlbums
-                    | Route::LibraryArtists,
-                ) => {
-                    ui.add_space(16.0);
-                    library_tabs(app, ui, route);
-                }
+                (None, route) if is_library(route) => library_header(app, ui, route, page),
                 (None, Route::History) => title(ui, "History"),
                 (None, Route::Home | Route::Explore) => {}
                 _ => ui.add_space(8.0),
@@ -440,22 +433,254 @@ fn search_chips(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, query:
     ui.add_space(21.3);
 }
 
-/// Playlists, Songs, Albums, Artists.
-fn library_tabs(app: &App, ui: &mut egui::Ui, route: &Route) {
+/// One of the Library's pages.
+fn is_library(route: &Route) -> bool {
+    route.library_tab().is_some()
+}
+
+/// The Library's top, as YouTube Music's (measured signed in): a row of
+/// tabs (LIBRARY, 14/500 capitals, a white line 2 under it, a white@0.10
+/// hairline under the row, 51.3 high); 26 under it the chips (32 high, 12
+/// apart): on the front page Playlists, Songs, Albums and Artists, else a
+/// white square with × (back to the front page) and the chosen one; at
+/// the row's right its sort button; 36 under them the page.
+fn library_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
+    let width = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(vec2(width, 51.3), Sense::hover());
+    // The tabs' row starts 16 before the content, each tab 16 in.
+    ui.painter().hline(
+        (row.left() - 16.0)..=(row.right() - 16.0),
+        row.bottom() - 0.5,
+        egui::Stroke::new(1.0, PALETTE.outline),
+    );
+    let words = ui
+        .painter()
+        .layout_no_wrap("LIBRARY".into(), theme::medium(14.0), PALETTE.text);
+    let tab = Rect::from_min_size(row.min, vec2(words.size().x, 50.7));
+    let response = ui.interact(tab, ui.id().with("library-tab"), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, true, "Library")
+    });
+    ui.painter().galley(
+        pos2(tab.left(), tab.center().y - words.size().y / 2.0),
+        words,
+        PALETTE.text,
+    );
+    ui.painter().hline(
+        tab.x_range(),
+        tab.bottom() - 1.0,
+        egui::Stroke::new(2.0, PALETTE.text),
+    );
+    if response.clicked() {
+        app.act(Action::Navigate(Route::LibraryRecent));
+    }
+
+    ui.add_space(26.0);
+    // The row is 44 high, the chips 6 down it.
+    let row_top = ui.cursor().top();
+    let mut chips_right = ui.max_rect().left();
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        for (tab, name) in [
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let kinds = [
             (Route::Library, "Playlists"),
             (Route::LibrarySongs, "Songs"),
             (Route::LibraryAlbums, "Albums"),
             (Route::LibraryArtists, "Artists"),
-        ] {
-            if theme::chip(ui, name, *route == tab, 36.0).clicked() {
-                app.act(Action::Navigate(tab));
+            (Route::LibraryProfiles, "Profiles"),
+            (Route::LibraryPodcasts, "Podcasts"),
+        ];
+        if *route == Route::LibraryRecent {
+            for (kind, name) in kinds {
+                if theme::chip(ui, name, false, 32.0).clicked() {
+                    app.act(Action::Navigate(kind));
+                }
+            }
+        } else {
+            let (square, cleared) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+            cleared.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "All of the library")
+            });
+            let fill = if cleared.hovered() {
+                egui::Color32::from_rgb(0xd9, 0xd9, 0xd9)
+            } else {
+                PALETTE.text
+            };
+            ui.painter()
+                .rect_filled(square, CornerRadius::same(8), fill);
+            theme::paint_icon(ui, Icon::Close, square, 24.0, PALETTE.window);
+            if cleared.clicked() {
+                app.act(Action::Navigate(Route::LibraryRecent));
+            }
+            if let Some((_, name)) = kinds.iter().find(|(kind, _)| kind == route)
+                && theme::chip(ui, name, true, 32.0).clicked()
+            {
+                app.act(Action::Navigate(Route::LibraryRecent));
             }
         }
+        chips_right = ui.min_rect().right();
     });
-    ui.add_space(8.0);
+    // The sort button at the row's top right; when it does not fit 24
+    // after the chips, on a line of its own under them, at the left (the
+    // row wraps, as YouTube Music's does at 960).
+    let mut wrapped = false;
+    if let Some(sort) = &page.sort {
+        let content = ui.max_rect();
+        sort_button(app, ui, sort, |size| {
+            if chips_right + 24.0 + size.x <= content.right() {
+                pos2(content.right() - size.x, row_top)
+            } else {
+                wrapped = true;
+                pos2(content.left(), row_top + 44.0)
+            }
+        });
+    }
+    ui.add_space(6.0 + 36.0 + if wrapped { 36.0 } else { 0.0 });
+}
+
+/// A Library tab's sort button, as YouTube Music's
+/// (`ytmusic-sort-filter-button-renderer`, measured signed in): the order
+/// shown in 14/500 white, an 18 chevron 8 after it, padding 8 12 8 16, on
+/// white@0.10 with a white@0.10 border, r 20, at most 272 wide, where
+/// `place` puts it (its top left, for its size). Its menu (`ytmusic-multi-select-menu-renderer`)
+/// opens 8 under it, at its right: `#212121`, a white@0.10 border, r 2,
+/// 305 wide; "Sort by" (14 white) over a white@0.10 line, 63.3 down; then,
+/// 8 down, one row 48 high per order, a white tick (24, 14 in) on the one
+/// shown, the words 14 white at 54 in, white@0.05 under the pointer.
+fn sort_button(
+    app: &App,
+    ui: &mut egui::Ui,
+    sort: &SortMenu,
+    place: impl FnOnce(Vec2) -> egui::Pos2,
+) {
+    // The order chosen in YTFast shows at once, before its page arrives.
+    let chosen = sort
+        .orders
+        .first()
+        .and_then(|o| app.settings.library_order.get(&o.browse_id))
+        .and_then(|params| sort.orders.iter().find(|o| o.params == *params))
+        .map_or(sort.chosen.as_str(), |o| o.title.as_str());
+    let words = theme::fit(
+        ui,
+        chosen,
+        theme::medium(14.0),
+        PALETTE.text,
+        272.0 - 16.0 - 8.0 - 18.0 - 12.0 - 1.3,
+        1,
+    );
+    let size = vec2(16.0 + words.size().x + 8.0 + 18.0 + 12.0 + 1.3, 35.3);
+    let rect = Rect::from_min_size(place(size), size);
+    let response = ui.interact(rect, ui.id().with("sort"), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::ComboBox,
+            true,
+            format!("Sort by: {chosen}"),
+        )
+    });
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(20),
+        PALETTE.surface,
+        egui::Stroke::new(1.0, PALETTE.outline),
+        egui::StrokeKind::Inside,
+    );
+    let at = pos2(rect.left() + 16.7, rect.center().y - words.size().y / 2.0);
+    let chevron = Rect::from_min_size(
+        pos2(at.x + words.size().x + 8.0, rect.center().y - 9.0),
+        Vec2::splat(18.0),
+    );
+    ui.painter().galley(at, words, PALETTE.text);
+    theme::paint_icon(ui, Icon::ExpandMore, chevron, 18.0, PALETTE.text);
+
+    let frame = egui::Frame::new()
+        .fill(PALETTE.panel)
+        .stroke(egui::Stroke::new(1.0, theme::MENU_EDGE))
+        .corner_radius(CornerRadius::same(2));
+    egui::Popup::menu(&response)
+        .frame(frame)
+        .width(305.0)
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(8.0)
+        .show(|ui| {
+            ui.set_width(305.0);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            let (title, _) = ui.allocate_exact_size(vec2(305.0, 62.6), Sense::hover());
+            ui.painter().text(
+                pos2(title.left() + 28.0, title.top() + 22.0),
+                egui::Align2::LEFT_TOP,
+                "Sort by",
+                theme::regular(14.0),
+                PALETTE.text,
+            );
+            ui.painter().hline(
+                title.x_range(),
+                title.bottom() - 0.5,
+                egui::Stroke::new(1.0, PALETTE.outline),
+            );
+            ui.add_space(8.0);
+            for order in &sort.orders {
+                let (row, pick) = ui.allocate_exact_size(vec2(305.0, 48.0), Sense::click());
+                let shown = order.title == chosen;
+                pick.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::Button, true, shown, &order.title)
+                });
+                if pick.hovered() || pick.has_focus() {
+                    ui.painter()
+                        .rect_filled(row, 0.0, egui::Color32::from_white_alpha(13));
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if shown {
+                    let tick = Rect::from_min_size(
+                        pos2(row.left() + 14.0, row.top() + 12.0),
+                        Vec2::splat(24.0),
+                    );
+                    theme::paint_icon(ui, Icon::Check, tick, 24.0, PALETTE.text);
+                }
+                theme::paint_line(
+                    ui,
+                    pos2(row.left() + 54.0, row.top() + 14.2),
+                    &order.title,
+                    theme::regular(14.0),
+                    PALETTE.text,
+                    305.0 - 54.0 - 16.0,
+                );
+                if pick.clicked() {
+                    if !shown {
+                        app.act(Action::SortLibrary(order.clone()));
+                    }
+                    ui.close();
+                }
+            }
+            ui.add_space(8.0);
+        });
+}
+
+/// The Library's grids (`ytmusic-grid-renderer[grid-type=library]`): as
+/// many cards across as the window allows (5 under 1150, 6, 7 from 1364, 8
+/// from 1578, 9 from 1800), 16 apart (24 from 1364), rows 40 apart; the
+/// card's side, `width` shared out.
+fn library_grid(window: f32, width: f32) -> (f32, f32) {
+    let across: f32 = if window >= 1800.0 {
+        9.0
+    } else if window >= 1578.0 {
+        8.0
+    } else if window >= 1364.0 {
+        7.0
+    } else if window >= 1150.0 {
+        6.0
+    } else {
+        5.0
+    };
+    let gap = if window >= 1364.0 { 24.0 } else { 16.0 };
+    // A hair under, so the last card is not wrapped by rounding.
+    (
+        ((width - gap * (across - 1.0)) / across - 0.01).max(80.0),
+        gap,
+    )
 }
 
 fn title(ui: &mut egui::Ui, text: &str) {
@@ -722,12 +947,18 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
     };
     // The playlist to queue as a whole: the page's, or an album's own.
     let playlist = source(route).or_else(|| header.library_id.clone());
-    let width = 40.0 + 32.0 + 64.0 + 32.0 + 40.0;
+    // The account's own playlist has more buttons, 16 apart (measured
+    // signed in: Edit, Play, Share and ⋮; its Download is left out).
+    let (width, gap) = if own.is_some() {
+        (40.0 + 16.0 + 64.0 + 16.0 + 40.0 + 16.0 + 40.0, 16.0)
+    } else {
+        (40.0 + 32.0 + 64.0 + 32.0 + 40.0, 32.0)
+    };
     ui.allocate_ui_with_layout(
         vec2(width, 64.0),
         Layout::left_to_right(Align::Center),
         |ui| {
-            ui.spacing_mut().item_spacing.x = 32.0;
+            ui.spacing_mut().item_spacing.x = gap;
             let small = |ui: &mut egui::Ui, icon: Icon, tip: &str| {
                 theme::round_button(ui, icon, 40.0, 20.0, Round::Tonal, PALETTE.text, tip)
             };
@@ -742,6 +973,9 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
                     app.act(Action::OpenDialog(Dialog::Rename {
                         playlist_id: playlist_id.clone(),
                         name: header.title.clone(),
+                        description: header.description.clone(),
+                        privacy: ytfast_core::library::Privacy::from_subtitle(&header.subtitle)
+                            .unwrap_or_default(),
                     }));
                 }
             } else if let Some(id) = save {
@@ -794,6 +1028,15 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
                 }
             });
 
+            if let Some(playlist_id) = &own
+                && small(ui, Icon::Share, "Share").clicked()
+            {
+                ui.ctx().copy_text(format!(
+                    "https://music.youtube.com/playlist?list={playlist_id}"
+                ));
+                app.act(Action::Notify("Link copied to clipboard".into()));
+            }
+
             let more = theme::round_button(
                 ui,
                 Icon::MoreVertical,
@@ -844,6 +1087,9 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
                         Action::OpenDialog(Dialog::Rename {
                             playlist_id: playlist_id.clone(),
                             name: header.title.clone(),
+                            description: header.description.clone(),
+                            privacy: ytfast_core::library::Privacy::from_subtitle(&header.subtitle)
+                                .unwrap_or_default(),
                         }),
                     );
                     item(
@@ -1211,70 +1457,107 @@ fn section_block(
     if !section.title.is_empty() {
         // A list's title has 16 above it (`.header.ytmusic-shelf-renderer`).
         ui.add_space(if list { 16.0 } else { look.above_title });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            // At most `--ytmusic-header-title-max-width`, as the window.
-            let window = ui.ctx().content_rect().width();
-            let widest = if window >= 1578.0 {
-                800.0
-            } else if window >= 1364.0 {
-                640.0
-            } else if window >= 1150.0 {
-                560.0
-            } else {
-                480.0
-            };
-            // Beside it: the arrows (36, 16, 36, then 8) and More.
-            let mut beside = 0.0;
-            if card_shelf || song_shelf {
-                beside += 88.0 + 8.0 + 16.0;
-            }
-            if section.more.is_some() && !show_all {
-                let more =
-                    ui.painter()
-                        .layout_no_wrap("More".into(), theme::medium(14.0), PALETTE.text);
-                beside += more.size().x + 32.0 + 16.0;
-            }
-            let room = (ui.available_width() - beside).clamp(120.0, widest);
-            let title = theme::fit(
-                ui,
-                &section.title,
-                theme::bold(title_size),
-                PALETTE.text,
-                room,
-                2,
-            );
-            let (rect, title_response) = ui.allocate_exact_size(title.size(), Sense::click());
-            ui.painter().galley(rect.min, title, PALETTE.text);
-            // A title with a page of its own opens it (underlined under
-            // the pointer).
-            if let Some(more) = &section.more {
-                if title_response.hovered() {
-                    ui.painter().hline(
-                        rect.x_range(),
-                        rect.bottom() - 2.0,
-                        egui::Stroke::new(1.0, PALETTE.text),
-                    );
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if title_response.clicked() {
-                    app.act(Action::Open(more.clone(), None));
-                }
-            }
-            ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-                // The arrows 16 apart, More 24 before them.
-                ui.spacing_mut().item_spacing.x = 16.0;
+        let title_row = |ui: &mut egui::Ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                // At most `--ytmusic-header-title-max-width`, as the window.
+                let window = ui.ctx().content_rect().width();
+                let widest = if window >= 1578.0 {
+                    800.0
+                } else if window >= 1364.0 {
+                    640.0
+                } else if window >= 1150.0 {
+                    560.0
+                } else {
+                    480.0
+                };
+                // Beside it: the arrows (36, 16, 36, then 8) and More.
+                let mut beside = 0.0;
                 if card_shelf || song_shelf {
-                    arrows(ui, shelf);
-                    ui.add_space(8.0);
+                    beside += 88.0 + 8.0 + 16.0;
                 }
-                if let Some(more) = section.more.as_ref().filter(|_| !show_all)
-                    && theme::pill(ui, None, "More", Pill::Outline(PALETTE.button)).clicked()
-                {
-                    app.act(Action::Open(more.clone(), None));
+                if section.more.is_some() && !show_all {
+                    let more = ui.painter().layout_no_wrap(
+                        "More".into(),
+                        theme::medium(14.0),
+                        PALETTE.text,
+                    );
+                    beside += more.size().x + 32.0 + 16.0;
                 }
+                let room = (ui.available_width() - beside).clamp(120.0, widest);
+                let title = theme::fit(
+                    ui,
+                    &section.title,
+                    theme::bold(title_size),
+                    PALETTE.text,
+                    room,
+                    2,
+                );
+                let (rect, title_response) = ui.allocate_exact_size(title.size(), Sense::click());
+                ui.painter().galley(rect.min, title, PALETTE.text);
+                // A title with a page of its own opens it (underlined under
+                // the pointer).
+                if let Some(more) = &section.more {
+                    if title_response.hovered() {
+                        ui.painter().hline(
+                            rect.x_range(),
+                            rect.bottom() - 2.0,
+                            egui::Stroke::new(1.0, PALETTE.text),
+                        );
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if title_response.clicked() {
+                        app.act(Action::Open(more.clone(), None));
+                    }
+                }
+                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                    // The arrows 16 apart, More 24 before them.
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    if card_shelf || song_shelf {
+                        arrows(ui, shelf);
+                        ui.add_space(8.0);
+                    }
+                    if let Some(more) = section.more.as_ref().filter(|_| !show_all)
+                        && theme::pill(ui, None, "More", Pill::Outline(PALETTE.button)).clicked()
+                    {
+                        app.act(Action::Open(more.clone(), None));
+                    }
+                });
             });
-        });
+        };
+        // A signed-in Home's shelves: small words above the title (14
+        // `#aaa`, capitals, 2 above it), and a picture 56 before both (16
+        // after it, round when YouTube crops it so).
+        let strapline = |ui: &mut egui::Ui| {
+            if !section.strapline.is_empty() {
+                theme::label(
+                    ui,
+                    &section.strapline.to_uppercase(),
+                    theme::regular(14.0),
+                    PALETTE.dim,
+                );
+                ui.add_space(2.0);
+            }
+        };
+        if let Some(picture) = &section.picture {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                let (spot, _) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::hover());
+                if section.round_picture {
+                    widgets::cover(app, ui, spot, Some(picture), true);
+                } else {
+                    widgets::cover_with(app, ui, spot, Some(picture), CornerRadius::same(2));
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    strapline(ui);
+                    title_row(ui);
+                });
+            });
+        } else {
+            strapline(ui);
+            title_row(ui);
+        }
         ui.add_space(16.0);
     }
 
@@ -1360,12 +1643,17 @@ fn section_block(
                         }
                     });
                 } else {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                    // Elsewhere (over Liked Music's songs, measured signed
+                    // in): one row, 32 high, 12 apart, that scrolls
+                    // sideways; 6 above it and 21.3 under it.
+                    ui.add_space(6.0);
+                    carousel(ui, shelf.with("chips"), |ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
                         for card in &cards {
-                            widgets::chip(app, ui, card);
+                            widgets::chip_sized(app, ui, card, 32.0);
                         }
                     });
+                    ui.add_space(21.3);
                 }
             }
             Shape::Carousel => {
@@ -1377,12 +1665,23 @@ fn section_block(
                 });
             }
             Shape::Grid => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(CARD_GAP, 16.0);
-                    for card in &cards {
-                        widgets::card(app, ui, card, look.card);
-                    }
-                });
+                let (card, across, down) = if is_library(route) {
+                    let window = ui.ctx().content_rect().width();
+                    let (card, gap) = library_grid(window, ui.available_width());
+                    (card, gap, 40.0)
+                } else {
+                    (look.card, CARD_GAP, 16.0)
+                };
+                // Cards line up by their tops, whatever their words' height.
+                ui.with_layout(
+                    Layout::left_to_right(Align::Min).with_main_wrap(true),
+                    |ui| {
+                        ui.spacing_mut().item_spacing = vec2(across, down);
+                        for item in &cards {
+                            widgets::card(app, ui, item, card);
+                        }
+                    },
+                );
             }
             // Search results: one under another.
             Shape::List => {

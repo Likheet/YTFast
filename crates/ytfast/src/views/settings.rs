@@ -42,7 +42,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 
             ui.add_space(18.0);
             heading(ui, "Account");
-            if let Auth::SignedIn { name } = &app.auth {
+            if let Auth::SignedIn { name, .. } = &app.auth {
                 let browser = app.settings.browser.as_deref().unwrap_or("your browser");
                 text(ui, &format!("Signed in as {name}, with the sign-in from {browser}."));
             }

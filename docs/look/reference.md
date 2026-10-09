@@ -187,6 +187,16 @@ cards, 120 to 226 wide.
 - First, up to 6 text suggestions: rows 48 high; a search icon 18 in a
   50-wide column (padding 0 16); the words 14/400/16.8 `#ffffff@0.50`
   with what was typed in 500 weight, padding-left 5.
+- Signed in (measured 8 Oct 2026): the search icon is white@0.50. An
+  empty, focused box lists the account's past searches (7); typed words
+  list the past searches beginning so first. A past search has a clock
+  for its icon and, at the right, a bin 18 white@0.50 in a 36 button 4
+  from the edge ("Remove"); its words end 40 sooner. The row under the
+  pointer (bin included) is white@0.10; the bin does not change. A click
+  removes the row and shows "This item has been removed from your
+  history."
+- The toast (`tp-yt-paper-toast`): at least 288 wide and as wide as its
+  words, padding 16 24.
 - Then up to 4 rich suggestions (an artist, songs, albums): rows 56 high,
   padding 0 12; picture 32 (round for an artist, r 4 otherwise), 16
   after it; title 14/500/16.8 white; under it (3 between) "Song •
@@ -440,11 +450,86 @@ YTFast today (AGENTS.md, run-the-app.md): Space, ←/→ (10 s), ↑/↓
 (volume), Shift+N/P, M, L (like), `/` or Ctrl+F, Esc. Plain arrows are
 not YouTube Music's (they scroll the page there).
 
+## Signed in (measured 8 October 2026, the owner's account, 1280×820)
+
+Sizes and colours only; nothing of the account is kept here.
+
+- **The menu's lower part.** "New playlist": 200×36 at x 20 (16 under the
+  divider), white@0.10, r 18, icon 24 then 6, words 14/500 `#f1f1f1`. The
+  playlists: rows 56 high (padding 4 16, r 8), from 16 under New
+  playlist; the name 14/500 on an 18 line at 10.5, 3 under it the line
+  12/400 on 16, white@0.70; Liked Music's pin 12, 4 before its words;
+  under the pointer a white disc 24 with a 16 play icon, its right edge 16
+  in. The list scrolls with a classic bar (`#aaa`).
+- **Top bar's right part:** a cast button 40×32, 8, then the account's
+  photo 26 round on `#909090` at x 1142.
+- **Account menu:** 300 wide, `#282828`, r 12, shadow `0 4px 32px`
+  black@0.10, its right edge on the photo's, 8 under the bar. Header:
+  padding 16, photo 40 round, 16, the name and the handle 16/400 on 22
+  lines, 8, "Manage your Google Account" 14/400/20 `#3ea6ff`; a 1 px
+  white@0.20 line. Groups padding 8 0, a line between: entries 40 high
+  (padding 0 36 0 16), icon 18 white, 16, words 14/400/20 white. Your
+  channel, Paid memberships, Switch account (a chevron 18 at its right),
+  Sign out | Upload music, History, Settings, Terms & privacy policy,
+  Help, Send feedback.
+- **Home's personal shelves:** a header 56 high: a picture 56 (round:
+  `thumbnailCrop` CIRCLE; the account's photo for "Listen again"), 16,
+  then the strapline 14/400 `#aaa` in capitals (2 under it) over the title
+  row (28/700, More and arrows, 36). Without a picture: strapline and
+  title, 52.3. In the reply: `musicCarouselShelfBasicHeaderRenderer.strapline`
+  and `.thumbnail.musicThumbnailRenderer`.
+- **Library** (`FEmusic_library_landing`): a tab row (LIBRARY selected,
+  DOWNLOADS; 14/500 capitals, padding 16 0, margin 0 16, a 2 white line
+  under the chosen one, white@0.50 for the other; a white@0.10 hairline
+  under the row; 51.3 high) right under the top bar; 26 under it the
+  chips row (44, `ytmusic-side-aligned-item-renderer`): Playlists, Songs,
+  Albums, Artists, Profiles, Podcasts, 32 high, 12 apart, white@0.10, r 8;
+  at its right a sort button "Recent activity" (white@0.10, border 1
+  white@0.10, r 20, padding 8 12 8 16, words 14/500 white, a chevron 18 8
+  after, at most 272 wide; 147.5×35.3 at x 1018.8, at the row's top, its
+  right at the content's; no change under the pointer). Its menu
+  (`ytmusic-multi-select-menu-renderer`) opens 8 under it at its right:
+  `#212121`, border 1 white@0.10, r 2, at least 305 wide; "Sort by"
+  14/400 white at 28.7, 22.7 in a 63.3 title over a white@0.10 line; then
+  padding 8 and a row 48 per order: a white tick 24 at 14, 12 down on the
+  one shown, the words 14/400/19.6 white at 54; white@0.05 under the
+  pointer. Each tab has its own orders: the front page Recent activity,
+  Recently saved, Recently played; Playlists and Songs Recently saved, A
+  to Z, Z to A. Each order reloads the page (`browseSectionListReloadEndpoint`),
+  its token a browse request for the same page with a `params` of its own
+  (`ggMGKgQI...`). The row wraps (`flex-wrap`, start items 24 from the
+  button): at 960 with the menu open the button sits under the chips at
+  the left (294.3, 185.3) and the row is 80 high. Profiles is
+  `FEmusic_library_user_profile_channels_list` with `params` `ggMCCAc=`
+  (rows 80, a round picture 56); Podcasts `FEmusic_library_non_music_audio_list`
+  (a grid). 36 under the row the grid: 6 across at 1280 (124.7 wide), 16 across, 40
+  down, no heading. A chip chosen (/library/songs...): a white square 32
+  with × first, then the chosen chip alone (white). Songs: a list (rows 48
+  and a hairline, cover 32 r 4, 24 after it, title 6/15 of the room, artist
+  and album sharing the rest, the length at the right end, like, dislike
+  and ⋮ before it; a liked song keeps its filled thumb shown), starting
+  with a "Shuffle all" row. Albums and Playlists: grids as above. Artists:
+  rows 80 with a round picture.
+- **The account's own playlist:** five round buttons, 16 apart: Download,
+  Edit playlist, Play (64), Share, ⋮ (40 each, white@0.10); its line
+  "Playlist • Public • 2024"; above the songs a "Sort" control (24 icon,
+  8, words 14/500/22, 16 in), 16 above the rows.
+- **Liked Music:** buttons Download, Play, ⋮, 32 apart; above its songs a
+  row of filter chips (32 high, 12 apart, one row that scrolls sideways),
+  24 under it, then Sort.
+- **New playlist dialog:** 560 wide, `#212121`, the window behind dimmed
+  by 30%. Header padding 24 24 0, "New playlist" 24/700/28.8. Body padding
+  32 24: Title (a 20 room for the label to rise into, then the label
+  14/400 white@0.70 where the words go until some are typed; words 14 on
+  19.6; a 1 px `#606060` line, 2 px `#3ea6ff` while focused), Description
+  (margin 32 0 40), Privacy (a floating label "Privacy" `#aaa`, an icon 24,
+  the choice 14/500 white, an arrow; Public "Anyone can search for and
+  view", Unlisted "Anyone with the link can view", Private "Only you can
+  view"), a Collaborate switch (40×24). Buttons padding 16 24 24, 8 apart:
+  Cancel (words `#f1f1f1`) and Create (`#f1f1f1`, words `#0f0f0f`), r 18.
+
 ## Not measured yet (needs YouTube Music signed in)
 
-Library (its tabs and grids), Liked Music, the account's own playlist
-page (edit, privacy), the account menu, History, the menu's playlists and
-"New playlist", Home's personal shelves (Quick picks, Listen again),
-lyrics on the player page, the "Save to playlist" dialog, the "New
-playlist" dialog, toasts, the Settings dialog, and the playlist page of a
-playlist made by a person (signed out it looks like the album page).
+History, lyrics on the player page, the "Save to playlist" dialog's
+"Recent" shelf, toasts with an action, the Settings dialog, the player bar
+and song menus with the account's own likes.

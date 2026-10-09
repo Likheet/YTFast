@@ -68,8 +68,16 @@ fn main() -> eframe::Result<()> {
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     start_log(verbose, demo);
 
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
-        .expect("the icon is a PNG");
+    // On the Mac the app's own icon (YTFast.app's, with the margins every
+    // Mac icon has) stays in the Dock: eframe would put this one, which
+    // fills its square, in its place while YTFast runs. The default icon
+    // tells it to leave the Dock alone.
+    let icon = if cfg!(target_os = "macos") {
+        egui::IconData::default()
+    } else {
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
+            .expect("the icon is a PNG")
+    };
     // The demo keeps its window size and the like in a file of its own: it
     // may be open beside YTFast in real use, and the real app's file holds
     // its settings, which the demo would write back as they were when it
@@ -84,7 +92,10 @@ fn main() -> eframe::Result<()> {
             .with_icon(std::sync::Arc::new(icon))
             .with_app_id("ytfast")
             .with_inner_size(app::WINDOW_SIZE)
-            .with_min_inner_size(app::MIN_WINDOW_SIZE),
+            .with_min_inner_size(app::MIN_WINDOW_SIZE)
+            // On Windows, YTFast's top bar is the title bar, with buttons of
+            // its own (`views::window_frame`).
+            .with_decorations(!cfg!(windows)),
         persistence_path,
         ..Default::default()
     };

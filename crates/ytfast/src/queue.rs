@@ -4,7 +4,37 @@
 //! entries, and an answer about one entry (a finished download, a report)
 //! can never be applied to another.
 
-use ytfast_core::read::Track;
+use ytfast_core::read::{Track, TrackKind};
+
+/// The title a song has while only its ID is known (a button that plays a
+/// mix or a shuffle names only the song it starts with).
+pub const UNNAMED: &str = "Song";
+
+/// Fills in what `to` lacks from `from`, another answer about the same
+/// song: its name, artists, album, cover, length. True when something
+/// changed.
+pub fn fill_in(to: &mut Track, from: &Track) -> bool {
+    if to.video_id != from.video_id {
+        return false;
+    }
+    let before = to.clone();
+    if (to.title.is_empty() || to.title == UNNAMED) && !from.title.is_empty() {
+        to.title.clone_from(&from.title);
+    }
+    if to.artists.is_empty() {
+        to.artists.clone_from(&from.artists);
+    }
+    to.album = to.album.take().or_else(|| from.album.clone());
+    to.album_id = to.album_id.take().or_else(|| from.album_id.clone());
+    to.artist_id = to.artist_id.take().or_else(|| from.artist_id.clone());
+    to.thumbnail = to.thumbnail.take().or_else(|| from.thumbnail.clone());
+    to.duration_seconds = to.duration_seconds.or(from.duration_seconds);
+    if to.kind == TrackKind::Unknown {
+        to.kind = from.kind.clone();
+    }
+    to.more = to.more.take().or_else(|| from.more.clone());
+    *to != before
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -169,6 +199,16 @@ impl Queue {
             self.current = Some(0);
         }
         added
+    }
+
+    /// Fills in, wherever `track` is queued, what its entries lack
+    /// ([`fill_in`]). True when something changed.
+    pub fn fill_in(&mut self, track: &Track) -> bool {
+        let mut changed = false;
+        for entry in &mut self.entries {
+            changed |= fill_in(&mut entry.track, track);
+        }
+        changed
     }
 
     /// Puts a song right after the current one.

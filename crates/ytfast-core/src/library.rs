@@ -35,6 +35,31 @@ pub enum Privacy {
 }
 
 impl Privacy {
+    /// All three, in YouTube Music's order.
+    pub const ALL: [Self; 3] = [Self::Public, Self::Unlisted, Self::Private];
+
+    /// Its name, and what it means, as YouTube Music's menu says them.
+    pub fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Public => ("Public", "Anyone can search for and view"),
+            Self::Unlisted => ("Unlisted", "Anyone with the link can view"),
+            Self::Private => ("Private", "Only you can view"),
+        }
+    }
+
+    /// Read from a playlist page's line ("Playlist • Public • 2024").
+    pub fn from_subtitle(subtitle: &str) -> Option<Self> {
+        subtitle
+            .split('•')
+            .map(str::trim)
+            .find_map(|part| match part {
+                "Public" => Some(Self::Public),
+                "Unlisted" => Some(Self::Unlisted),
+                "Private" => Some(Self::Private),
+                _ => None,
+            })
+    }
+
     fn status(self) -> &'static str {
         match self {
             Self::Private => "PRIVATE",
@@ -73,6 +98,9 @@ impl SearchFilter {
 /// The parts of the library.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LibraryTab {
+    /// The Library's front page: everything in it, most recently used
+    /// first (YouTube Music's "Recent activity").
+    Recent,
     Playlists,
     /// Songs saved to the library. A long list: [`Session::long_page`]
     /// with this tab's [`LibraryTab::browse_id`] loads all of it.
@@ -80,6 +108,10 @@ pub enum LibraryTab {
     Albums,
     /// The artists of the songs in the library.
     Artists,
+    /// People's profiles the account follows (those with music).
+    Profiles,
+    /// Podcasts saved to the library.
+    Podcasts,
     /// The artists the account subscribes to.
     Subscriptions,
 }
@@ -88,11 +120,23 @@ impl LibraryTab {
     /// The tab's page.
     pub fn browse_id(self) -> &'static str {
         match self {
+            Self::Recent => "FEmusic_library_landing",
             Self::Playlists => "FEmusic_liked_playlists",
             Self::Songs => LIBRARY_SONGS,
             Self::Albums => "FEmusic_liked_albums",
             Self::Artists => "FEmusic_library_corpus_track_artists",
+            Self::Profiles => "FEmusic_library_user_profile_channels_list",
+            Self::Podcasts => "FEmusic_library_non_music_audio_list",
             Self::Subscriptions => "FEmusic_library_corpus_artists",
+        }
+    }
+
+    /// The `params` its page wants with its ID, as the Library's chip for
+    /// it sends them (a sort order's own replace them).
+    pub fn params(self) -> Option<&'static str> {
+        match self {
+            Self::Profiles => Some("ggMCCAc="),
+            _ => None,
         }
     }
 }
@@ -161,6 +205,22 @@ impl Session {
             .await
     }
 
+    /// Changes one of the account's own playlists' name, description and
+    /// privacy at once (YouTube Music's Edit playlist).
+    pub async fn edit_playlist_details(
+        &self,
+        playlist_id: &str,
+        name: &str,
+        description: &str,
+        privacy: Privacy,
+    ) -> Result<(), ApiError> {
+        self.edit_playlist(edit_body(
+            playlist_id,
+            details_actions(name, description, privacy),
+        ))
+        .await
+    }
+
     /// Adds songs to the end of one of the account's own playlists. A
     /// song already in it is added again (YouTube Music's "Add anyway").
     pub async fn add_to_playlist(
@@ -206,6 +266,19 @@ impl Session {
             .call("music/get_search_suggestions", suggestions_body(text))
             .await?;
         Ok(read::search_suggestions(&reply))
+    }
+
+    /// Removes one of the account's past searches from its search
+    /// history, by the token its suggestion carries
+    /// ([`read::SuggestedWords::forget`]).
+    pub async fn forget_search(&self, token: &str) -> Result<(), ApiError> {
+        let reply = self.call("feedback", feedback_body(token)).await?;
+        match read::feedback_processed(&reply) {
+            Some(false) => Err(ApiError::Unexpected(
+                "the search was not removed from the history".into(),
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Search results of one kind only (songs, albums...): `params` as a
@@ -255,10 +328,13 @@ impl Session {
     }
 
     /// One part of the library, with the rest of a long list up to a
-    /// limit (see `Session::library_page`). The whole of the library's
-    /// songs comes from [`Session::long_page`] instead.
-    pub async fn library(&self, tab: LibraryTab) -> Result<Page, ApiError> {
-        self.library_page(tab.browse_id()).await
+    /// limit (see `Session::library_page`), in the order `params` asks for
+    /// (one of its sort button's, [`read::SortOrder`]), else YouTube's.
+    /// The whole of the library's songs comes from [`Session::long_page`]
+    /// instead.
+    pub async fn library(&self, tab: LibraryTab, params: Option<&str>) -> Result<Page, ApiError> {
+        self.library_page(tab.browse_id(), params.or(tab.params()))
+            .await
     }
 
     /// Listening History as a page, grouped by when (Today, Yesterday...).
@@ -324,6 +400,16 @@ fn rename_action(name: &str) -> Value {
     json!({ "action": "ACTION_SET_PLAYLIST_NAME", "playlistName": clean(name) })
 }
 
+/// A name, a description and a privacy, as ytmusicapi's `edit_playlist`
+/// sends them.
+fn details_actions(name: &str, description: &str, privacy: Privacy) -> Vec<Value> {
+    vec![
+        rename_action(name),
+        json!({ "action": "ACTION_SET_PLAYLIST_DESCRIPTION", "playlistDescription": clean(description) }),
+        json!({ "action": "ACTION_SET_PLAYLIST_PRIVACY", "playlistPrivacy": privacy.status() }),
+    ]
+}
+
 fn add_actions(video_ids: &[String]) -> Vec<Value> {
     video_ids
         .iter()
@@ -354,6 +440,10 @@ fn remove_actions(items: &[(String, String)]) -> Vec<Value> {
 
 fn suggestions_body(text: &str) -> Value {
     json!({ "input": text })
+}
+
+fn feedback_body(token: &str) -> Value {
+    json!({ "feedbackTokens": [token] })
 }
 
 fn search_body(query: &str, params: &str) -> Value {
@@ -437,6 +527,23 @@ mod tests {
     }
 
     #[test]
+    fn editing_a_playlists_details() {
+        assert_eq!(
+            details_actions(" Road <trip> ", "For the car", Privacy::Unlisted),
+            [
+                json!({"action": "ACTION_SET_PLAYLIST_NAME", "playlistName": "Road trip"}),
+                json!({"action": "ACTION_SET_PLAYLIST_DESCRIPTION", "playlistDescription": "For the car"}),
+                json!({"action": "ACTION_SET_PLAYLIST_PRIVACY", "playlistPrivacy": "UNLISTED"}),
+            ]
+        );
+        assert_eq!(
+            Privacy::from_subtitle("Playlist • Public • 2024"),
+            Some(Privacy::Public)
+        );
+        assert_eq!(Privacy::from_subtitle("Auto playlist • 2026"), None);
+    }
+
+    #[test]
     fn editing_playlists() {
         assert_eq!(
             edit_body("VLPLmine", vec![rename_action("New name")]),
@@ -475,6 +582,9 @@ mod tests {
     #[test]
     fn searching() {
         assert_eq!(suggestions_body("fad"), json!({"input": "fad"}));
+        // Nothing typed yet: the past searches.
+        assert_eq!(suggestions_body(""), json!({"input": ""}));
+        assert_eq!(feedback_body("t"), json!({"feedbackTokens": ["t"]}));
         assert_eq!(
             search_body("daft punk", SearchFilter::Songs.params()),
             json!({"query": "daft punk", "params": "EgWKAQIIAWoMEA4QChADEAQQCRAF"})
@@ -505,6 +615,8 @@ mod tests {
             LibraryTab::Songs,
             LibraryTab::Albums,
             LibraryTab::Artists,
+            LibraryTab::Profiles,
+            LibraryTab::Podcasts,
             LibraryTab::Subscriptions,
         ]
         .iter()
@@ -517,8 +629,13 @@ mod tests {
                 "FEmusic_liked_videos",
                 "FEmusic_liked_albums",
                 "FEmusic_library_corpus_track_artists",
+                "FEmusic_library_user_profile_channels_list",
+                "FEmusic_library_non_music_audio_list",
                 "FEmusic_library_corpus_artists"
             ]
         );
+        // Profiles' chip sends params of its own (measured signed in).
+        assert_eq!(LibraryTab::Profiles.params(), Some("ggMCCAc="));
+        assert_eq!(LibraryTab::Podcasts.params(), None);
     }
 }
