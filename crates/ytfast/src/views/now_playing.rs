@@ -3,6 +3,10 @@
 //! Lyrics and Related, on the window's own near-black. Lyrics follow the
 //! song in the Even Better Lyrics Plus way: the line being sung lit, the
 //! rest dimmed, scrolling smoothly; click a line to jump there.
+//!
+//! Premium: the cover (at most 420, r 16) with the song's name and artist
+//! under it, over a still wash of the cover; the tabs as one rounded
+//! strip; the lyrics larger.
 
 use egui::{
     Align, Align2, Color32, CornerRadius, Layout, Rect, Sense, UiBuilder, Vec2, pos2, vec2,
@@ -12,7 +16,7 @@ use crate::app::{Action, App, NpTab, PlayState};
 use crate::lyrics::{Lyrics, State};
 use crate::queue::Entry;
 use crate::theme::{self, Icon, PALETTE};
-use crate::views::{page, queue_panel, widgets};
+use crate::views::{backdrop, page, queue_panel, widgets};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     let area = ui.max_rect();
@@ -27,6 +31,32 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         return;
     };
 
+    let panel = if theme::premium() {
+        premium_cover(app, ui, area, entry)
+    } else {
+        youtube_music_cover(app, ui, area, entry)
+    };
+
+    let mut ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(panel)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    ui.spacing_mut().item_spacing.y = 0.0;
+    if theme::premium() {
+        premium_tabs(app, &mut ui, entry);
+    } else {
+        tabs(app, &mut ui, entry);
+    }
+    match app.np_tab {
+        NpTab::UpNext => queue_panel::list(app, &mut ui),
+        NpTab::Lyrics => lyrics(app, &mut ui, entry),
+        NpTab::Related => related(app, &mut ui, entry),
+    }
+}
+
+/// YouTube Music's cover, large on the left. Returns where the panel goes.
+fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> Rect {
     // YouTube Music's spacing, by the window's width: above, at the sides,
     // between the cover and the panel, and the panel's share of the rest
     // (at most 800).
@@ -63,19 +93,143 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         CornerRadius::same(8),
     );
     cover_click(app, ui, art);
+    panel
+}
 
-    let mut ui = ui.new_child(
+/// Premium's cover: a still wash of it behind the page (the small cover
+/// already loaded, so nothing moves), the cover at most 420 (r 16), and the
+/// song's name (24 bold) and artist (15) under it. Returns where the panel
+/// goes.
+fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rect {
+    if let Some(thumb) = &entry.track.thumbnail
+        && let Some((texture, _)) = app.page_cover(ui.ctx(), &thumb.sized(120))
+    {
+        backdrop::listening(ui, area, texture);
+    }
+    let (art, panel) = listening_layout(area);
+    widgets::cover_with(
+        app,
+        ui,
+        art,
+        entry.track.thumbnail.as_ref(),
+        CornerRadius::same(16),
+    );
+    cover_click(app, ui, art);
+    let words = Rect::from_min_size(
+        pos2(art.left(), art.bottom() + 24.0),
+        vec2(art.width(), 80.0),
+    );
+    let mut details = ui.new_child(
         UiBuilder::new()
-            .max_rect(panel)
+            .max_rect(words)
             .layout(Layout::top_down(Align::Min)),
     );
-    ui.spacing_mut().item_spacing.y = 0.0;
-    tabs(app, &mut ui, entry);
-    match app.np_tab {
-        NpTab::UpNext => queue_panel::list(app, &mut ui),
-        NpTab::Lyrics => lyrics(app, &mut ui, entry),
-        NpTab::Related => related(app, &mut ui, entry),
+    theme::label(
+        &mut details,
+        &entry.track.title,
+        theme::bold(24.0),
+        PALETTE.text,
+    );
+    details.add_space(6.0);
+    theme::label(
+        &mut details,
+        &entry.track.artists,
+        theme::regular(15.0),
+        PALETTE.secondary,
+    );
+    panel
+}
+
+/// Premium's places: the cover (at most 420) and its words centred in the
+/// left part, the panel taking 56% of the room (at most 720), 24 in.
+fn listening_layout(area: Rect) -> (Rect, Rect) {
+    let width = (area.width() - 48.0).clamp(0.0, 1280.0);
+    let inner = Rect::from_center_size(area.center(), vec2(width, (area.height() - 48.0).max(0.0)));
+    let gap = if width >= 900.0 { 64.0 } else { 32.0 };
+    let panel_width = (width * 0.56).min(720.0);
+    let panel = Rect::from_min_max(pos2(inner.right() - panel_width, inner.top()), inner.max);
+    let main = Rect::from_min_max(
+        inner.min,
+        pos2((panel.left() - gap).max(inner.left()), inner.bottom()),
+    );
+    let side = main
+        .width()
+        .min((main.height() - 104.0).max(0.0))
+        .min(420.0);
+    let art = Rect::from_min_size(
+        pos2(
+            main.center().x - side / 2.0,
+            main.center().y - (side + 88.0) / 2.0,
+        ),
+        Vec2::splat(side),
+    );
+    (art, panel)
+}
+
+/// Premium's tabs: Up next, Lyrics and Related, equally wide in a rounded
+/// strip 48 high, the chosen one filled.
+fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
+    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+    ui.painter()
+        .rect_filled(bar, CornerRadius::same(12), PALETTE.surface);
+    let no_lyrics = matches!(app.lyrics.get(&entry.track.video_id), Some(State::Missing));
+    let tabs = [
+        (NpTab::UpNext, "UP NEXT", "Up next"),
+        (NpTab::Lyrics, "LYRICS", "Lyrics"),
+        (NpTab::Related, "RELATED", "Related"),
+    ];
+    let width = (bar.width() - 8.0) / 3.0;
+    for (index, (tab, name, label)) in tabs.into_iter().enumerate() {
+        let chosen = app.np_tab == tab;
+        let enabled = !(tab == NpTab::Lyrics && no_lyrics) || chosen;
+        let color = if chosen {
+            PALETTE.text
+        } else if enabled {
+            PALETTE.secondary
+        } else {
+            PALETTE.disabled
+        };
+        let rect = Rect::from_min_size(
+            pos2(bar.left() + 4.0 + index as f32 * width, bar.top() + 4.0),
+            vec2(width, 40.0),
+        );
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(rect, ui.id().with(("tab", name)), sense);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, chosen, name)
+        });
+        if chosen || response.hovered() && enabled {
+            let fill = if chosen {
+                PALETTE.field
+            } else {
+                PALETTE.surface_hover
+            };
+            ui.painter().rect_filled(rect, CornerRadius::same(9), fill);
+        }
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(9),
+                egui::Stroke::new(1.0, PALETTE.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            label,
+            theme::medium(14.0),
+            color,
+        );
+        if enabled && response.clicked() {
+            app.act(Action::NowPlayingTab(tab));
+        }
     }
+    ui.add_space(16.0);
 }
 
 /// A click on the cover pauses and plays again, as on YouTube Music, and
@@ -215,6 +369,8 @@ fn lyrics(app: &App, ui: &mut egui::Ui, entry: &Entry) {
 const LIT: f32 = 1.0;
 const SUNG: f32 = 0.34;
 const COMING: f32 = 0.5;
+/// Premium's sung lines, a little brighter.
+const PREMIUM_SUNG: f32 = 0.40;
 
 fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let id = ui.id().with(("lyrics", video_id));
@@ -258,15 +414,23 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         let width = ui.available_width() - 16.0;
         // Lines that follow the song are large and bold; plain ones are
         // set as YouTube Music sets them (14 on lines 19.6 apart).
-        let (font, gap, line_height) = if lyrics.synced {
-            (theme::bold(24.0), 16.0, None)
-        } else {
-            (theme::regular(14.0), 0.0, Some(19.6))
+        // Premium: larger (32 bold, 26 in less room; plain ones 18 on 27).
+        let premium = theme::premium();
+        let (font, gap, line_height) = match (lyrics.synced, premium) {
+            (true, false) => (theme::bold(24.0), 16.0, None),
+            (false, false) => (theme::regular(14.0), 0.0, Some(19.6)),
+            (true, true) => (
+                theme::bold(if width >= 480.0 { 32.0 } else { 26.0 }),
+                24.0,
+                None,
+            ),
+            (false, true) => (theme::regular(18.0), 10.0, Some(27.0)),
         };
+        let sung = if premium { PREMIUM_SUNG } else { SUNG };
         for (i, line) in lyrics.lines.iter().enumerate() {
             let goal = match current {
                 Some(c) if c == i => LIT,
-                Some(c) if i < c => SUNG,
+                Some(c) if i < c => sung,
                 _ if lyrics.synced => COMING,
                 _ => 1.0,
             };
@@ -333,7 +497,19 @@ fn related(app: &App, ui: &mut egui::Ui, entry: &Entry) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    page::sections(app, ui, &route, found, &page::Look::PANEL);
+                    // Premium: the songs in as many columns as fit.
+                    if theme::premium() {
+                        let grid =
+                            theme::Grid::new(ui.ctx().content_rect().width(), ui.available_width());
+                        let look = page::Look {
+                            column: grid.song_column(ui.available_width()),
+                            column_gap: grid.song_column_gap(),
+                            ..page::Look::PANEL
+                        };
+                        page::sections(app, ui, &route, found, &look);
+                    } else {
+                        page::sections(app, ui, &route, found, &page::Look::PANEL);
+                    }
                     ui.add_space(32.0);
                 });
         }
@@ -348,6 +524,25 @@ fn related(app: &App, ui: &mut egui::Ui, entry: &Entry) {
             ui.vertical_centered(|ui| {
                 ui.add(egui::Spinner::new().size(28.0).color(PALETTE.secondary));
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn premium_player_page_keeps_cover_and_words_inside_the_window() {
+        for (width, height) in [(700.0, 400.0), (1040.0, 652.0), (1487.0, 851.0)] {
+            let area = Rect::from_min_size(pos2(220.0, 72.0), vec2(width, height));
+            let (art, panel) = listening_layout(area);
+            assert!(area.contains_rect(art));
+            assert!(area.contains_rect(panel));
+            assert!(art.right() + 24.0 <= panel.left());
+            assert!(art.width() <= 420.0);
+            assert!(art.bottom() + 80.0 <= area.bottom());
+            assert!(panel.width() >= art.width());
         }
     }
 }

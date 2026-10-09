@@ -16,7 +16,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
     }
     let window = ui.ctx().content_rect();
     let foot = if app.playback.entry.is_some() {
-        theme::PLAYER_BAR_HEIGHT + 16.0
+        theme::player_bar_height() + 16.0
     } else {
         33.0
     };
