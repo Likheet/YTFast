@@ -1227,12 +1227,12 @@ pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text
     let current = plays_from(app, card);
     let shade = if current { 1.0 } else { lit };
     let mut pressed = false;
-    if shade > 0.0 && !card.round {
-        // The gradient over the cover's top third (Dynamic Background: over
-        // its top 80%, `linear-gradient(rgba(0,0,0,.5), transparent 80%)`).
+    if shade > 0.0 && !card.round && theme::dynamic() {
+        super::dynamic::card_shade(ui, art, shade);
+    } else if shade > 0.0 && !card.round {
+        // The gradient over the cover's top third.
         let mut mesh = egui::Mesh::default();
-        let reach = if theme::dynamic() { 0.8 } else { 1.0 / 3.0 };
-        let top = Rect::from_min_size(art.min, vec2(art.width(), art.height() * reach));
+        let top = Rect::from_min_size(art.min, vec2(art.width(), art.height() / 3.0));
         let dark = Color32::from_black_alpha((128.0 * shade) as u8);
         mesh.colored_vertex(top.left_top(), dark);
         mesh.colored_vertex(top.right_top(), dark);

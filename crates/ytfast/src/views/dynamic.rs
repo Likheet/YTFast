@@ -72,6 +72,51 @@ pub fn cover_radius(width: f32, round: bool) -> CornerRadius {
     }
 }
 
+/// The shade over a card's cover under the pointer (and on the album or
+/// playlist playing): black at 50% fading to nothing 80% down
+/// (`linear-gradient(rgba(0,0,0,.5), transparent 80%)`), its top corners
+/// rounded as the cover's are, so nothing shows past them.
+pub fn card_shade(ui: &egui::Ui, art: Rect, shade: f32) {
+    let radius = f32::from(dynamic::RADIUS_ART_LG).min(art.width() / 2.0);
+    let bottom = art.top() + art.height() * 0.8;
+    let dark = |y: f32| {
+        let left = 1.0 - ((y - art.top()) / (bottom - art.top())).clamp(0.0, 1.0);
+        Color32::from_black_alpha((128.0 * shade * left) as u8)
+    };
+    // Its outline, clockwise from the foot of the left side: round the top
+    // left corner, across, round the top right corner, down.
+    let corner = |centre: egui::Pos2, from: f32| {
+        (0..=8).map(move |i| {
+            let angle = from + std::f32::consts::FRAC_PI_2 * i as f32 / 8.0;
+            centre + vec2(angle.cos(), angle.sin()) * radius
+        })
+    };
+    let mut outline = vec![pos2(art.left(), bottom)];
+    outline.extend(corner(
+        pos2(art.left() + radius, art.top() + radius),
+        std::f32::consts::PI,
+    ));
+    outline.extend(corner(
+        pos2(art.right() - radius, art.top() + radius),
+        1.5 * std::f32::consts::PI,
+    ));
+    outline.push(pos2(art.right(), bottom));
+    // A fan from its middle: the shade changes only down, so each
+    // triangle's corners give it exactly.
+    let middle = pos2(art.center().x, (art.top() + bottom) / 2.0);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(middle, dark(middle.y));
+    for point in &outline {
+        mesh.colored_vertex(*point, dark(point.y));
+    }
+    let last = outline.len() as u32;
+    for i in 1..last {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    mesh.add_triangle(0, last, 1);
+    ui.painter().add(Shape::mesh(mesh));
+}
+
 /// A square button with × (back to all results, or all of the library):
 /// white@0.20 glass, corners 12, a white ×.
 pub fn close_square(ui: &egui::Ui, rect: Rect, hovered: bool) {
