@@ -41,6 +41,8 @@ pub struct Settings {
     /// The order chosen for each of the Library's tabs: its page ID, and
     /// its sort button's `params` for that order.
     pub library_order: BTreeMap<String, String>,
+    /// The look the window wears (Settings, Theme).
+    pub theme: crate::theme::Theme,
 }
 
 impl Default for Settings {
@@ -55,6 +57,7 @@ impl Default for Settings {
             mini_guide: false,
             shuffle: false,
             library_order: BTreeMap::new(),
+            theme: crate::theme::Theme::default(),
         }
     }
 }
@@ -283,6 +286,8 @@ pub enum Action {
     /// A playlist's or album's songs: play, shuffle, or queue them.
     QueuePlaylist(String, QueueMode),
     Toggle(Setting),
+    /// Wear another look (Settings, Theme).
+    SetTheme(crate::theme::Theme),
     OpenDialog(Dialog),
     RenamePlaylist {
         playlist_id: String,
@@ -375,6 +380,8 @@ impl PlaylistSort {
 pub struct App {
     pub backend: Backend,
     pub audio: Audio,
+    /// The theme egui's own colours were last set for.
+    styled: Option<crate::theme::Theme>,
     pub images: RefCell<Images>,
     pub scrolling: fastframe_scroll::Scrolling,
     pub controls: Option<now_playing::NowPlaying>,
@@ -592,6 +599,7 @@ impl App {
             playlist_sort: HashMap::new(),
             forgotten_searches: HashSet::new(),
             script_fonts,
+            styled: None,
             loud_volume,
             edits_in_flight: HashMap::new(),
             like_before: HashMap::new(),
@@ -2052,6 +2060,7 @@ impl App {
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
                 }
             }
+            Action::SetTheme(theme) => self.settings.theme = theme,
             Action::OpenDialog(dialog) => {
                 *self.dialog.get_mut() = Some(dialog);
                 self.dialog_fresh.set(true);
@@ -2587,6 +2596,12 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // The look chosen in Settings: egui's own colours follow it.
+        crate::theme::set(self.settings.theme);
+        if self.styled != Some(self.settings.theme) {
+            crate::theme::restyle(&ctx);
+            self.styled = Some(self.settings.theme);
+        }
         self.scrolling.apply(&ctx);
         self.mend_window_size(&ctx);
         self.script_fonts.check();

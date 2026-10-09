@@ -18,7 +18,7 @@ use crate::views::{sidebar, widgets, window_frame};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     egui::Panel::top("top-bar")
-        .exact_size(theme::TOP_BAR_HEIGHT)
+        .exact_size(theme::top_bar_height())
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::new())
@@ -34,7 +34,12 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 // The open menu is solid from the window's top, behind the
                 // logo too (`#guide-wrapper`).
                 let corner = Rect::from_min_max(bar.min, pos2(bar.left() + guide, bar.bottom()));
-                ui.painter().rect_filled(corner, 0.0, PALETTE.window);
+                let fill = if theme::premium() {
+                    PALETTE.panel
+                } else {
+                    PALETTE.window
+                };
+                ui.painter().rect_filled(corner, 0.0, fill);
             }
             // Once the page scrolls (or the player page is open), the bar
             // turns `#030303` with a white@0.15 line under it, fading over
@@ -44,8 +49,15 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 .ctx()
                 .animate_bool_with_time(ui.id().with("solid"), solid, 0.2);
             if shown > 0.0 {
+                // Beside the open menu (its corner is already solid).
+                let left = if app.settings.mini_guide {
+                    bar.left()
+                } else {
+                    bar.left() + guide
+                };
+                let content = Rect::from_min_max(pos2(left, bar.top()), bar.max);
                 ui.painter()
-                    .rect_filled(bar, 0.0, PALETTE.window.gamma_multiply(shown));
+                    .rect_filled(content, 0.0, PALETTE.window.gamma_multiply(shown));
                 ui.painter().hline(
                     bar.x_range(),
                     bar.bottom() - 0.5,
@@ -155,9 +167,11 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 });
             }
 
-            // The search box: at most 480, 42 high from y 11.
+            // The search box: at most 480, 42 high, in the bar's middle (from
+            // y 11).
             let width = (arrows.left() - 16.0 - search_left).clamp(120.0, 480.0);
-            let field = Rect::from_min_size(pos2(search_left, bar.top() + 11.0), vec2(width, 42.0));
+            let field =
+                Rect::from_min_size(pos2(search_left, bar.center().y - 21.0), vec2(width, 42.0));
             search_box(app, ui, field);
             window_frame::buttons(ui, bar);
         });
@@ -371,26 +385,35 @@ fn search_box(app: &App, ui: &mut egui::Ui, rect: Rect) {
     let open = ui
         .data(|d| d.get_temp::<Rect>(ui.id().with("suggest").with("rect")))
         .is_some();
-    let fill = if focused || open {
+    // Premium: always the field's colour, corners 12, outlined in the
+    // accent while typing.
+    let premium = theme::premium();
+    let fill = if (focused || open) && !premium {
         PALETTE.window
     } else {
         PALETTE.field
     };
+    let round = if premium { 12 } else { 8 };
     let corners = if open {
         CornerRadius {
-            nw: 8,
-            ne: 8,
+            nw: round,
+            ne: round,
             sw: 0,
             se: 0,
         }
     } else {
-        CornerRadius::same(8)
+        CornerRadius::same(round)
+    };
+    let edge = match (premium, focused) {
+        (true, true) => PALETTE.accent,
+        (true, false) => PALETTE.outline,
+        (false, _) => PALETTE.divider,
     };
     ui.painter().rect(
         rect,
         corners,
         fill,
-        egui::Stroke::new(1.0, PALETTE.divider),
+        egui::Stroke::new(1.0, edge),
         egui::StrokeKind::Inside,
     );
     let tint = if focused { PALETTE.text } else { PALETTE.hint };

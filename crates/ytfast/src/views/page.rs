@@ -51,11 +51,15 @@ impl Look {
             Route::Browse { id, .. } if id.starts_with("VL") => Row::PLAYLIST,
             _ if is_album(route) => Row::LIST,
             _ => Row::SHELF,
-        };
+        }
+        .themed();
         Self {
             // Beside an album's or playlist's header, 28 at every width
             // (`--rhs-subheading-font-size`).
-            title: if beside_header {
+            // Premium: shelves' titles smaller, as a list's.
+            title: if theme::premium() {
+                theme::display2(grid.window)
+            } else if beside_header {
                 28.0
             } else {
                 theme::display1(grid.window)
@@ -138,7 +142,10 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             match &page.header {
                 // An album or a playlist, in a window wide enough for both
                 // columns.
-                Some(header) if in_two_columns(header, ui.ctx().content_rect().width()) => {
+                Some(header)
+                    if !theme::premium()
+                        && in_two_columns(header, ui.ctx().content_rect().width()) =>
+                {
                     two_columns(app, ui, &route, page, header);
                 }
                 _ => {
@@ -310,7 +317,11 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
             match (&page.header, route) {
                 (Some(header), _) if is_artist(header) => {}
                 (Some(header), _) => {
-                    stacked_header(app, ui, route, page, header, full.width() - 12.0);
+                    if theme::premium() {
+                        premium_header(app, ui, route, page, header);
+                    } else {
+                        stacked_header(app, ui, route, page, header, full.width() - 12.0);
+                    }
                 }
                 (None, Route::Search(query) | Route::SearchOnly(query, _)) => {
                     ui.add_space(6.0);
@@ -339,7 +350,7 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                     app.act(Action::MoreResults(route.clone()));
                 }
             }
-            ui.add_space(theme::PAGE_FOOT);
+            ui.add_space(theme::page_foot());
         },
     );
 }
@@ -505,36 +516,11 @@ fn is_library(route: &Route) -> bool {
 /// white square with × (back to the front page) and the chosen one; at
 /// the row's right its sort button; 36 under them the page.
 fn library_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
-    let width = ui.available_width();
-    let (row, _) = ui.allocate_exact_size(vec2(width, 51.3), Sense::hover());
-    // The tabs' row starts 16 before the content, each tab 16 in.
-    ui.painter().hline(
-        (row.left() - 16.0)..=(row.right() - 16.0),
-        row.bottom() - 0.5,
-        egui::Stroke::new(1.0, PALETTE.outline),
-    );
-    let words = ui
-        .painter()
-        .layout_no_wrap("LIBRARY".into(), theme::medium(14.0), PALETTE.text);
-    let tab = Rect::from_min_size(row.min, vec2(words.size().x, 50.7));
-    let response = ui.interact(tab, ui.id().with("library-tab"), Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, true, true, "Library")
-    });
-    ui.painter().galley(
-        pos2(tab.left(), tab.center().y - words.size().y / 2.0),
-        words,
-        PALETTE.text,
-    );
-    ui.painter().hline(
-        tab.x_range(),
-        tab.bottom() - 1.0,
-        egui::Stroke::new(2.0, PALETTE.text),
-    );
-    if response.clicked() {
-        app.act(Action::Navigate(Route::LibraryRecent));
+    if theme::premium() {
+        premium_library_top(app, ui);
+    } else {
+        library_tabs(app, ui);
     }
-
     ui.add_space(26.0);
     // The row is 44 high, the chips 6 down it.
     let row_top = ui.cursor().top();
@@ -550,7 +536,20 @@ fn library_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
             (Route::LibraryProfiles, "Profiles"),
             (Route::LibraryPodcasts, "Podcasts"),
         ];
-        if *route == Route::LibraryRecent {
+        if theme::premium() {
+            // Premium: every chip stays, the chosen one lit; choosing it
+            // again goes back to the front page.
+            for (kind, name) in kinds {
+                let chosen = *route == kind;
+                if theme::chip(ui, name, chosen, 32.0).clicked() {
+                    app.act(Action::Navigate(if chosen {
+                        Route::LibraryRecent
+                    } else {
+                        kind
+                    }));
+                }
+            }
+        } else if *route == Route::LibraryRecent {
             for (kind, name) in kinds {
                 if theme::chip(ui, name, false, 32.0).clicked() {
                     app.act(Action::Navigate(kind));
@@ -596,6 +595,58 @@ fn library_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
         });
     }
     ui.add_space(6.0 + 36.0 + if wrapped { 36.0 } else { 0.0 });
+}
+
+/// Premium's top of the Library: "Your library", large; a click on it goes
+/// back to the front page.
+fn premium_library_top(app: &App, ui: &mut egui::Ui) {
+    ui.add_space(32.0);
+    let response = theme::label(
+        ui,
+        "Your library",
+        theme::bold(theme::display1(ui.ctx().content_rect().width())),
+        PALETTE.text,
+    );
+    let home = ui.interact(response.rect, ui.id().with("library-tab"), Sense::click());
+    home.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "All of the library")
+    });
+    if home.clicked() {
+        app.act(Action::Navigate(Route::LibraryRecent));
+    }
+}
+
+/// YouTube Music's row of tabs over the Library: LIBRARY alone.
+fn library_tabs(app: &App, ui: &mut egui::Ui) {
+    let width = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(vec2(width, 51.3), Sense::hover());
+    // The tabs' row starts 16 before the content, each tab 16 in.
+    ui.painter().hline(
+        (row.left() - 16.0)..=(row.right() - 16.0),
+        row.bottom() - 0.5,
+        egui::Stroke::new(1.0, PALETTE.outline),
+    );
+    let words = ui
+        .painter()
+        .layout_no_wrap("LIBRARY".into(), theme::medium(14.0), PALETTE.text);
+    let tab = Rect::from_min_size(row.min, vec2(words.size().x, 50.7));
+    let response = ui.interact(tab, ui.id().with("library-tab"), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, true, true, "Library")
+    });
+    ui.painter().galley(
+        pos2(tab.left(), tab.center().y - words.size().y / 2.0),
+        words,
+        PALETTE.text,
+    );
+    ui.painter().hline(
+        tab.x_range(),
+        tab.bottom() - 1.0,
+        egui::Stroke::new(2.0, PALETTE.text),
+    );
+    if response.clicked() {
+        app.act(Action::Navigate(Route::LibraryRecent));
+    }
 }
 
 /// A Library tab's sort button, as YouTube Music's
@@ -658,7 +709,7 @@ fn sort_button(
 
     let frame = egui::Frame::new()
         .fill(PALETTE.panel)
-        .stroke(egui::Stroke::new(1.0, theme::MENU_EDGE))
+        .stroke(egui::Stroke::new(1.0, theme::menu_edge()))
         .corner_radius(CornerRadius::same(2));
     egui::Popup::menu(&response)
         .frame(frame)
@@ -724,6 +775,11 @@ fn sort_button(
 /// from 1578, 9 from 1800), 16 apart (24 from 1364), rows 40 apart; the
 /// card's side, `width` shared out.
 fn library_grid(window: f32, width: f32) -> (f32, f32) {
+    // Premium: the same cards as the shelves elsewhere.
+    if theme::premium() {
+        let (card, gap) = theme::Grid::new(window, width).cards(width, false);
+        return ((card - 0.01).max(0.0), gap);
+    }
     let across: f32 = if window >= 1800.0 {
         9.0
     } else if window >= 1578.0 {
@@ -822,7 +878,7 @@ fn two_columns(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header:
                 );
             }
             sections(app, ui, route, page, &look);
-            ui.add_space(theme::PAGE_FOOT);
+            ui.add_space(theme::page_foot());
         });
     scrolled(app, ui, shown.state.offset.y);
 }
@@ -993,6 +1049,128 @@ fn header_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, heade
 
 /// Save (or rename, for the account's own playlist), the big Play, and
 /// the menu.
+/// Premium's album or playlist header: the cover (224, or 176 in less
+/// room; r 16) beside the words, left-aligned, over the songs at full
+/// width; in a narrow page the cover (144) over the words.
+fn premium_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header: &Header) {
+    if header.thumbnail.is_none() {
+        title(ui, &header.title);
+        return;
+    }
+    album_backdrop(app, ui, header);
+    ui.add_space(32.0);
+    let width = ui.available_width();
+    if width >= 580.0 {
+        let side = if width >= 900.0 { 224.0 } else { 176.0 };
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 32.0;
+            let (art, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+            widgets::cover_with(
+                app,
+                ui,
+                art,
+                header.thumbnail.as_ref(),
+                CornerRadius::same(16),
+            );
+            ui.vertical(|ui| {
+                ui.set_width((width - side - 32.0).max(0.0));
+                premium_header_details(app, ui, route, page, header);
+            });
+        });
+    } else {
+        let (art, _) = ui.allocate_exact_size(Vec2::splat(144.0_f32.min(width)), Sense::hover());
+        widgets::cover_with(
+            app,
+            ui,
+            art,
+            header.thumbnail.as_ref(),
+            CornerRadius::same(12),
+        );
+        ui.add_space(20.0);
+        premium_header_details(app, ui, route, page, header);
+    }
+    ui.add_space(32.0);
+    ui.separator();
+    ui.add_space(16.0);
+}
+
+/// Premium's header words: what it is, the title (36, or 28), the maker
+/// with their picture, how long, the description (2 lines, a click shows
+/// it whole), then the buttons.
+fn premium_header_details(
+    app: &App,
+    ui: &mut egui::Ui,
+    route: &Route,
+    page: &Page,
+    header: &Header,
+) {
+    let width = ui.available_width();
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let line = |ui: &mut egui::Ui, text: &str, font: egui::FontId, color, rows: usize| {
+        let galley = theme::fit(ui, text, font, color, width, rows);
+        let (rect, response) = ui.allocate_exact_size(vec2(width, galley.size().y), Sense::click());
+        ui.painter().galley(rect.min, galley, color);
+        response
+    };
+    if !header.subtitle.is_empty() {
+        line(
+            ui,
+            &header.subtitle,
+            theme::medium(13.0),
+            PALETTE.secondary,
+            1,
+        );
+        ui.add_space(12.0);
+    }
+    let size = if width >= 500.0 { 36.0 } else { 28.0 };
+    line(ui, &header.title, theme::bold(size), PALETTE.text, 2);
+    ui.add_space(12.0);
+    if !header.owner.is_empty() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if let Some(picture) = &header.owner_picture {
+                let (art, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+                widgets::cover(app, ui, art, Some(picture), true);
+            }
+            theme::label(ui, &header.owner, theme::medium(14.0), PALETTE.text);
+        });
+        ui.add_space(8.0);
+    }
+    if !header.detail.is_empty() {
+        line(
+            ui,
+            &header.detail,
+            theme::regular(14.0),
+            PALETTE.secondary,
+            1,
+        );
+    }
+    if !header.description.is_empty() {
+        ui.add_space(8.0);
+        let response = line(
+            ui,
+            &header.description,
+            theme::regular(14.0),
+            PALETTE.secondary,
+            2,
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Description")
+        });
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            app.act(Action::OpenDialog(Dialog::Description {
+                title: header.title.clone(),
+                text: header.description.clone(),
+            }));
+        }
+    }
+    ui.add_space(20.0);
+    header_buttons(app, ui, route, page, header);
+}
+
 fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header: &Header) {
     let count = page
         .sections
@@ -1009,13 +1187,17 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
     let playlist = source(route).or_else(|| header.library_id.clone());
     // The account's own playlist has more buttons, 16 apart (measured
     // signed in: Edit, Play, Share and ⋮; its Download is left out).
-    let (width, gap) = if own.is_some() {
-        (40.0 + 16.0 + 64.0 + 16.0 + 40.0 + 16.0 + 40.0, 16.0)
-    } else {
-        (40.0 + 32.0 + 64.0 + 32.0 + 40.0, 32.0)
+    // Premium: Play 52, everything 12 apart.
+    let premium = theme::premium();
+    let play = if premium { 52.0 } else { 64.0 };
+    let (width, gap) = match (own.is_some(), premium) {
+        (true, false) => (40.0 + 16.0 + 64.0 + 16.0 + 40.0 + 16.0 + 40.0, 16.0),
+        (false, false) => (40.0 + 32.0 + 64.0 + 32.0 + 40.0, 32.0),
+        (true, true) => (40.0 + 12.0 + 52.0 + 12.0 + 40.0 + 12.0 + 40.0, 12.0),
+        (false, true) => (40.0 + 12.0 + 52.0 + 12.0 + 40.0, 12.0),
     };
     ui.allocate_ui_with_layout(
-        vec2(width, 64.0),
+        vec2(width, play),
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.spacing_mut().item_spacing.x = gap;
@@ -1069,8 +1251,8 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
                 if theme::round_button(
                     ui,
                     Icon::Play,
-                    64.0,
-                    32.0,
+                    play,
+                    play / 2.0,
                     Round::Filled,
                     PALETTE.text,
                     "Play",
@@ -1207,7 +1389,7 @@ fn artist_header(
     let (pad_top, pad_words) = artist_paddings(window);
     let full = ui.available_rect_before_wrap();
     // The page starts under the top bar; the header at the window's top.
-    let origin = full.top() - theme::TOP_BAR_HEIGHT;
+    let origin = full.top() - theme::top_bar_height();
     let left = full.left() + margin;
     let width = (full.width() - 2.0 * margin).max(0.0);
 
@@ -1256,7 +1438,7 @@ fn artist_header(
     }
     let height = pad_top + pad_words + block;
     let (rect, _) = ui.allocate_exact_size(
-        vec2(full.width(), (height - theme::TOP_BAR_HEIGHT).max(0.0)),
+        vec2(full.width(), (height - theme::top_bar_height()).max(0.0)),
         Sense::hover(),
     );
     artist_picture(app, ui, header, origin, height, pad_top);

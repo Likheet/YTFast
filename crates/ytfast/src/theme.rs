@@ -1,12 +1,52 @@
 //! YtFast's look: YouTube Music's own colours and sizes (measured from
-//! music.youtube.com), the Inter font, Lucide icons, and the drawing
+//! music.youtube.com), or the Premium theme's (charcoal, rounder, with a
+//! warm accent), chosen in Settings; the fonts, icons, and the drawing
 //! helpers every view uses.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, FontId, Galley, Rect, Response, Sense, Stroke, Vec2};
 
-/// YouTube Music's colours.
+/// The looks YTFast can wear (Settings, Theme).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Theme {
+    /// YouTube Music's own, measured from music.youtube.com.
+    #[default]
+    YouTubeMusic,
+    /// A charcoal theme with rounder shapes and a warm accent.
+    Premium,
+}
+
+impl Theme {
+    pub const ALL: [Self; 2] = [Self::YouTubeMusic, Self::Premium];
+
+    /// Its name, and what it is, as Settings lists it.
+    pub fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Self::YouTubeMusic => ("YouTube Music", "YouTube Music's own look"),
+            Self::Premium => ("Premium", "Charcoal, rounder, with a warm accent"),
+        }
+    }
+}
+
+thread_local! {
+    /// The theme the window is drawn in (set at the start of each frame;
+    /// one per thread, so tests on threads of their own do not meet).
+    static CURRENT: Cell<Theme> = const { Cell::new(Theme::YouTubeMusic) };
+}
+
+/// Draws in `theme` from now on (on this thread).
+pub fn set(theme: Theme) {
+    CURRENT.set(theme);
+}
+
+/// Whether the Premium theme is being drawn.
+pub fn premium() -> bool {
+    CURRENT.get() == Theme::Premium
+}
+
+/// A theme's colours.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     /// Behind everything (`#030303`).
@@ -59,7 +99,47 @@ const fn white(alpha: u8) -> Color32 {
     Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha)
 }
 
-pub const PALETTE: Palette = Palette {
+/// The colours of the theme being drawn: `PALETTE.text` and so on.
+pub static PALETTE: CurrentPalette = CurrentPalette;
+
+pub struct CurrentPalette;
+
+impl std::ops::Deref for CurrentPalette {
+    type Target = Palette;
+
+    fn deref(&self) -> &Palette {
+        if premium() { &PREMIUM } else { &YOUTUBE_MUSIC }
+    }
+}
+
+/// The Premium theme's colours: charcoal surfaces, warm off-white text
+/// and a warm accent.
+const PREMIUM: Palette = Palette {
+    window: Color32::from_rgb(0x14, 0x16, 0x1a),
+    panel: Color32::from_rgb(0x1d, 0x20, 0x26),
+    surface: white(16),
+    surface_hover: white(30),
+    field: Color32::from_rgb(0x24, 0x27, 0x2e),
+    outline: white(22),
+    divider: white(18),
+    text: Color32::from_rgb(0xf4, 0xf3, 0xef),
+    secondary: Color32::from_rgb(0xb3, 0xb6, 0xbf),
+    dim: Color32::from_rgb(0x99, 0x9e, 0xaa),
+    faint: white(77),
+    accent: Color32::from_rgb(0xde, 0xc5, 0x9b),
+    subscribe: Color32::from_rgb(0xde, 0xc5, 0x9b),
+    switch: Color32::from_rgb(0xde, 0xc5, 0x9b),
+    menu: Color32::from_rgb(0x24, 0x27, 0x2e),
+    danger: Color32::from_rgb(0xff, 0x4e, 0x45),
+    quiet: Color32::from_rgb(0x90, 0x90, 0x90),
+    disabled: Color32::from_rgb(0x71, 0x71, 0x71),
+    thumb: Color32::from_rgb(0x60, 0x60, 0x60),
+    hint: white(128),
+    button: Color32::from_rgb(0xf1, 0xf1, 0xf1),
+};
+
+/// YouTube Music's colours.
+const YOUTUBE_MUSIC: Palette = Palette {
     window: Color32::from_rgb(0x03, 0x03, 0x03),
     panel: Color32::from_rgb(0x21, 0x21, 0x21),
     surface: white(26),
@@ -83,10 +163,20 @@ pub const PALETTE: Palette = Palette {
     button: Color32::from_rgb(0xf1, 0xf1, 0xf1),
 };
 
-pub const TOP_BAR_HEIGHT: f32 = 64.0;
-pub const PLAYER_BAR_HEIGHT: f32 = 72.0;
-/// The menu on the left, open and closed.
-pub const GUIDE_WIDTH: f32 = 240.0;
+/// The bar across the top: 64 (Premium 72).
+pub fn top_bar_height() -> f32 {
+    if premium() { 72.0 } else { 64.0 }
+}
+
+/// The player bar: 72 (Premium 96, floating inside it).
+pub fn player_bar_height() -> f32 {
+    if premium() { 96.0 } else { 72.0 }
+}
+
+/// The menu on the left, open (240, Premium 220) and closed.
+pub fn guide_width() -> f32 {
+    if premium() { 220.0 } else { 240.0 }
+}
 pub const GUIDE_MINI_WIDTH: f32 = 72.0;
 
 /// The room YouTube Music leaves for a browser's scroll bar
@@ -112,6 +202,12 @@ impl Grid {
     /// For a window `window` wide whose page area (the window less the
     /// menu) is `area` wide.
     pub fn new(window: f32, area: f32) -> Self {
+        // Premium: even margins, at most 1440 wide.
+        if premium() {
+            let margin = if window >= 1150.0 { 40.0 } else { 24.0 };
+            let width = (area - margin * 2.0 - SCROLL_BAR).min(1440.0);
+            return Self::centred(window, area, width);
+        }
         let width = if window >= 1150.0 {
             (area - 200.0 - SCROLL_BAR).min(1478.0)
         } else if window >= 616.0 {
@@ -132,7 +228,9 @@ impl Grid {
         } else {
             560.0
         };
-        let width = if window >= 616.0 {
+        let width = if premium() {
+            most.min(Self::new(window, area).width)
+        } else if window >= 616.0 {
             most.min(area - 112.0 - SCROLL_BAR)
         } else {
             window - 32.0
@@ -161,6 +259,12 @@ impl Grid {
         if beside_header {
             return (160.0, if self.window >= 1364.0 { 24.0 } else { 16.0 });
         }
+        // Premium: covers near 180-220, as many whole ones as fit, 20 apart.
+        if premium() {
+            let gap = 20.0;
+            let across = ((width + gap) / 200.0).floor().clamp(1.0, 7.0);
+            return ((width - (across - 1.0) * gap) / across, gap);
+        }
         let across: f32 = if self.window >= 1364.0 {
             6.0
         } else if self.window >= 1150.0 {
@@ -177,6 +281,17 @@ impl Grid {
     /// (Quick picks, Trending), with its padding of 8 each side: 436 under
     /// 1364 (measured at 1280), else a third of the shelf.
     pub fn song_column(&self, width: f32) -> f32 {
+        // Premium: one, two or three columns, by the room there is.
+        if premium() {
+            let across = if width >= 1100.0 {
+                3.0
+            } else if width >= 650.0 {
+                2.0
+            } else {
+                1.0
+            };
+            return ((width - (across - 1.0) * 24.0) / across).max(0.0);
+        }
         if self.window >= 1364.0 {
             (width - 96.0) / 3.0 + 16.0
         } else if self.window >= 616.0 {
@@ -193,27 +308,46 @@ impl Grid {
 
     /// The space above a shelf's title (`--ytmusic-header-padding`).
     pub fn above_title(&self) -> f32 {
-        if self.window >= 1150.0 { 32.0 } else { 16.0 }
+        if premium() {
+            24.0
+        } else if self.window >= 1150.0 {
+            32.0
+        } else {
+            16.0
+        }
     }
 
     /// The space after each shelf but the last
     /// (`--ytmusic-divider-height`).
     pub fn between_shelves(&self) -> f32 {
-        if self.window >= 616.0 { 24.0 } else { 16.0 }
+        if premium() {
+            32.0
+        } else if self.window >= 616.0 {
+            24.0
+        } else {
+            16.0
+        }
     }
 }
 
-/// The space under a page's last row (`--ytmusic-base-page-padding-bottom`).
-pub const PAGE_FOOT: f32 = 112.0;
+/// The space under a page's last row (`--ytmusic-base-page-padding-bottom`;
+/// Premium 48).
+pub fn page_foot() -> f32 {
+    if premium() { 48.0 } else { 112.0 }
+}
 
-/// YouTube Music's large titles (`display-1`: shelves, pages, an album's
-/// or an artist's name) in a window `window` wide: 24 under 1150, 28 to
-/// 1363 (measured at 1280), 34 to 1577, 45 from 1578.
 /// YouTube Music's `--ytmusic-responsive-font-size`: 14, and 16 from a
-/// window 1364 wide. Cards, song rows, Up next, the player bar's song and
-/// the suggestions take it; their lines are 1.2 times as tall.
+/// window 1364 wide (Premium: 15 from 1150). Cards, song rows, Up next,
+/// the player bar's song and the suggestions take it; their lines are 1.2
+/// times as tall.
 pub fn responsive(window: f32) -> f32 {
-    if window >= 1364.0 { 16.0 } else { 14.0 }
+    if premium() {
+        if window >= 1150.0 { 15.0 } else { 14.0 }
+    } else if window >= 1364.0 {
+        16.0
+    } else {
+        14.0
+    }
 }
 
 /// [`responsive`] for the window `ui` is in.
@@ -221,7 +355,14 @@ pub fn text_size(ui: &egui::Ui) -> f32 {
     responsive(ui.ctx().content_rect().width())
 }
 
+/// YouTube Music's large titles (`display-1`: shelves, pages, an album's
+/// or an artist's name) in a window `window` wide: 24 under 1150, 28 to
+/// 1363 (measured at 1280), 34 to 1577, 45 from 1578 (Premium: 28, 36
+/// from 1150).
 pub fn display1(window: f32) -> f32 {
+    if premium() {
+        return if window >= 1150.0 { 36.0 } else { 28.0 };
+    }
     if window >= 1578.0 {
         45.0
     } else if window >= 1364.0 {
@@ -236,7 +377,8 @@ pub fn display1(window: f32) -> f32 {
 /// Its smaller titles (`display-2`: lists such as Top songs, the top
 /// result's name, dialogs): 20 under 1150, 24 from.
 pub fn display2(window: f32) -> f32 {
-    if window >= 1150.0 { 24.0 } else { 20.0 }
+    let wide = if premium() { 22.0 } else { 24.0 };
+    if window >= 1150.0 { wide } else { 20.0 }
 }
 
 fastframe_icons::icons! {
@@ -322,18 +464,12 @@ fastframe_icons::icons! {
     }
 }
 
-/// Sets up fonts, icons and egui's colours. Call once, at start. The fonts
-/// for other scripts come later, when needed (see [`ScriptFonts`]).
-pub fn install(ctx: &egui::Context) -> ScriptFonts {
-    let rendering = fastframe_text::detect();
-    ctx.set_fonts(font_definitions(rendering, false));
-    egui_extras::install_image_loaders(ctx);
-    fastframe_icons::install::<Icon>(ctx);
-
-    let p = PALETTE;
+/// egui's own colours, from the theme being drawn. Call again when the
+/// theme changes.
+pub fn restyle(ctx: &egui::Context) {
+    let p = *PALETTE;
     ctx.all_styles_mut(|style| {
         let v = &mut style.visuals;
-        *v = egui::Visuals::dark();
         v.panel_fill = p.window;
         v.window_fill = p.menu;
         v.window_stroke = Stroke::NONE;
@@ -363,12 +499,26 @@ pub fn install(ctx: &egui::Context) -> ScriptFonts {
         v.widgets.active.fg_stroke = Stroke::new(1.0, p.text);
         v.slider_trailing_fill = true;
         v.handle_shape = egui::style::HandleShape::Circle;
+    });
+}
+
+/// Sets up fonts, icons and egui's colours. Call once, at start. The fonts
+/// for other scripts come later, when needed (see [`ScriptFonts`]).
+pub fn install(ctx: &egui::Context) -> ScriptFonts {
+    let rendering = fastframe_text::detect();
+    ctx.set_fonts(font_definitions(rendering, false));
+    egui_extras::install_image_loaders(ctx);
+    fastframe_icons::install::<Icon>(ctx);
+
+    ctx.all_styles_mut(|style| {
+        style.visuals = egui::Visuals::dark();
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(12.0, 6.0);
         style.spacing.slider_rail_height = 4.0;
         style.spacing.scroll.bar_width = 8.0;
         style.spacing.scroll.floating = true;
     });
+    restyle(ctx);
     // fastframe-text's rendering settings, after the visuals.
     ctx.all_styles_mut(|style| rendering.apply_to_visuals(&mut style.visuals));
     ScriptFonts {
@@ -563,14 +713,28 @@ pub const MENU_WIDTH: f32 = 240.0;
 /// A menu's 1 border: white@0.10 as the page draws it, over the menu's own
 /// `#212121`, so solid here (a see-through edge would let what lies under
 /// the menu show through its outermost pixel).
-pub const MENU_EDGE: Color32 = Color32::from_rgb(0x37, 0x37, 0x37);
+pub fn menu_edge() -> Color32 {
+    if premium() {
+        Color32::from_rgb(0x36, 0x39, 0x41)
+    } else {
+        Color32::from_rgb(0x37, 0x37, 0x37)
+    }
+}
 
 /// YouTube Music's menu frame: `#212121`, a 1 point white@0.10 border,
 /// corners 2, 16 above and below the entries, and no shadow.
+/// Premium: the menu colour, corners 12, 6 all round.
 pub fn menu_frame() -> egui::Frame {
+    if premium() {
+        return egui::Frame::new()
+            .fill(PALETTE.menu)
+            .stroke(Stroke::new(1.0, menu_edge()))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::same(6));
+    }
     egui::Frame::new()
         .fill(PALETTE.panel)
-        .stroke(Stroke::new(1.0, MENU_EDGE))
+        .stroke(Stroke::new(1.0, menu_edge()))
         .corner_radius(CornerRadius::same(2))
         .inner_margin(egui::Margin::symmetric(0, 16))
 }
@@ -616,8 +780,13 @@ fn menu_entry(ui: &mut egui::Ui, icon: Option<Icon>, text: &str) -> Response {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
     if ui.is_rect_visible(rect) {
         if enabled && (response.hovered() || response.has_focus()) {
-            ui.painter()
-                .rect_filled(rect, CornerRadius::ZERO, Color32::from_white_alpha(13));
+            // Premium: a rounded fill a shade lighter.
+            let (corners, hover) = if premium() {
+                (CornerRadius::same(8), PALETTE.surface_hover)
+            } else {
+                (CornerRadius::ZERO, Color32::from_white_alpha(13))
+            };
+            ui.painter().rect_filled(rect, corners, hover);
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         // A disabled entry's words are #717171 and its icon #606060.
@@ -799,6 +968,13 @@ pub fn round_button(
             tint.gamma_multiply(0.4)
         };
         paint_icon(ui, icon, rect, icon_size * scale, tint);
+        if premium() && response.has_focus() {
+            ui.painter().circle_stroke(
+                rect.center(),
+                diameter / 2.0,
+                Stroke::new(1.0, PALETTE.accent),
+            );
+        }
     }
     if tooltip.is_empty() {
         response
@@ -826,7 +1002,11 @@ pub fn chip(ui: &mut egui::Ui, text: &str, chosen: bool, height: f32) -> Respons
         } else {
             (PALETTE.surface, PALETTE.text)
         };
-        ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+        let corners = CornerRadius::same(if premium() { 10 } else { 8 });
+        ui.painter().rect_filled(rect, corners, fill);
+        if premium() && response.has_focus() {
+            focus_ring(ui, rect, corners);
+        }
         let at = rect.center() - galley.size() / 2.0;
         ui.painter()
             .galley_with_override_text_color(at, galley, color);
@@ -896,7 +1076,7 @@ pub fn pill_sized(
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
-        let radius = CornerRadius::same(18);
+        let radius = CornerRadius::same(if premium() { 10 } else { 18 });
         match style {
             // A main button that cannot be pressed yet is grey.
             Pill::Filled if !enabled => {
@@ -968,8 +1148,21 @@ pub fn pill_sized(
         }
         let at = egui::pos2(x, rect.center().y - galley.size().y / 2.0);
         ui.painter().galley(at, galley, color);
+        if premium() && response.has_focus() {
+            focus_ring(ui, rect, radius);
+        }
     }
     response
+}
+
+/// Premium's mark of the focused control: a 1 point line in the accent.
+fn focus_ring(ui: &egui::Ui, rect: Rect, corners: CornerRadius) {
+    ui.painter().rect_stroke(
+        rect,
+        corners,
+        Stroke::new(1.0, PALETTE.accent),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// YouTube Music's switch (`tp-yt-paper-toggle-button`): a bar 36×14, r 7,
@@ -1086,6 +1279,29 @@ mod tests {
         // Small beside an album's header.
         let grid = Grid::new(1280.0, 1040.0);
         assert_eq!(grid.cards(546.0, true), (160.0, 16.0));
+    }
+
+    #[test]
+    fn premium_content_and_cards_fit_open_and_closed_menus() {
+        set(Theme::Premium);
+        for window in [780.0, 960.0, 1150.0, 1280.0, 1707.0, 1920.0] {
+            for menu in [guide_width(), GUIDE_MINI_WIDTH] {
+                let area = window - menu;
+                let grid = Grid::new(window, area);
+                assert!(grid.left >= 24.0);
+                assert!(grid.left + grid.width + SCROLL_BAR <= area);
+                assert!(grid.width <= 1440.0);
+                let search = Grid::search(window, area);
+                assert!(search.width <= grid.width);
+                let (card, gap) = grid.cards(grid.width, false);
+                assert!((160.0..=240.0).contains(&card));
+                let across = ((grid.width + gap) / (card + gap)).round();
+                assert!((across * card + (across - 1.0) * gap - grid.width).abs() < 0.01);
+                assert!(grid.song_column(grid.width) <= grid.width);
+            }
+        }
+        set(Theme::YouTubeMusic);
+        assert_eq!(top_bar_height(), 64.0);
     }
 
     #[test]

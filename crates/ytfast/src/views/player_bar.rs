@@ -4,6 +4,10 @@
 //! dislike and its menu), centred; on the right the volume, repeat,
 //! shuffle and the arrow that opens the player page. The progress line
 //! runs along its top edge.
+//!
+//! Premium: the bar floats (corners 16, inset 12 and 8), play and pause
+//! sit in its middle on a white disc with the time under them, the song at
+//! its left, and the progress line along its foot in the accent.
 
 use egui::{Align2, Color32, CornerRadius, Frame, Rect, Sense, UiBuilder, Vec2, pos2, vec2};
 
@@ -30,14 +34,29 @@ const NARROW_RIGHT_WIDTH: f32 = 36.0 + 8.0 + 36.0 + 4.0 + 16.0;
 const SOFT: Color32 = Color32::from_rgb(0xf1, 0xf1, 0xf1);
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
+    let premium = theme::premium();
+    let fill = if premium {
+        PALETTE.window
+    } else {
+        PALETTE.panel
+    };
     egui::Panel::bottom("player-bar")
-        .exact_size(theme::PLAYER_BAR_HEIGHT)
+        .exact_size(theme::player_bar_height())
         .resizable(false)
         .show_separator_line(false)
-        .frame(Frame::new().fill(PALETTE.panel))
+        .frame(Frame::new().fill(fill))
         .show(ui, |ui| {
-            let bar = ui.max_rect();
+            let bar = if premium { floating(ui) } else { ui.max_rect() };
             let Some(entry) = &app.playback.entry else {
+                if premium {
+                    ui.painter().text(
+                        pos2(bar.left() + 24.0, bar.center().y),
+                        Align2::LEFT_CENTER,
+                        "Choose something to play",
+                        theme::regular(14.0),
+                        PALETTE.secondary,
+                    );
+                }
                 return;
             };
             // A click on the bar's empty parts opens (or closes) the
@@ -47,23 +66,54 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 app.act(Action::ToggleNowPlaying);
             }
 
-            let left_end = left_group(app, ui, bar);
             let narrow = ui.ctx().content_rect().width() < NARROW;
-            let right_start = bar.right()
-                - if narrow {
-                    NARROW_RIGHT_WIDTH
-                } else {
-                    RIGHT_WIDTH
-                };
-            let expand = right_group(app, ui, bar, narrow);
-            middle_group(app, ui, bar, left_end, right_start, entry);
+            let expand = if premium {
+                // The transport in the middle, the song from the left.
+                let transport = Rect::from_center_size(bar.center(), vec2(160.0, bar.height()));
+                left_group(app, ui, transport);
+                let expand = right_group(app, ui, bar, narrow);
+                let (from, to) = (bar.left() + 12.0, transport.left() - 20.0);
+                middle_group(app, ui, bar, from, to, entry);
+                expand
+            } else {
+                let left_end = left_group(app, ui, bar);
+                let right_start = bar.right()
+                    - if narrow {
+                        NARROW_RIGHT_WIDTH
+                    } else {
+                        RIGHT_WIDTH
+                    };
+                let expand = right_group(app, ui, bar, narrow);
+                middle_group(app, ui, bar, left_end, right_start, entry);
+                expand
+            };
             // Over the song's words, which it covers while open.
             if let Some(expand) = expand {
                 expanding_menu(app, ui, bar, expand);
             }
             // Last, so it is over the bar's own things.
-            progress_line(app, ui, bar);
+            let line = if premium {
+                bar.shrink2(vec2(16.0, 0.0))
+            } else {
+                bar
+            };
+            progress_line(app, ui, line);
         });
+}
+
+/// Premium's floating bar: inset 12 and 8, the panel's colour, corners 16
+/// and a hairline edge. Returns its rectangle.
+fn floating(ui: &egui::Ui) -> Rect {
+    let bar = ui.max_rect().shrink2(vec2(12.0, 8.0));
+    ui.painter()
+        .rect_filled(bar, CornerRadius::same(16), PALETTE.panel);
+    ui.painter().rect_stroke(
+        bar,
+        CornerRadius::same(16),
+        egui::Stroke::new(1.0, PALETTE.outline),
+        egui::StrokeKind::Inside,
+    );
+    bar
 }
 
 /// A round button `size` across with its icon `icon_size` and no disc at
@@ -90,15 +140,29 @@ fn bar_button(
     } else {
         PALETTE.faint
     };
+    if theme::premium() && response.has_focus() {
+        ui.painter().circle_stroke(
+            rect.center(),
+            disc / 2.0,
+            egui::Stroke::new(1.0, PALETTE.accent),
+        );
+    }
     theme::paint_icon(ui, icon, rect, icon_size, color);
     response.on_hover_text(name)
 }
 
 /// Previous (36, at 8), play or pause (a 40 spot at 60, its icon 40, a 52
 /// disc under the pointer), next (36, at 120), then the time 8 after it.
-/// Returns where the group ends (16 after the time).
+/// Returns where the group ends (16 after the time). Premium: `bar` is the
+/// transport's own room, the buttons 8 above its middle and the time
+/// centred under them.
 fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
-    let y = bar.center().y;
+    let premium = theme::premium();
+    let y = if premium {
+        bar.center().y - 8.0
+    } else {
+        bar.center().y
+    };
     let previous = Rect::from_min_size(pos2(bar.left() + 8.0, y - 18.0), Vec2::splat(36.0));
     if bar_button(
         ui,
@@ -132,7 +196,14 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
         } else {
             (Icon::Play, "Play")
         };
-        if bar_button(ui, spot, glyph, 40.0, 52.0, PALETTE.text, name).clicked() {
+        let clicked = if premium {
+            ui.painter()
+                .circle_filled(spot.center(), 21.0, PALETTE.text);
+            bar_button(ui, spot, glyph, 26.0, 42.0, PALETTE.window, name).clicked()
+        } else {
+            bar_button(ui, spot, glyph, 40.0, 52.0, PALETTE.text, name).clicked()
+        };
+        if clicked {
             app.act(Action::TogglePause);
         }
     }
@@ -151,6 +222,10 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
         app.act(Action::Next);
     }
 
+    if premium {
+        transport_time(app, ui, bar);
+        return bar.right();
+    }
     // "0:00 / 4:38", 12/400 #aaa, 8 after next (and its margin of 4).
     let mut x = next.right() + 4.0 + 8.0;
     if app.audio_status.length > 0.0 {
@@ -191,6 +266,34 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
     x + 16.0
 }
 
+/// Premium: the time (or a sound problem) at 11, centred under the
+/// transport.
+fn transport_time(app: &App, ui: &mut egui::Ui, bar: Rect) {
+    let mut time = if app.audio_status.length > 0.0 {
+        format!(
+            "{} / {}",
+            theme::clock(app.shown_position()),
+            theme::clock(app.audio_status.length)
+        )
+    } else {
+        String::new()
+    };
+    if app.demo {
+        time.push_str(" \u{00b7} Demo");
+    }
+    let (text, color) = match &app.audio_status.problem {
+        Some(problem) => (problem.as_str(), PALETTE.danger),
+        None => (time.as_str(), PALETTE.dim),
+    };
+    let words = theme::fit(ui, text, theme::regular(11.0), color, bar.width(), 1);
+    let rect = Rect::from_center_size(pos2(bar.center().x, bar.bottom() - 17.0), words.size());
+    ui.painter().galley(rect.min, words, color);
+    if app.audio_status.problem.is_some() {
+        ui.interact(rect, ui.id().with("sound-problem"), Sense::hover())
+            .on_hover_text(text);
+    }
+}
+
 /// The song: its cover 40 (r 2), 16 after it its title (14/500 white, 16
 /// from a window 1364 wide) and "Artist • Album" (14/400 white@0.70, the
 /// same 16, each a link), 8 after them like
@@ -200,8 +303,16 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
 fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, entry: &Entry) {
     let track = &entry.track;
     let y = bar.center().y;
-    // Cover 40, 16, the words, 8, like 36, 2.5, dislike 36, 16, menu 36, 16.
-    let fixed = 40.0 + 16.0 + 8.0 + 36.0 + 2.5 + 36.0 + 16.0 + 36.0 + 16.0;
+    // Cover 40, 16, the words, 8, like 36, 2.5, dislike 36, 16, menu 36, 16
+    // (Premium: cover 48 r 8 and 12 after it, 8 before and after the menu,
+    // at the left of its room).
+    let premium = theme::premium();
+    let (art_size, art_gap, menu_gap) = if premium {
+        (48.0, 12.0, 8.0)
+    } else {
+        (40.0, 16.0, 16.0)
+    };
+    let fixed = art_size + art_gap + 8.0 + 36.0 + 2.5 + 36.0 + menu_gap + 36.0 + menu_gap;
     let room = (to - from - fixed).max(0.0);
     let (line, line_color) = match &app.playback.state {
         PlayState::Preparing => ("Getting the song ready...".to_string(), PALETTE.secondary),
@@ -233,17 +344,21 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
     };
     let words = title.size().x.max(under_width).min(room);
     let group = fixed + words;
-    let left = from + ((to - from - group) / 2.0).max(0.0);
+    let left = if premium {
+        from
+    } else {
+        from + ((to - from - group) / 2.0).max(0.0)
+    };
 
-    let art = Rect::from_min_size(pos2(left, y - 20.0), Vec2::splat(40.0));
+    let art = Rect::from_min_size(pos2(left, y - art_size / 2.0), Vec2::splat(art_size));
     widgets::cover_with(
         app,
         ui,
         art,
         track.thumbnail.as_ref(),
-        CornerRadius::same(2),
+        CornerRadius::same(if premium { 8 } else { 2 }),
     );
-    let text_left = art.right() + 16.0;
+    let text_left = art.right() + art_gap;
     // Two lines, together centred down.
     let top = y - line_height;
     ui.painter().galley(
@@ -271,7 +386,7 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
 
     let mut x = text_left + words + 8.0;
     likes(app, ui, &mut x, y, track);
-    x += 16.0;
+    x += menu_gap;
     let menu_rect = Rect::from_min_size(pos2(x, y - 18.0), Vec2::splat(36.0));
     let more = bar_button(ui, menu_rect, Icon::MoreVertical, 24.0, 36.0, SOFT, "More");
     theme::menu_popup(&more).show(|ui| widgets::song_menu(app, ui, track, widgets::Place::Playing));
@@ -617,8 +732,16 @@ fn volume(app: &App, ui: &mut egui::Ui, button: Rect) {
 /// it. Click or drag (anywhere 15 above to 17 below its centre) to move in
 /// the song.
 fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
-    let red = Color32::from_rgb(0xff, 0x00, 0x33);
-    let pink = Color32::from_rgb(0xff, 0x27, 0x91);
+    // Premium: the accent alone, along the floating bar's foot.
+    let premium = theme::premium();
+    let (red, pink) = if premium {
+        (PALETTE.accent, PALETTE.accent)
+    } else {
+        (
+            Color32::from_rgb(0xff, 0x00, 0x33),
+            Color32::from_rgb(0xff, 0x27, 0x91),
+        )
+    };
     let length = app.audio_status.length.max(0.0);
     let fraction = if length > 0.0 {
         (app.shown_position() / length).clamp(0.0, 1.0) as f32
@@ -627,7 +750,11 @@ fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
     };
     // The line's centre is 1 below the bar's top; its pointer area runs 15
     // above to 17 below, over the page's foot.
-    let centre = bar.top() + 1.0;
+    let centre = if premium {
+        bar.bottom() - 4.0
+    } else {
+        bar.top() + 1.0
+    };
     let area_rect = Rect::from_min_max(
         pos2(bar.left(), centre - 15.0),
         pos2(bar.right(), centre + 17.0),
