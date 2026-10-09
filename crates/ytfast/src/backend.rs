@@ -15,7 +15,7 @@ use ytfast_core::innertube::{ApiError, Renewer, Renewing, Session};
 use ytfast_core::library::{LibraryTab, Privacy};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
-use ytfast_core::read::{Item, Page, PlayerInfo, Rating, Shape, SongDetails, Track};
+use ytfast_core::read::{Continuation, Item, Page, PlayerInfo, Rating, Shape, SongDetails, Track};
 use ytfast_core::solver::{self, Solver};
 use ytfast_core::stream::SongData;
 use ytfast_core::ytdlp::{Browser, YtDlp};
@@ -145,6 +145,12 @@ pub enum Request {
     },
     /// Suggestions for what is being typed in the search box.
     Suggest(String),
+    /// The next results of a search of one kind (`Route::SearchOnly`), its
+    /// list's end having come into view, for the `load` that showed it.
+    MoreResults {
+        route: Route,
+        load: u64,
+    },
     /// Find a song's audio ahead of time (it was pointed at, or is the
     /// top search result), so it starts at once if played.
     Warm(String),
@@ -214,12 +220,13 @@ pub enum Edit {
     },
     AddToPlaylist {
         playlist_id: String,
-        video_id: String,
+        video_ids: Vec<String>,
     },
+    /// Songs taken out of a playlist: each its song ID and its row's own
+    /// (`set_video_id`).
     RemoveFromPlaylist {
         playlist_id: String,
-        video_id: String,
-        set_video_id: String,
+        songs: Vec<(String, String)>,
     },
     CreatePlaylist {
         title: String,
@@ -315,6 +322,14 @@ pub enum Event {
         route: Route,
         load: u64,
         tracks: Vec<Track>,
+    },
+    /// The next results of a search of one kind ([`Request::MoreResults`]);
+    /// `done` when there are no more after them.
+    MoreResults {
+        route: Route,
+        load: u64,
+        items: Vec<Item>,
+        done: bool,
     },
     Image(String, Option<Picture>),
     /// A picture not fetched, because it was no longer wanted (it scrolled
@@ -553,6 +568,9 @@ struct Shared {
     /// The latest loading of each page ([`Request::Page`]): an older one
     /// stops fetching the rest of its long list.
     loads: std::sync::Mutex<HashMap<Route, u64>>,
+    /// Where the next results of the last few searches of one kind come
+    /// from, by page and loading ([`Request::MoreResults`]).
+    more_results: std::sync::Mutex<VecDeque<(Route, u64, Continuation)>>,
     /// Counts the pictures asked for, so one asked for long ago (it
     /// scrolled past while others waited) is skipped.
     pictures_asked: std::sync::atomic::AtomicU64,
@@ -595,6 +613,7 @@ async fn serve(
         fast_way: std::sync::atomic::AtomicBool::new(true),
         details: Mutex::new(HashMap::new()),
         loads: std::sync::Mutex::new(HashMap::new()),
+        more_results: std::sync::Mutex::new(VecDeque::new()),
         pictures_asked: std::sync::atomic::AtomicU64::new(0),
         sign_ins: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     });
@@ -689,6 +708,7 @@ async fn serve(
                     ticket,
                 } => playlist_queue(&shared, playlist_id, mode, ticket).await,
                 Request::Suggest(text) => suggest(&shared, text).await,
+                Request::MoreResults { route, load } => more_results(&shared, route, load).await,
                 Request::Warm(video_id) => {
                     if !shared.demo
                         && let Some(preparer) = shared.preparer().await
@@ -774,8 +794,77 @@ fn failure_for(request: &Request) -> Option<Event> {
         Request::Related(video_id) => Event::Related(video_id.clone(), Err(failed())),
         Request::Image(url) => Event::Image(url.clone(), None),
         Request::Edit(change) => Event::EditFailed(change.clone(), failed()),
+        // No more, rather than asking again while the end is in view.
+        Request::MoreResults { route, load } => Event::MoreResults {
+            route: route.clone(),
+            load: *load,
+            items: Vec::new(),
+            done: true,
+        },
         _ => return None,
     })
+}
+
+/// How many searches' next results are remembered.
+const MORE_RESULTS_KEPT: usize = 8;
+
+/// Remembers where `route`'s next results come from, for its `load`.
+fn keep_more_results(shared: &Shared, route: &Route, load: u64, from: Continuation) {
+    if let Ok(mut kept) = shared.more_results.lock() {
+        kept.retain(|(r, ..)| r != route);
+        kept.push_back((route.clone(), load, from));
+        while kept.len() > MORE_RESULTS_KEPT {
+            kept.pop_front();
+        }
+    }
+}
+
+/// The next results of a search of one kind, as its list's end comes into
+/// view: one request each time, as YouTube Music asks.
+async fn more_results(shared: &Shared, route: Route, load: u64) {
+    let from = shared.more_results.lock().ok().and_then(|mut kept| {
+        let at = kept
+            .iter()
+            .position(|(r, l, _)| *r == route && *l == load)?;
+        kept.remove(at).map(|(.., from)| from)
+    });
+    let answer = |items: Vec<Item>, done: bool| Event::MoreResults {
+        route: route.clone(),
+        load,
+        items,
+        done,
+    };
+    let (Some(from), Route::SearchOnly(query, params)) = (from, &route) else {
+        shared.send(answer(Vec::new(), true));
+        return;
+    };
+    if shared.demo {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        shared.send(answer(demo::more_results(query, params), true));
+        return;
+    }
+    let Some(preparer) = shared.preparer().await else {
+        shared.send(answer(Vec::new(), true));
+        return;
+    };
+    match preparer
+        .session
+        .more_search_results(query, params, &from)
+        .await
+    {
+        Ok((items, next)) => {
+            let done = next.is_none() || items.is_empty();
+            if let Some(next) = next.filter(|_| !done) {
+                keep_more_results(shared, &route, load, next);
+            }
+            shared.send(answer(items, done));
+        }
+        Err(e) => {
+            log::warn!("more search results did not load");
+            api_error(shared, e);
+            shared.send(answer(Vec::new(), true));
+        }
+    }
 }
 
 async fn sign_in(shared: &Shared, browser: Browser) {
@@ -1039,6 +1128,10 @@ async fn page(shared: &Shared, route: Route, load: u64, order: Option<String>) {
     if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let page = demo::page(&route, order.as_deref());
+        // A search of one kind has one more batch of made-up results.
+        if matches!(route, Route::SearchOnly(..)) {
+            keep_more_results(shared, &route, load, Continuation::Body("demo".into()));
+        }
         shared.send(Event::Page(route.clone(), load, Ok(page)));
         return;
     }
@@ -1064,10 +1157,18 @@ async fn page(shared: &Shared, route: Route, load: u64, order: Option<String>) {
         Route::Liked => session.long_page("VLLM", None).await,
         Route::Browse { id, params } => session.long_page(id, params.as_deref()).await,
         Route::Search(query) => session.search(query).await.map(|p| (p, None)),
-        Route::SearchOnly(query, params) => session
-            .search_filtered(query, params)
-            .await
-            .map(|p| (p, None)),
+        // Its next results wait until the list's end comes into view.
+        Route::SearchOnly(query, params) => {
+            session
+                .search_filtered(query, params)
+                .await
+                .map(|(page, more)| {
+                    if let Some(more) = more {
+                        keep_more_results(shared, &route, load, more);
+                    }
+                    (page, None)
+                })
+        }
         Route::LibrarySongs => {
             session
                 .long_page(LibraryTab::Songs.browse_id(), order.as_deref())
@@ -1531,20 +1632,10 @@ async fn edit(shared: &Shared, change: Edit) {
         Edit::Rate { video_id, like } => session.rate_song(video_id, rating(*like)).await,
         Edit::AddToPlaylist {
             playlist_id,
-            video_id,
-        } => {
-            session
-                .add_to_playlist(playlist_id, std::slice::from_ref(video_id))
-                .await
-        }
-        Edit::RemoveFromPlaylist {
-            playlist_id,
-            video_id,
-            set_video_id,
-        } => {
-            session
-                .remove_from_playlist(playlist_id, &[(video_id.clone(), set_video_id.clone())])
-                .await
+            video_ids,
+        } => session.add_to_playlist(playlist_id, video_ids).await,
+        Edit::RemoveFromPlaylist { playlist_id, songs } => {
+            session.remove_from_playlist(playlist_id, songs).await
         }
         Edit::CreatePlaylist {
             title,

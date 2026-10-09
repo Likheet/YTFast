@@ -293,7 +293,7 @@ impl Session {
     }
 
     /// [`Session::call`], with more in the address.
-    async fn call_with(
+    pub(crate) async fn call_with(
         &self,
         endpoint: &str,
         query: &[(&str, &str)],
