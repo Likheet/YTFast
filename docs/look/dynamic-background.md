@@ -51,8 +51,8 @@ its coordinates moved by slow waves.
   sizes, cover corners and the other pieces that differ.
 - Elsewhere, each place that differs asks `theme::dynamic()` and hands
   over to those two files, so the other looks' code stays as it is.
-- `colors::Summary::soft` keeps each cover at 24 × 24 (about 2 KB) for the
-  background.
+- `backend::Picture::soft` keeps each cover at 24 × 24 (about 2 KB) for
+  the background (`Images::soft`).
 - The choice is saved as YouTube Music's look plus `dynamic_background:
   true` (`Settings::loaded`, `dynamic::save_theme`), so a build without
   this theme still reads the settings, showing YouTube Music's look,

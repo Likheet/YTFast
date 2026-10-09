@@ -397,16 +397,13 @@ fn search_box(app: &App, ui: &mut egui::Ui, rect: Rect) {
     // Premium: always the field's colour, corners 12, outlined in the
     // accent while typing.
     let premium = theme::premium();
-    // Dynamic Background: white@0.10 and corners 12 always; the list
-    // floats 16 below, so the box keeps its corners.
-    let dynamic = theme::dynamic();
-    let fill = if (focused || open) && !premium && !dynamic {
+    let fill = if (focused || open) && !premium {
         PALETTE.window
     } else {
         PALETTE.field
     };
-    let round = if premium || dynamic { 12 } else { 8 };
-    let corners = if open && !dynamic {
+    let round = if premium { 12 } else { 8 };
+    let corners = if open {
         CornerRadius {
             nw: round,
             ne: round,
@@ -420,6 +417,13 @@ fn search_box(app: &App, ui: &mut egui::Ui, rect: Rect) {
         (true, true) => PALETTE.accent,
         (true, false) => PALETTE.outline,
         (false, _) => PALETTE.divider,
+    };
+    // Dynamic Background: white@0.10 and corners 12 always; its
+    // suggestions float apart, below.
+    let (fill, corners) = if theme::dynamic() {
+        (PALETTE.field, CornerRadius::same(12))
+    } else {
+        (fill, corners)
     };
     ui.painter().rect(
         rect,
@@ -626,41 +630,33 @@ fn suggestions(
             );
         }
     };
-    // Dynamic Background: glass 16 below the box, corners 12, the theme's
-    // shadow (`dynamic::glass_behind` paints the glass).
-    let (at, corners, shadow) = if dynamic {
-        (
-            rect.left_bottom() + vec2(0.0, 16.0),
-            CornerRadius::same(crate::dynamic::RADIUS_PANEL),
-            crate::dynamic::SHADOW,
-        )
+    // Dynamic Background: the list floats 16 below the box, as glass with
+    // corners 12 (`glass_behind`; its frame's colours are clear).
+    let rect = if dynamic {
+        rect.translate(vec2(0.0, 17.0))
     } else {
-        (
-            rect.left_bottom() - vec2(0.0, 1.0),
-            CornerRadius {
-                nw: 0,
-                ne: 0,
-                sw: 8,
-                se: 8,
-            },
-            egui::Shadow {
-                offset: [0, 8],
-                blur: 10,
-                spread: 1,
-                color: egui::Color32::from_black_alpha(36),
-            },
-        )
+        rect
     };
     let area = egui::Area::new(id.with("popup"))
         .order(egui::Order::Foreground)
-        .fixed_pos(at)
+        .fixed_pos(rect.left_bottom() - vec2(0.0, 1.0))
         .show(ui.ctx(), |ui| {
             Frame::new()
                 .fill(PALETTE.window)
                 .stroke(egui::Stroke::new(1.0, PALETTE.divider))
-                .corner_radius(corners)
+                .corner_radius(CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: 8,
+                    se: 8,
+                })
                 .inner_margin(Margin::symmetric(0, 8))
-                .shadow(shadow)
+                .shadow(egui::Shadow {
+                    offset: [0, 8],
+                    blur: 10,
+                    spread: 1,
+                    color: egui::Color32::from_black_alpha(36),
+                })
                 .show(ui, |ui| {
                     if dynamic {
                         crate::dynamic::glass_behind(ui, crate::dynamic::RADIUS_PANEL);

@@ -98,6 +98,8 @@ const SCALE: f32 = 1.2;
 /// 60 points on a cover drawn about 1536 wide at 1280.
 const BLUR: f32 = 2.5;
 const SIDE: usize = 64;
+/// The side of the cover kept for the background (`backend::Picture::soft`).
+pub const SOFT: usize = 24;
 
 /// A new song's colours take this long to come in (`kawarpTransitionDuration`).
 const FADE: f64 = 1.5;
@@ -160,11 +162,11 @@ pub fn paint(app: &App, ui: &egui::Ui) {
         .map(|thumb| thumb.sized(120));
     if let Some(url) = wanted
         && state.current.as_ref().map(|(had, _)| had) != Some(&url)
-        && let Some(summary) = app.images.borrow_mut().summary(&url, &app.backend)
+        && let Some(soft) = app.images.borrow_mut().soft(&url, &app.backend)
     {
         let texture = ctx.load_texture(
             "dynamic-background",
-            wash(&summary.soft),
+            wash(&soft),
             egui::TextureOptions::LINEAR,
         );
         state.previous = state.current.take().map(|(_, texture)| texture);
