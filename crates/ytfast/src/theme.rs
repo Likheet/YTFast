@@ -1371,6 +1371,17 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_background_sets_everything_in_inter() {
+        let rendering = fastframe_text::detect();
+        let first = |inter_first| {
+            let fonts = font_definitions(rendering, false, inter_first);
+            fonts.families[&egui::FontFamily::Proportional][0].clone()
+        };
+        assert_eq!(first(false), "roboto");
+        assert_eq!(first(true), fastframe_fonts::INTER_REGULAR);
+    }
+
+    #[test]
     fn bezier_curves_end_where_they_should() {
         let close = |a: f32, b: f32| (a - b).abs() < 0.001;
         assert!(close(bezier(0.2, 0.0, 0.6, 1.0, 0.0), 0.0));

@@ -53,12 +53,17 @@ its coordinates moved by slow waves.
   over to those two files, so the other looks' code stays as it is.
 - `colors::Summary::soft` keeps each cover at 24 × 24 (about 2 KB) for the
   background.
+- The choice is saved as YouTube Music's look plus `dynamic_background:
+  true` (`Settings::loaded`, `dynamic::save_theme`), so a build without
+  this theme still reads the settings, showing YouTube Music's look,
+  instead of forgetting them all (the sign-in's browser among them).
 
 ## What it costs
 
 Measured in the demo on the owner's Windows laptop (release build, 1280 by
 820): playing with the background moving, about 9% of one processor core
-on Home (15 frames a second); with it still, 1.7%; paused, 0%. Memory
+on Home (15 frames a second); with it still, 1.7%; minimised while
+playing, 0.3%; paused, 0%. Memory
 about 118 MB, as in the other looks. With the lyrics showing, the window
 draws 30 times a second in every look (about 37% in YouTube Music's look,
 47% in this one, with the blurred lines).
