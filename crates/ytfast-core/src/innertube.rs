@@ -466,9 +466,10 @@ impl Session {
         self.page("FEmusic_home", None).await
     }
 
-    /// The playlists saved in the library.
-    pub async fn library_playlists(&self) -> Result<Page, ApiError> {
-        self.library_page("FEmusic_liked_playlists").await
+    /// The playlists saved in the library, in the order `params` asks for
+    /// (one of its sort button's, [`read::SortOrder`]), else YouTube's.
+    pub async fn library_playlists(&self, params: Option<&str>) -> Result<Page, ApiError> {
+        self.library_page("FEmusic_liked_playlists", params).await
     }
 
     /// One part of the library (`FEmusic_liked_playlists`...), with the
@@ -476,8 +477,15 @@ impl Session {
     /// time, as ytmusicapi's `get_library_playlists` reads it. At most
     /// `MAX_LIBRARY_BATCHES` more are asked for; when one of them fails,
     /// the items already read are kept.
-    pub(crate) async fn library_page(&self, browse_id: &str) -> Result<Page, ApiError> {
-        let body = json!({ "browseId": browse_id });
+    pub(crate) async fn library_page(
+        &self,
+        browse_id: &str,
+        params: Option<&str>,
+    ) -> Result<Page, ApiError> {
+        let mut body = json!({ "browseId": browse_id });
+        if let Some(params) = params {
+            body["params"] = json!(params);
+        }
         let reply = self.call("browse", body.clone()).await?;
         let mut page = read::page(&reply);
         let mut next = read::item_continuation(&reply);

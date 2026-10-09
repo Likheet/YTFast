@@ -14,6 +14,7 @@ mod sidebar;
 mod signin;
 mod topbar;
 mod widgets;
+mod window_frame;
 
 use egui::{Frame, Margin};
 
@@ -26,7 +27,23 @@ pub const SEARCH_BOX: &str = "ytfast-search-box";
 pub fn show(app: &App, ui: &mut egui::Ui) {
     app.backdrop_slot
         .set(Some(backdrop::paint(ui, ui.max_rect())));
+    // Over everything: the edges that resize YTFast's own window frame.
+    window_frame::edges(ui.ctx());
     if !matches!(app.auth, Auth::SignedIn { .. }) {
+        // Without the top bar, a strip of its own moves the window and
+        // holds its buttons.
+        if window_frame::OWN_FRAME {
+            egui::Panel::top("title-strip")
+                .exact_size(32.0)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::new())
+                .show(ui, |ui| {
+                    let strip = ui.max_rect();
+                    window_frame::drag_area(ui, strip);
+                    window_frame::buttons(ui, strip);
+                });
+        }
         // Signed out by YouTube while a song plays: it can still be paused.
         if app.playback.entry.is_some() {
             player_bar::show(app, ui);
@@ -106,7 +123,12 @@ fn notice(app: &App, ui: &egui::Ui) {
         .show(ui.ctx(), |ui| {
             ui.set_opacity(shown);
             // YouTube Music's toast: `#f1f1f1`, words `#030303` 14,
-            // padding 16 24, r 8, 288 wide, one line.
+            // padding 16 24, r 8, at least 288 wide and as wide as its
+            // words (`tp-yt-paper-toast` has no greater limit than the
+            // window, 12 from each side).
+            let widest = (ui.ctx().content_rect().width() - 24.0 - 48.0).max(240.0);
+            let words = theme::fit(ui, text, theme::regular(14.0), PALETTE.window, widest, 3);
+            let width = words.size().x.max(240.0);
             Frame::new()
                 .fill(PALETTE.button)
                 .corner_radius(egui::CornerRadius::same(8))
@@ -118,11 +140,9 @@ fn notice(app: &App, ui: &egui::Ui) {
                     color: egui::Color32::from_black_alpha(66),
                 })
                 .show(ui, |ui| {
-                    ui.set_width(240.0);
-                    let words =
-                        theme::fit(ui, text, theme::regular(14.0), PALETTE.window, 240.0, 1);
+                    ui.set_width(width);
                     let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(240.0, words.size().y.max(16.8)),
+                        egui::vec2(width, words.size().y.max(16.8)),
                         egui::Sense::hover(),
                     );
                     ui.painter().galley(rect.min, words, PALETTE.window);

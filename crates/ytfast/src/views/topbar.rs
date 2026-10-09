@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use egui::{Align2, CornerRadius, Frame, Margin, Rect, Sense, UiBuilder, Vec2, pos2, vec2};
 
-use ytfast_core::read::{Item, Target, Track, TrackKind};
+use ytfast_core::read::{Item, SuggestedWords, Target, Track, TrackKind};
 
 use crate::app::{Action, App, Auth};
 use crate::backend::Route;
 use crate::theme::{self, Icon, PALETTE, Round};
-use crate::views::{sidebar, widgets};
+use crate::views::{sidebar, widgets, window_frame};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     egui::Panel::top("top-bar")
@@ -24,6 +24,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .frame(Frame::new())
         .show(ui, |ui| {
             let bar = ui.max_rect();
+            // The bar is the window's title bar too (on Windows): what is
+            // drawn on it below takes the pointer first.
+            window_frame::drag_area(ui, bar);
             let guide = sidebar::width(app);
             // (An album's background, painted behind everything, shows
             // through the bar while the page is at its top.)
@@ -110,7 +113,10 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 grid
             };
             let search_left = (bar.left() + guide + column.left).max(name.right() + 12.0);
-            let account_right = bar.left() + guide + grid.left + grid.width;
+            // At the content's right edge, unless the window's buttons
+            // (YTFast's own, on Windows) are there: then 16 before them.
+            let account_right = (bar.left() + guide + grid.left + grid.width)
+                .min(bar.right() - window_frame::buttons_width() - 16.0);
 
             // The account: 26 round, its right edge at the content's.
             let avatar = Rect::from_center_size(
@@ -153,21 +159,191 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             let width = (arrows.left() - 16.0 - search_left).clamp(120.0, 480.0);
             let field = Rect::from_min_size(pos2(search_left, bar.top() + 11.0), vec2(width, 42.0));
             search_box(app, ui, field);
+            window_frame::buttons(ui, bar);
         });
 }
 
-/// The account's round button, and its menu: History, Settings, signing
-/// out.
+/// The account's round button (its photo 26 on `#909090`; the name's first
+/// letter until the photo arrives), and its menu as YouTube Music's
+/// (measured signed in): 300 wide, `#282828`, r 12; a header with the
+/// photo 40, the name and handle (16/400 on 22 lines) and "Manage your
+/// Google Account" (14, `#3ea6ff`); then two groups of entries 40 high
+/// (an icon 18 at 16, the words 14/400 at 50), a white@0.20 line between.
+/// Entries YTFast cannot do itself open the page in the browser.
 fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
-    let Auth::SignedIn { name } = &app.auth else {
+    let Auth::SignedIn {
+        name,
+        handle,
+        photo,
+    } = &app.auth
+    else {
         return;
     };
     let response = ui.interact(rect, ui.id().with("account"), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Account"));
-    // YouTube Music shows the account's photo on `#909090`; until the
-    // photo is read, the name's first letter.
+    face(app, ui, rect, name, photo.as_deref());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let menu = egui::Frame::new()
+        .fill(egui::Color32::from_rgb(0x28, 0x28, 0x28))
+        .corner_radius(CornerRadius::same(12))
+        .shadow(egui::Shadow {
+            offset: [0, 4],
+            blur: 32,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(26),
+        });
+    egui::Popup::menu(&response)
+        .frame(menu)
+        .width(300.0)
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(8.0)
+        .show(|ui| {
+            ui.set_width(300.0);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            // The header: 16 around, the photo 40 and 16 after it.
+            let lines = if handle.is_some() { 3 } else { 2 };
+            let height = 16.0 + 22.0 * (lines - 1) as f32 + 8.0 + 20.0 + 16.0;
+            let (top, _) = ui.allocate_exact_size(vec2(300.0, height), Sense::hover());
+            let picture = Rect::from_min_size(top.min + vec2(16.0, 16.0), Vec2::splat(40.0));
+            face(app, ui, picture, name, photo.as_deref());
+            let left = picture.right() + 16.0;
+            let room = top.right() - 16.0 - left;
+            let mut y = top.top() + 16.0;
+            for words in std::iter::once(name.as_str()).chain(handle.as_deref()) {
+                theme::paint_line(
+                    ui,
+                    pos2(left, y + 1.6),
+                    words,
+                    theme::regular(16.0),
+                    PALETTE.text,
+                    room,
+                );
+                y += 22.0;
+            }
+            y += 8.0;
+            let manage = ui.painter().layout_no_wrap(
+                "Manage your Google Account".into(),
+                theme::regular(14.0),
+                PALETTE.switch,
+            );
+            let link = Rect::from_min_size(pos2(left, y), vec2(manage.size().x, 20.0));
+            let linked = ui.interact(link, ui.id().with("manage-account"), Sense::click());
+            linked.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Link,
+                    true,
+                    "Manage your Google Account",
+                )
+            });
+            if linked.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.painter()
+                .galley(pos2(left, y + 1.6), manage, PALETTE.switch);
+            if linked.clicked() {
+                ui.ctx()
+                    .open_url(egui::OpenUrl::new_tab("https://myaccount.google.com/"));
+                ui.close();
+            }
+            let line = |ui: &mut egui::Ui| {
+                let (rule, _) = ui.allocate_exact_size(vec2(300.0, 1.0), Sense::hover());
+                ui.painter().hline(
+                    rule.x_range(),
+                    rule.center().y,
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(51)),
+                );
+            };
+            line(ui);
+            let entry = |ui: &mut egui::Ui, icon: Icon, words: &str| -> egui::Response {
+                let (row, response) = ui.allocate_exact_size(vec2(300.0, 40.0), Sense::click());
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, words)
+                });
+                if response.hovered() {
+                    ui.painter()
+                        .rect_filled(row, 0.0, egui::Color32::from_white_alpha(26));
+                }
+                let mark = Rect::from_min_size(
+                    pos2(row.left() + 16.0, row.center().y - 9.0),
+                    Vec2::splat(18.0),
+                );
+                theme::paint_icon(ui, icon, mark, 18.0, PALETTE.text);
+                theme::paint_line(
+                    ui,
+                    pos2(row.left() + 50.0, row.center().y - 8.4),
+                    words,
+                    theme::regular(14.0),
+                    PALETTE.text,
+                    300.0 - 50.0 - 36.0,
+                );
+                response
+            };
+            let web = |ui: &mut egui::Ui, icon: Icon, words: &str, address: &str| {
+                if entry(ui, icon, words).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(address));
+                    ui.close();
+                }
+            };
+            ui.add_space(8.0);
+            if let Some(handle) = handle {
+                web(
+                    ui,
+                    Icon::AccountBox,
+                    "Your channel",
+                    &format!("https://www.youtube.com/{handle}"),
+                );
+            }
+            web(
+                ui,
+                Icon::Paid,
+                "Paid memberships",
+                "https://www.youtube.com/paid_memberships",
+            );
+            if !app.demo && entry(ui, Icon::LogOut, "Sign out").clicked() {
+                app.act(Action::SignOut);
+                ui.close();
+            }
+            ui.add_space(8.0);
+            line(ui);
+            ui.add_space(8.0);
+            let go = |ui: &mut egui::Ui, icon: Icon, words: &str, route: Route| {
+                if entry(ui, icon, words).clicked() {
+                    app.act(Action::Navigate(route));
+                    ui.close();
+                }
+            };
+            go(ui, Icon::History, "History", Route::History);
+            go(ui, Icon::Settings, "Settings", Route::Settings);
+            web(
+                ui,
+                Icon::Policy,
+                "Terms & privacy policy",
+                "https://policies.google.com/",
+            );
+            web(
+                ui,
+                Icon::Help,
+                "Help",
+                "https://support.google.com/youtubemusic",
+            );
+            ui.add_space(8.0);
+        });
+}
+
+/// The account's photo in `rect`, round on `#909090`; the name's first
+/// letter while it has none.
+fn face(app: &App, ui: &egui::Ui, rect: Rect, name: &str, photo: Option<&str>) {
     ui.painter()
         .circle_filled(rect.center(), rect.width() / 2.0, PALETTE.quiet);
+    let texture = photo.and_then(|url| app.picture(url));
+    if let Some(texture) = texture {
+        egui::Image::new((texture.id(), rect.size()))
+            .corner_radius(CornerRadius::same((rect.width() / 2.0) as u8))
+            .paint_at(ui, rect);
+        return;
+    }
     let initial: String = name
         .chars()
         .find(|c| c.is_alphanumeric())
@@ -177,50 +353,9 @@ fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
         rect.center(),
         Align2::CENTER_CENTER,
         initial,
-        theme::medium(13.0),
+        theme::medium(rect.width() / 2.0),
         PALETTE.text,
     );
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    theme::menu_popup(&response).show(|ui| {
-        theme::menu(ui);
-        // The account's name, in line with the menu's words.
-        let (who, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
-        let under = if app.demo { "Demo" } else { "YouTube Music" };
-        theme::paint_line(
-            ui,
-            who.left_top() + vec2(16.0, 7.0),
-            name,
-            theme::medium(16.0),
-            PALETTE.text,
-            who.width() - 32.0,
-        );
-        theme::paint_line(
-            ui,
-            who.left_top() + vec2(16.0, 28.0),
-            under,
-            theme::regular(13.0),
-            PALETTE.dim,
-            who.width() - 32.0,
-        );
-        ui.separator();
-        let go = |ui: &mut egui::Ui, icon: Icon, text: &str, route: Route| {
-            if theme::menu_item(ui, icon, text).clicked() {
-                app.act(Action::Navigate(route));
-                ui.close();
-            }
-        };
-        go(ui, Icon::History, "History", Route::History);
-        go(ui, Icon::Settings, "Settings", Route::Settings);
-        if !app.demo {
-            ui.separator();
-            if theme::menu_item(ui, Icon::LogOut, "Sign out").clicked() {
-                app.act(Action::SignOut);
-                ui.close();
-            }
-        }
-    });
 }
 
 /// The search box, as YouTube Music's (`ytmusic-search-box`): white@0.15
@@ -320,11 +455,14 @@ enum Chosen {
 /// How long typing pauses before suggestions are asked for, in seconds.
 const TYPING_PAUSE: f64 = 0.25;
 
-/// What YouTube Music suggests for the words typed so far, as its list
-/// under the box (`#suggestion-list`): right under it, as wide, `#030303`
-/// with a white@0.15 border and its lower corners rounded 8, padding 8;
-/// up to 6 rows of words 48 high (the search icon 18 `#909090` centred 25
-/// in, the words 14 at 55 in, white@0.50, the typed part in 500 weight),
+/// What YouTube Music suggests for the words typed so far (with nothing
+/// typed, the account's past searches), as its list under the box
+/// (`#suggestion-list`): right under it, as wide, `#030303` with a
+/// white@0.15 border and its lower corners rounded 8, padding 8; rows of
+/// words 48 high (the search icon 18 white@0.50 centred 25 in, the words
+/// 14 at 55 in, white@0.50, the typed part in 500 weight; a past search
+/// has a clock for its icon and a bin, 36 across and 4 from the right,
+/// that removes it from the history),
 /// then the songs, artists and albums it suggests, 56 high (picture 32 at
 /// 12 in, round for an artist; 16 after it the title 14/500 and 3 under
 /// it what it is, 14 white@0.70). The arrow keys move through them all
@@ -340,15 +478,21 @@ fn suggestions(
     let id = ui.id().with("suggest");
     let now = ui.input(|i| i.time);
     let typed = text.trim().to_string();
-    // Asked for once typing pauses for a moment.
-    let asked: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    if typed != asked {
+    // Asked for once typing pauses for a moment; with nothing typed, the
+    // past searches, each time the box is entered (a search since then
+    // is among them).
+    let asked: Option<String> = ui.data(|d| d.get_temp(id));
+    let entered = typed.is_empty() && field.gained_focus();
+    if entered || asked.as_deref() != Some(typed.as_str()) {
         let (pending, since): (String, f64) = ui
             .data(|d| d.get_temp(id.with("pending")))
             .unwrap_or_default();
         let waited = now - since;
         if typed.is_empty() {
-            // Nothing to ask about.
+            // Asked for when the box is entered, or emptied in it.
+            if field.has_focus() {
+                app.act(Action::Suggest(String::new()));
+            }
             ui.data_mut(|d| d.insert_temp(id, typed.clone()));
         } else if pending != typed {
             ui.data_mut(|d| d.insert_temp(id.with("pending"), (typed.clone(), now)));
@@ -370,7 +514,6 @@ fn suggestions(
     let closed: Option<String> = ui.data(|d| d.get_temp(id.with("closed")));
     // (Enter takes the focus from the box in the same frame it is read.)
     let show = (field.has_focus() || field.lost_focus() || over_popup)
-        && !typed.is_empty()
         && *for_text == typed
         && closed.as_deref() != Some(typed.as_str())
         && !(found.words.is_empty() && found.items.is_empty());
@@ -381,7 +524,8 @@ fn suggestions(
         });
         return None;
     }
-    let words: Vec<&String> = found.words.iter().take(6).collect();
+    // As many as YouTube gives (6 as a rule, 7 past searches signed in).
+    let words: Vec<&SuggestedWords> = found.words.iter().take(10).collect();
     let items: Vec<&Item> = found.items.iter().take(5).collect();
     let total = words.len() + items.len();
     // The row the arrow keys have marked, if any.
@@ -402,12 +546,14 @@ fn suggestions(
     }
     let mut chosen = None;
     let mut picked: Option<&Item> = None;
+    // A past search to remove from the history: its words and token.
+    let mut forget: Option<(String, String)> = None;
     if let Some(m) = marked
         && field.lost_focus()
         && ui.input(|i| i.key_pressed(egui::Key::Enter))
     {
         match words.get(m) {
-            Some(words) => chosen = Some((*words).clone()),
+            Some(words) => chosen = Some(words.text.clone()),
             None => picked = items.get(m - words.len()).copied(),
         }
     }
@@ -456,21 +602,64 @@ fn suggestions(
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Button,
                                 true,
-                                suggestion.as_str(),
+                                &suggestion.text,
                             )
                         });
-                        fill(ui, row, response.hovered(), marked == Some(index));
+                        // A past search's bin: 36 across, 4 from the right,
+                        // its icon 18. It takes the click, not the row.
+                        let bin = suggestion.forget.as_ref().map(|token| {
+                            let spot = Rect::from_min_size(
+                                pos2(row.right() - 40.0, row.center().y - 18.0),
+                                Vec2::splat(36.0),
+                            );
+                            let bin = ui.interact(spot, response.id.with("bin"), Sense::click());
+                            bin.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    format!("Remove {}", suggestion.text),
+                                )
+                            });
+                            (spot, bin, token)
+                        });
+                        let bin_hovered = bin.as_ref().is_some_and(|(_, b, _)| b.hovered());
+                        fill(
+                            ui,
+                            row,
+                            response.hovered() || bin_hovered,
+                            marked == Some(index),
+                        );
+                        let mark = if bin.is_some() {
+                            Icon::History
+                        } else {
+                            Icon::Search
+                        };
                         let icon = Rect::from_center_size(
                             pos2(row.left() + 25.0, row.center().y),
                             Vec2::splat(18.0),
                         );
-                        theme::paint_icon(ui, Icon::Search, icon, 18.0, PALETTE.quiet);
-                        let words =
-                            suggestion_words(ui, suggestion, &typed, row.width() - 55.0 - 16.0);
+                        theme::paint_icon(ui, mark, icon, 18.0, PALETTE.hint);
+                        let room = if bin.is_some() { 40.0 } else { 16.0 };
+                        let words = suggestion_words(
+                            ui,
+                            &suggestion.text,
+                            &typed,
+                            row.width() - 55.0 - room,
+                        );
                         let at = pos2(row.left() + 55.0, row.center().y - words.size().y / 2.0);
                         ui.painter().galley(at, words, PALETTE.hint);
+                        if let Some((spot, bin, token)) = bin {
+                            if bin.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let icon = Rect::from_center_size(spot.center(), Vec2::splat(18.0));
+                            theme::paint_icon(ui, Icon::Delete, icon, 18.0, PALETTE.hint);
+                            if bin.clicked() {
+                                forget = Some((suggestion.text.clone(), token.clone()));
+                            }
+                        }
                         if response.clicked() {
-                            chosen = Some((*suggestion).clone());
+                            chosen = Some(suggestion.text.clone());
                         }
                     }
                     for (k, item) in items.iter().enumerate() {
@@ -535,6 +724,11 @@ fn suggestions(
     if let Some(words) = &chosen {
         *text = words.clone();
         ui.memory_mut(|m| m.surrender_focus(field.id));
+    }
+    if let Some((words, token)) = forget {
+        app.act(Action::ForgetSearch { words, token });
+        // The box keeps the keyboard, and the list stays open.
+        field.request_focus();
     }
     let done = picked.is_some();
     if let Some(item) = picked {

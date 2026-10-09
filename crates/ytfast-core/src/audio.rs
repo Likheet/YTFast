@@ -14,7 +14,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fastframe_audio::{Buffer, BufferSize, Maintained, OutputOptions, Render};
 use symphonia::core::audio::SampleBuffer;
@@ -488,6 +488,42 @@ struct Loaded {
 /// The longest a jump waits for the rest of the song to arrive.
 const WHOLE_SONG_WAIT: Duration = Duration::from_secs(60);
 
+/// The device's stream, paused, with the mixer that feeds it.
+type OpenedOutput = (
+    fastframe_audio::Output<MixerRender>,
+    MixerSlot,
+    rodio::mixer::Mixer,
+);
+
+/// Opens the default output, paused (the device rests until there is a
+/// song to play).
+fn open_output() -> Result<OpenedOutput, AudioError> {
+    let made = MixerSlot::default();
+    let render = MixerRender {
+        source: None,
+        format: (0, 0),
+        made: Arc::clone(&made),
+    };
+    let options = OutputOptions {
+        channels: 2,
+        // YouTube's audio is 44.1 kHz; the device's own rate is used if
+        // it cannot run at that.
+        sample_rate: Some(44_100),
+        buffer: Buffer::FixedOnWindows(BufferSize::Duration(Duration::from_millis(200))),
+        follow_default: true,
+        ..OutputOptions::default()
+    };
+    let mut output = fastframe_audio::Output::open(options, render)
+        .map_err(|e| AudioError::Device(e.to_string()))?;
+    let (mixer, _rate) = made
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| AudioError::Device("the audio output did not start".into()))?;
+    output.pause();
+    Ok((output, made, mixer))
+}
+
 /// Plays one song at a time. Lives on one thread (the audio device handle
 /// cannot move between threads on every platform).
 ///
@@ -495,11 +531,25 @@ const WHOLE_SONG_WAIT: Duration = Duration::from_secs(60);
 /// decoder and a fresh rodio sink instead of asking the playing one to seek:
 /// rodio's seek waits for the audio thread, which does not run while the
 /// device is paused.
+///
+/// The device keeps its buffer full ahead of what is heard (200 ms on
+/// Windows), and neither pausing nor a new sink empties it. So a new song,
+/// or a jump, after sound was played moves to a fresh stream, which starts
+/// empty; otherwise the end of what played before would sound first.
+/// Opening one takes about 0.15 s, so a spare is opened while a song plays
+/// ([`Player::prepare_spare`]), and moving to it takes about 0.01 s.
 pub struct Player {
     output: fastframe_audio::Output<MixerRender>,
     made: MixerSlot,
     mixer: rodio::mixer::Mixer,
     sink: rodio::Sink,
+    /// The device's stream has been given sound: its buffer may still hold
+    /// some of it.
+    fed: bool,
+    /// A fresh stream, paused, ready to take over from one that was fed.
+    spare: Option<OpenedOutput>,
+    /// When opening a spare last failed: it is not tried again for a while.
+    spare_failed: Option<Instant>,
     song: Option<Loaded>,
     /// What the current sink plays from: its silence is taken off the
     /// position.
@@ -513,36 +563,16 @@ pub struct Player {
 
 impl Player {
     pub fn open() -> Result<Self, AudioError> {
-        let made = MixerSlot::default();
-        let render = MixerRender {
-            source: None,
-            format: (0, 0),
-            made: Arc::clone(&made),
-        };
-        let options = OutputOptions {
-            channels: 2,
-            // YouTube's audio is 44.1 kHz; the device's own rate is used if
-            // it cannot run at that.
-            sample_rate: Some(44_100),
-            buffer: Buffer::FixedOnWindows(BufferSize::Duration(Duration::from_millis(200))),
-            follow_default: true,
-            ..OutputOptions::default()
-        };
-        let mut output = fastframe_audio::Output::open(options, render)
-            .map_err(|e| AudioError::Device(e.to_string()))?;
-        let (mixer, _rate) = made
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| AudioError::Device("the audio output did not start".into()))?;
-        // The device rests until there is a song to play.
-        output.pause();
+        let (output, made, mixer) = open_output()?;
         let sink = rodio::Sink::connect_new(&mixer);
         Ok(Self {
             output,
             made,
             mixer,
             sink,
+            fed: false,
+            spare: None,
+            spare_failed: None,
             song: None,
             feed: None,
             offset: Duration::ZERO,
@@ -558,10 +588,73 @@ impl Player {
     /// Starts a new song from the beginning, playing as its bytes arrive.
     /// `gain` is from [`gain_for_loudness`].
     pub fn play_song(&mut self, data: Arc<SongData>, gain: f32) -> Result<(), AudioError> {
+        self.empty_the_device();
         self.song = Some(Loaded { data, gain });
         self.paused = false;
         self.output.resume();
+        self.fed = true;
         self.restart_at(Duration::ZERO)
+    }
+
+    /// Swaps the device's stream for a fresh one when the old may still
+    /// hold sound, so none of it plays before what comes next: the spare
+    /// when there is one, else one opened now. When a fresh one cannot be
+    /// opened, the old stays: a moment of the last sound is better than
+    /// none.
+    fn empty_the_device(&mut self) {
+        if !self.fed {
+            return;
+        }
+        let started = Instant::now();
+        // Opened beside the old one, which goes only once this one works.
+        let fresh = match self.spare.take() {
+            Some(spare) => Ok(spare),
+            None => open_output(),
+        };
+        match fresh {
+            Ok((output, made, mixer)) => {
+                self.output = output;
+                self.made = made;
+                self.mixer = mixer;
+                self.sink = rodio::Sink::connect_new(&self.mixer);
+                self.fed = false;
+                log::debug!(
+                    "audio output: a fresh stream in {} ms",
+                    started.elapsed().as_millis()
+                );
+            }
+            Err(error) => log::warn!(
+                "audio output: could not open a fresh stream, so a moment of the last \
+                 sound may play: {error}"
+            ),
+        }
+    }
+
+    /// Opens a spare stream for the next song or jump, while a song plays
+    /// and there is none (about 0.15 s; call it when nothing waits). After
+    /// a failure it rests for half a minute.
+    pub fn prepare_spare(&mut self) {
+        const REST: Duration = Duration::from_secs(30);
+        let playing = self.song.is_some() && !self.paused;
+        let resting = self.spare_failed.is_some_and(|at| at.elapsed() < REST);
+        if self.spare.is_some() || !playing || resting {
+            return;
+        }
+        let started = Instant::now();
+        match open_output() {
+            Ok(spare) => {
+                self.spare = Some(spare);
+                self.spare_failed = None;
+                log::debug!(
+                    "audio output: a spare stream in {} ms",
+                    started.elapsed().as_millis()
+                );
+            }
+            Err(error) => {
+                self.spare_failed = Some(Instant::now());
+                log::info!("audio output: no spare stream: {error}");
+            }
+        }
     }
 
     fn restart_at(&mut self, at: Duration) -> Result<(), AudioError> {
@@ -603,6 +696,7 @@ impl Player {
         }
         self.paused = false;
         self.output.resume();
+        self.fed = true;
         self.sink.play();
     }
 
@@ -620,6 +714,11 @@ impl Player {
     /// Jumps to `to` in the current song. Anywhere but the start needs the
     /// whole song, and waits for it (see [`Player::can_jump`]).
     pub fn seek(&mut self, to: Duration) -> Result<(), AudioError> {
+        self.empty_the_device();
+        if !self.paused && self.song.is_some() {
+            self.output.resume();
+            self.fed = true;
+        }
         self.restart_at(to)
     }
 
@@ -667,13 +766,25 @@ impl Player {
         // Nothing to play: the device rests (no callbacks, no CPU, and it
         // does not keep the computer awake) until the next song.
         self.output.pause();
+        // A fresh stream now (about 0.1 s), while the next song is still
+        // being fetched, rather than when it is ready.
+        self.empty_the_device();
     }
 
     /// Keeps the output on a working device. Call a few times a second.
     /// Returns a message worth showing when something changed.
     pub fn maintain(&mut self) -> Option<String> {
         let mut note = None;
-        match self.output.maintain() {
+        let maintained = self.output.maintain();
+        // The spare was opened on the device of then: after a move to
+        // another, or letting the device go, it goes too.
+        if matches!(
+            maintained,
+            Maintained::Reopened { .. } | Maintained::Released
+        ) {
+            self.spare = None;
+        }
+        match maintained {
             Maintained::Reopened { device, reason, .. } => {
                 let remade = self
                     .made

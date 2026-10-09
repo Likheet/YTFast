@@ -171,15 +171,22 @@ once a song plays.
 
 | Key | What it does |
 |---|---|
-| Space | Pause or play |
-| ← / → | Back or forward 10 seconds |
-| ↑ / ↓ | Volume up or down |
-| Shift+N / Shift+P | Next or previous song |
+| Space or ; | Pause or play |
+| J / K (or Shift+N / Shift+P) | Next or previous song |
+| L / H (or → / ←) | Forward or back 10 seconds |
+| Shift+L / Shift+H | Forward or back 1 second |
+| = / - (or ↑ / ↓) | Volume up or down |
 | M | Mute |
-| L | Like the song playing |
+| S | Shuffle on or off |
+| R | Repeat |
+| Q | Open or close the player page (Esc closes it) |
+| + / _ | Like or dislike the song playing |
+| G then H, E, L or , | Home, Explore, Library or Settings |
 | / or Ctrl+F (Cmd+F on a Mac) | Search |
-| Esc | Close the player page |
+| ? | This list, in the app |
 | Your keyboard's media keys | Play, pause, next, previous |
+
+These are YouTube Music's own keys (L no longer likes a song: use +).
 
 The song playing also shows in your computer's own media controls (the
 Windows volume pop-up, or the Mac's Control Center).

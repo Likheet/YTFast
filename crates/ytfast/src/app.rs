@@ -3,13 +3,14 @@
 //! applied after drawing, so nothing changes under a view mid-frame.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use fastframe_now_playing as now_playing;
 use serde::{Deserialize, Serialize};
+use ytfast_core::library::Privacy;
 use ytfast_core::playreport::PlayReport;
-use ytfast_core::read::{Item, Page, PlayerInfo, Section, Target, Track, TrackKind};
+use ytfast_core::read::{Item, Page, PlayerInfo, Section, SortOrder, Target, Track, TrackKind};
 use ytfast_core::ytdlp::Browser;
 
 use crate::audio_thread::{Audio, Command, Status};
@@ -37,6 +38,9 @@ pub struct Settings {
     /// Shuffle is on: every queue plays its songs to come in a random
     /// order, as YouTube Music's shuffle.
     pub shuffle: bool,
+    /// The order chosen for each of the Library's tabs: its page ID, and
+    /// its sort button's `params` for that order.
+    pub library_order: BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -50,15 +54,29 @@ impl Default for Settings {
             even_loudness: true,
             mini_guide: false,
             shuffle: false,
+            library_order: BTreeMap::new(),
         }
     }
 }
 
 pub enum Auth {
-    Choosing { browser: Browser },
-    Working { browser: Browser, progress: String },
-    SignedIn { name: String },
-    Failed { browser: Browser, message: String },
+    Choosing {
+        browser: Browser,
+    },
+    Working {
+        browser: Browser,
+        progress: String,
+    },
+    SignedIn {
+        name: String,
+        /// "@handle", and the account's photo's address.
+        handle: Option<String>,
+        photo: Option<String>,
+    },
+    Failed {
+        browser: Browser,
+        message: String,
+    },
 }
 
 // A page's header is a few hundred bytes, and at most 24 pages are kept:
@@ -145,14 +163,21 @@ pub enum Setting {
 /// A small window asking one thing.
 #[derive(Clone, Debug)]
 pub enum Dialog {
-    /// A new playlist's name; `song` is added to it when made.
+    /// A new playlist's name, description and privacy; `song` is added to
+    /// it when made.
     NewPlaylist {
         name: String,
+        description: String,
+        privacy: Privacy,
         song: Option<String>,
     },
+    /// Editing one of the account's own playlists (YouTube Music's Edit
+    /// playlist).
     Rename {
         playlist_id: String,
         name: String,
+        description: String,
+        privacy: Privacy,
     },
     Delete {
         playlist_id: String,
@@ -168,6 +193,8 @@ pub enum Dialog {
         title: String,
         text: String,
     },
+    /// The keyboard's shortcuts ("?").
+    Shortcuts,
 }
 
 /// The player page's tabs.
@@ -230,8 +257,16 @@ pub enum Action {
     },
     /// Any other change to the account.
     Edit(Edit),
-    /// Ask for search suggestions.
+    /// Ask for search suggestions (with nothing typed, the past searches).
     Suggest(String),
+    /// Show a Library tab in another order (one its sort button offers).
+    SortLibrary(SortOrder),
+    /// Remove a past search from the account's search history: its words,
+    /// and the token its suggestion carried.
+    ForgetSearch {
+        words: String,
+        token: String,
+    },
     /// A playlist's or album's songs: play, shuffle, or queue them.
     QueuePlaylist(String, QueueMode),
     Toggle(Setting),
@@ -239,6 +274,8 @@ pub enum Action {
     RenamePlaylist {
         playlist_id: String,
         name: String,
+        description: String,
+        privacy: Privacy,
     },
     DeletePlaylist(String),
     /// Take a row out of the playlist shown (by its own row ID).
@@ -312,7 +349,7 @@ pub struct App {
     pub notice: Option<(String, Instant)>,
     pub actions: RefCell<Vec<Action>>,
     /// Songs already asked for ahead of time.
-    warmed: RefCell<std::collections::HashSet<String>>,
+    warmed: RefCell<HashSet<String>>,
     /// The song row under the pointer (see [`App::resting_on`]).
     pointed: RefCell<Option<Pointed>>,
     /// The player page is open, and on which tab.
@@ -329,6 +366,10 @@ pub struct App {
     pub dialog: RefCell<Option<Dialog>>,
     /// Search suggestions, for the text they were asked for.
     pub suggestions: (String, ytfast_core::read::Suggestions),
+    /// Past searches removed in this run (lowercase), kept out of answers
+    /// asked for before the removal reached YouTube. One per click on a
+    /// suggestion's bin, so it stays small.
+    forgotten_searches: HashSet<String>,
     /// The fonts for other scripts, added once some words need them.
     script_fonts: crate::theme::ScriptFonts,
     /// The volume before muting, which unmuting goes back to.
@@ -361,6 +402,8 @@ pub struct App {
     /// How far the page is scrolled (as the page saw it last frame): an
     /// album's background moves up with its songs.
     pub page_offset: std::cell::Cell<f32>,
+    /// A dialog just opened: its first field takes the keyboard.
+    pub dialog_fresh: std::cell::Cell<bool>,
     /// Where this frame's album background goes: kept under the bars and
     /// the menu (`backdrop::paint`).
     pub backdrop_slot: std::cell::Cell<Option<egui::layers::ShapeIdx>>,
@@ -371,6 +414,9 @@ pub struct App {
     /// "/" just opened the search box: its character, arriving in the next
     /// frame, is not typed there.
     drop_slash: bool,
+    /// When "g" was pressed (egui's clock): the next key goes to a page
+    /// (h Home, e Explore, l Library, "," Settings), as YouTube Music's.
+    go_to: Option<f64>,
 }
 
 /// The song row under the pointer, and since when.
@@ -470,7 +516,7 @@ impl App {
             audio_status: Status::default(),
             notice: None,
             actions: RefCell::new(Vec::new()),
-            warmed: RefCell::new(std::collections::HashSet::new()),
+            warmed: RefCell::new(HashSet::new()),
             pointed: RefCell::new(None),
             now_playing: false,
             np_tab: NpTab::UpNext,
@@ -481,6 +527,7 @@ impl App {
             subscribed: HashMap::new(),
             dialog: RefCell::new(None),
             suggestions: (String::new(), Default::default()),
+            forgotten_searches: HashSet::new(),
             script_fonts,
             loud_volume,
             edits_in_flight: HashMap::new(),
@@ -493,9 +540,11 @@ impl App {
             fresh_page: std::cell::Cell::new(false),
             page_scrolled: std::cell::Cell::new(false),
             page_offset: std::cell::Cell::new(0.0),
+            dialog_fresh: std::cell::Cell::new(false),
             backdrop_slot: std::cell::Cell::new(None),
             page_cover: RefCell::new(None),
             drop_slash: false,
+            go_to: None,
         }
     }
 
@@ -571,7 +620,7 @@ impl App {
             })
             .collect();
         let account = match &self.auth {
-            Auth::SignedIn { name } if !name.is_empty() => Some(name.as_str()),
+            Auth::SignedIn { name, .. } if !name.is_empty() => Some(name.as_str()),
             _ => None,
         };
         let whose = |card: &&ytfast_core::read::Card| {
@@ -794,13 +843,21 @@ impl App {
                         *progress = line;
                     }
                 }
-                Event::SignedIn { name } => {
+                Event::SignedIn {
+                    name,
+                    handle,
+                    photo,
+                } => {
                     if let Auth::Working { browser, .. } = &self.auth
                         && !self.demo
                     {
                         self.settings.browser = Some(browser.label().to_string());
                     }
-                    self.auth = Auth::SignedIn { name };
+                    self.auth = Auth::SignedIn {
+                        name,
+                        handle,
+                        photo,
+                    };
                     self.pages.clear();
                     self.visited.clear();
                     self.load(Route::Home);
@@ -869,7 +926,11 @@ impl App {
                 } => self.playlist_arrived(playlist_id, mode, ticket, result),
                 // Only for what was last typed: an answer for older text,
                 // arriving late, would replace the right one.
-                Event::Suggestions(text, found) if text == self.suggesting => {
+                Event::Suggestions(text, mut found) if text == self.suggesting => {
+                    let forgotten = &self.forgotten_searches;
+                    found.words.retain(|w| {
+                        w.forget.is_none() || !forgotten.contains(&w.text.to_lowercase())
+                    });
                     self.suggestions = (text, found);
                 }
                 Event::Suggestions(..) => {}
@@ -913,6 +974,10 @@ impl App {
                         Edit::Subscribe { channel_id, .. } => {
                             self.subscribed.remove(channel_id);
                         }
+                        // It shows again the next time it is suggested.
+                        Edit::ForgetSearch { words, .. } => {
+                            self.forgotten_searches.remove(&words.to_lowercase());
+                        }
                         // Show the playlist as it really is.
                         Edit::RemoveFromPlaylist { playlist_id, .. }
                         | Edit::RenamePlaylist { playlist_id, .. } => {
@@ -933,16 +998,20 @@ impl App {
                         // change.
                         Edit::CreatePlaylist { title, .. } => {
                             self.notify(format!("Made the playlist {title}"));
-                            self.refresh(Route::Library);
+                            self.refresh_library();
                         }
                         Edit::RenamePlaylist { .. } | Edit::DeletePlaylist { .. } => {
-                            self.refresh(Route::Library);
+                            self.refresh_library();
                         }
                         // An album saved shows in Library > Albums and its
                         // songs in Library > Songs too.
                         Edit::Save { .. } => {
-                            for route in [Route::Library, Route::LibraryAlbums, Route::LibrarySongs]
-                            {
+                            for route in [
+                                Route::Library,
+                                Route::LibraryRecent,
+                                Route::LibraryAlbums,
+                                Route::LibrarySongs,
+                            ] {
                                 if self.pages.contains_key(&route) {
                                     self.refresh(route);
                                 }
@@ -1041,6 +1110,22 @@ impl App {
         };
         match result {
             Ok(ready) => {
+                // The player's answer names the song, for one started by
+                // its ID alone (its cover comes with Up next).
+                let info = &ready.info;
+                let heard = Track {
+                    video_id: current.track.video_id.clone(),
+                    title: info.title.clone().unwrap_or_default(),
+                    artists: info
+                        .author
+                        .as_deref()
+                        .map(|a| a.trim_end_matches(" - Topic").to_string())
+                        .unwrap_or_default(),
+                    duration_seconds: info.length_seconds,
+                    kind: info.kind.clone(),
+                    ..Track::default()
+                };
+                self.fill_in(&heard);
                 let length = ready
                     .length
                     .or(current.track.duration_seconds.map(f64::from))
@@ -1145,6 +1230,11 @@ impl App {
                 // A radio is named by its first answer ("Yellow Mix").
                 if self.queue.title.is_none() {
                     self.queue.title = title;
+                }
+                // Up next lists the song playing too, in full: a song
+                // started by its ID alone gets its name and cover here.
+                for track in &tracks {
+                    self.fill_in(track);
                 }
                 tracks
             }
@@ -1274,6 +1364,19 @@ impl App {
         match self.pages.get(&self.route) {
             Some(Loadable::Ready(page)) if !self.now_playing => title(page),
             _ => None,
+        }
+    }
+
+    /// Fills in what the queue's songs, and the one playing, lack from
+    /// another answer about the same song (see [`crate::queue::fill_in`]).
+    fn fill_in(&mut self, track: &Track) {
+        let mut changed = self.queue.fill_in(track);
+        if let Some(entry) = &mut self.playback.entry {
+            changed |= crate::queue::fill_in(&mut entry.track, track);
+        }
+        if changed {
+            self.script_fonts.want_for(&track.title);
+            self.script_fonts.want_for(&track.artists);
         }
     }
 
@@ -1477,10 +1580,24 @@ impl App {
     fn ask_for_page(&mut self, route: Route) {
         self.loads += 1;
         self.page_loads.insert(route.clone(), self.loads);
+        // A Library tab in the order chosen for it.
+        let order = route
+            .library_tab()
+            .and_then(|tab| self.settings.library_order.get(tab.browse_id()).cloned());
         self.backend.send(Request::Page {
             route,
             load: self.loads,
+            order,
         });
+    }
+
+    /// The Library's playlists again (the menu's list comes from them),
+    /// and its front page if it was loaded.
+    fn refresh_library(&mut self) {
+        self.refresh(Route::Library);
+        if self.pages.contains_key(&Route::LibraryRecent) {
+            self.refresh(Route::LibraryRecent);
+        }
     }
 
     /// Marks a page as just shown, for [`App::trim_pages`].
@@ -1564,10 +1681,13 @@ impl App {
                 video_id: Some(video_id),
                 playlist_id,
             } => {
+                // Only the song's ID is known (an artist's Shuffle or Mix,
+                // Start mix): its name, artists and cover are filled in from
+                // the player's answer and Up next's (`App::fill_in`).
                 let track = track.unwrap_or_else(|| Track {
                     video_id: video_id.clone(),
                     set_video_id: None,
-                    title: "Song".into(),
+                    title: crate::queue::UNNAMED.into(),
                     artists: String::new(),
                     album: None,
                     duration_seconds: None,
@@ -1742,6 +1862,30 @@ impl App {
                 self.suggesting.clone_from(&text);
                 self.backend.send(Request::Suggest(text));
             }
+            Action::SortLibrary(order) => {
+                // The tab loads again in that order; what it showed stays
+                // until then, under the new order's name.
+                let tab = Route::LIBRARY.into_iter().find(|r| {
+                    r.library_tab()
+                        .is_some_and(|t| t.browse_id() == order.browse_id)
+                });
+                self.settings
+                    .library_order
+                    .insert(order.browse_id, order.params);
+                if let Some(route) = tab {
+                    self.refresh(route);
+                }
+            }
+            Action::ForgetSearch { words, token } => {
+                // Gone at once, as on YouTube Music, with its words.
+                self.suggestions
+                    .1
+                    .words
+                    .retain(|w| w.forget.as_deref() != Some(token.as_str()));
+                self.forgotten_searches.insert(words.to_lowercase());
+                self.notify("This item has been removed from your history.");
+                self.send_edit(Edit::ForgetSearch { words, token });
+            }
             Action::QueuePlaylist(playlist_id, mode) => self.ask_for_playlist(playlist_id, mode),
             Action::Toggle(which) => {
                 let s = &mut self.settings;
@@ -1754,9 +1898,17 @@ impl App {
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
                 }
             }
-            Action::OpenDialog(dialog) => *self.dialog.get_mut() = Some(dialog),
-            Action::RenamePlaylist { playlist_id, name } => {
-                self.notify(format!("Renamed to {name}"));
+            Action::OpenDialog(dialog) => {
+                *self.dialog.get_mut() = Some(dialog);
+                self.dialog_fresh.set(true);
+            }
+            Action::RenamePlaylist {
+                playlist_id,
+                name,
+                description,
+                privacy,
+            } => {
+                self.notify("Saved the playlist");
                 let route = Route::browse(format!("VL{playlist_id}"), None);
                 if let Some(Loadable::Ready(Page {
                     header: Some(header),
@@ -1764,8 +1916,18 @@ impl App {
                 })) = self.pages.get_mut(&route)
                 {
                     header.title = name.clone();
+                    header.description = description.clone();
+                    // "Playlist • Public • 2024": its privacy changed in place.
+                    if let Some(old) = Privacy::from_subtitle(&header.subtitle) {
+                        header.subtitle = header.subtitle.replace(old.words().0, privacy.words().0);
+                    }
                 }
-                self.send_edit(Edit::RenamePlaylist { playlist_id, name });
+                self.send_edit(Edit::RenamePlaylist {
+                    playlist_id,
+                    name,
+                    description,
+                    privacy,
+                });
             }
             Action::DeletePlaylist(playlist_id) => {
                 self.notify("Deleted the playlist");
@@ -1941,49 +2103,141 @@ impl App {
         if play {
             self.act(Action::TogglePause);
         }
-        if !typing {
-            use egui::{Key, Modifiers};
-            let pressed = |key, modifiers| ctx.input_mut(|i| i.consume_key(modifiers, key));
-            let position = self.shown_position();
-            let volume = self.settings.volume;
-            if !focused {
-                if pressed(Key::ArrowLeft, Modifiers::NONE) {
-                    self.act(Action::Seek((position - 10.0).max(0.0)));
-                }
-                if pressed(Key::ArrowRight, Modifiers::NONE) {
-                    self.act(Action::Seek(position + 10.0));
-                }
-                if pressed(Key::ArrowUp, Modifiers::NONE) {
-                    self.act(Action::SetVolume((volume + 0.1).min(1.0)));
-                }
-                if pressed(Key::ArrowDown, Modifiers::NONE) {
-                    self.act(Action::SetVolume((volume - 0.1).max(0.0)));
-                }
-            }
-            if pressed(Key::N, Modifiers::SHIFT) {
-                self.act(Action::Next);
-            }
-            if pressed(Key::P, Modifiers::SHIFT) {
-                self.act(Action::Previous);
-            }
-            if pressed(Key::M, Modifiers::NONE) {
-                self.act(Action::ToggleMute);
-            }
-            if pressed(Key::L, Modifiers::NONE)
-                && let Some(entry) = &self.playback.entry
-            {
-                let id = entry.track.video_id.clone();
-                let liked = self.likes.get(&id) == Some(&LikeState::Liked);
-                let next = if liked {
-                    LikeState::Neutral
-                } else {
-                    LikeState::Liked
-                };
-                self.act(Action::Rate(id, next));
-            }
+        if !typing && self.dialog.get_mut().is_none() {
+            self.youtube_keys(ctx, focused);
         }
         if search {
             ctx.memory_mut(|m| m.request_focus(views::SEARCH_BOX.into()));
+        }
+    }
+
+    /// YouTube Music's own keys (its list opens with "?"), and YTFast's
+    /// arrows: ←/→ 10 s, ↑/↓ the volume, unless a button has the keyboard.
+    /// egui ignores an extra Shift when matching, so the keys with Shift
+    /// are asked about first.
+    fn youtube_keys(&mut self, ctx: &egui::Context, focused: bool) {
+        use egui::{Key, Modifiers};
+        let pressed = |key, modifiers| ctx.input_mut(|i| i.consume_key(modifiers, key));
+        // A character with no key of its own in egui ("_").
+        let typed = |text: &str| {
+            ctx.input_mut(|i| {
+                let found = i
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Text(t) if t == text));
+                if found {
+                    i.events
+                        .retain(|e| !matches!(e, egui::Event::Text(t) if t == text));
+                }
+                found
+            })
+        };
+        let position = self.shown_position();
+        let volume = self.settings.volume;
+        let now = ctx.input(|i| i.time);
+
+        // "g", then where to go.
+        if let Some(since) = self.go_to {
+            let target = if now - since > 1.5 {
+                None
+            } else if pressed(Key::H, Modifiers::NONE) {
+                Some(Route::Home)
+            } else if pressed(Key::E, Modifiers::NONE) {
+                Some(Route::Explore)
+            } else if pressed(Key::L, Modifiers::NONE) {
+                Some(Route::LibraryRecent)
+            } else if pressed(Key::Comma, Modifiers::NONE) {
+                Some(Route::Settings)
+            } else {
+                None
+            };
+            if let Some(route) = target {
+                self.go_to = None;
+                self.now_playing = false;
+                self.act(Action::Navigate(route));
+                return;
+            }
+            if now - since > 1.5 {
+                self.go_to = None;
+            }
+        }
+        if pressed(Key::G, Modifiers::NONE) {
+            self.go_to = Some(now);
+            return;
+        }
+
+        let seek = |by: f64| Action::Seek((position + by).max(0.0));
+        // One second: Shift+L / Shift+H, Ctrl+Shift+→ / ←.
+        if pressed(Key::L, Modifiers::SHIFT)
+            || pressed(Key::ArrowRight, Modifiers::COMMAND | Modifiers::SHIFT)
+        {
+            self.act(seek(1.0));
+        }
+        if pressed(Key::H, Modifiers::SHIFT)
+            || pressed(Key::ArrowLeft, Modifiers::COMMAND | Modifiers::SHIFT)
+        {
+            self.act(seek(-1.0));
+        }
+        if pressed(Key::N, Modifiers::SHIFT) || pressed(Key::J, Modifiers::NONE) {
+            self.act(Action::Next);
+        }
+        if pressed(Key::P, Modifiers::SHIFT) || pressed(Key::K, Modifiers::NONE) {
+            self.act(Action::Previous);
+        }
+        // Ten seconds: l / h, Shift+→ / ← (and the arrows alone, YTFast's).
+        let arrows = !focused;
+        if pressed(Key::L, Modifiers::NONE) || (arrows && pressed(Key::ArrowRight, Modifiers::NONE))
+        {
+            self.act(seek(10.0));
+        }
+        if pressed(Key::H, Modifiers::NONE) || (arrows && pressed(Key::ArrowLeft, Modifiers::NONE))
+        {
+            self.act(seek(-10.0));
+        }
+        if pressed(Key::Semicolon, Modifiers::NONE) {
+            self.act(Action::TogglePause);
+        }
+        if pressed(Key::Equals, Modifiers::NONE)
+            || (arrows && pressed(Key::ArrowUp, Modifiers::NONE))
+        {
+            self.act(Action::SetVolume((volume + 0.1).min(1.0)));
+        }
+        if pressed(Key::Minus, Modifiers::NONE)
+            || (arrows && pressed(Key::ArrowDown, Modifiers::NONE))
+        {
+            self.act(Action::SetVolume((volume - 0.1).max(0.0)));
+        }
+        if pressed(Key::M, Modifiers::NONE) {
+            self.act(Action::ToggleMute);
+        }
+        if pressed(Key::S, Modifiers::NONE) {
+            self.act(Action::ShuffleQueue);
+        }
+        if pressed(Key::R, Modifiers::NONE) {
+            self.act(Action::CycleRepeat);
+        }
+        if pressed(Key::Q, Modifiers::NONE) {
+            self.act(Action::ToggleNowPlaying);
+        }
+        if pressed(Key::Questionmark, Modifiers::NONE) {
+            self.act(Action::OpenDialog(Dialog::Shortcuts));
+        }
+        // "+" likes and "_" dislikes the song playing (again: neither).
+        let rate = if pressed(Key::Plus, Modifiers::NONE) {
+            Some(LikeState::Liked)
+        } else if typed("_") {
+            Some(LikeState::Disliked)
+        } else {
+            None
+        };
+        if let (Some(wanted), Some(entry)) = (rate, &self.playback.entry) {
+            let id = entry.track.video_id.clone();
+            let next = if self.likes.get(&id) == Some(&wanted) {
+                LikeState::Neutral
+            } else {
+                wanted
+            };
+            self.act(Action::Rate(id, next));
         }
     }
 
@@ -2074,7 +2328,7 @@ fn words(event: &Event) -> Vec<&str> {
     }
     let mut words = Vec::new();
     match event {
-        Event::SignedIn { name } => words.push(name.as_str()),
+        Event::SignedIn { name, .. } => words.push(name.as_str()),
         Event::Page(_, _, Ok(found)) | Event::Related(_, Ok(found)) => page(found, &mut words),
         Event::MoreRows { tracks, .. }
         | Event::UpNext {
@@ -2092,7 +2346,7 @@ fn words(event: &Event) -> Vec<&str> {
             words.extend(lyrics.lines.iter().map(|line| line.text.as_str()));
         }
         Event::Suggestions(_, found) => {
-            words.extend(found.words.iter().map(String::as_str));
+            words.extend(found.words.iter().map(|w| w.text.as_str()));
             for item in &found.items {
                 match item {
                     Item::Track(t) => track(t, &mut words),
@@ -2260,6 +2514,7 @@ mod tests {
 
     use super::*;
     use crate::backend::{Failure, Ready};
+    use ytfast_core::read::SuggestedWords;
 
     struct Harness {
         app: App,
@@ -2548,13 +2803,152 @@ mod tests {
         h.act(Action::Suggest("fad".into()));
         h.act(Action::Suggest("faded".into()));
         let words = |w: &str| ytfast_core::read::Suggestions {
-            words: vec![w.into()],
+            words: vec![SuggestedWords {
+                text: w.into(),
+                forget: None,
+            }],
             items: Vec::new(),
         };
         h.answer(Event::Suggestions("faded".into(), words("faded")));
         h.answer(Event::Suggestions("fad".into(), words("fade")));
         assert_eq!(h.app.suggestions.0, "faded");
-        assert_eq!(h.app.suggestions.1.words, ["faded"]);
+        assert_eq!(h.app.suggestions.1.words[0].text, "faded");
+    }
+
+    #[test]
+    fn a_song_started_by_its_id_alone_gets_its_name() {
+        let mut h = Harness::new();
+        // An artist's Mix names only the song it starts with.
+        h.act(Action::Play(
+            Target::Watch {
+                video_id: Some("a".into()),
+                playlist_id: Some("RDa".into()),
+            },
+            None,
+        ));
+        assert_eq!(h.entry().1, "a");
+        assert_eq!(h.app.playback.entry.as_ref().unwrap().track.title, "Song");
+        // The player's answer names it.
+        let (entry, _) = h.entry();
+        let mut ready = ready();
+        ready.info.title = Some("Yellow".into());
+        ready.info.author = Some("Coldplay - Topic".into());
+        h.answer(Event::Prepared {
+            entry,
+            result: Ok(ready),
+        });
+        let playing = &h.app.playback.entry.as_ref().unwrap().track;
+        assert_eq!(
+            (playing.title.as_str(), playing.artists.as_str()),
+            ("Yellow", "Coldplay")
+        );
+        // Up next brings its cover and album, and leaves the name alone.
+        let full = Track {
+            video_id: "a".into(),
+            title: "Yellow (Remastered)".into(),
+            artists: "Coldplay".into(),
+            album: Some("Parachutes".into()),
+            thumbnail: Some(ytfast_core::read::Thumb {
+                url: "https://example.com/cover.jpg".into(),
+                width: 60,
+            }),
+            ..Track::default()
+        };
+        h.answer(Event::UpNext {
+            video_id: "a".into(),
+            playlist_id: Some("RDa".into()),
+            queue: h.app.queue.generation(),
+            result: Ok((vec![full, song("b")], None)),
+        });
+        let playing = &h.app.playback.entry.as_ref().unwrap().track;
+        assert_eq!(playing.title, "Yellow");
+        assert_eq!(playing.album.as_deref(), Some("Parachutes"));
+        assert!(playing.thumbnail.is_some());
+        assert_eq!(
+            h.app.queue.current().unwrap().track.album.as_deref(),
+            Some("Parachutes")
+        );
+    }
+
+    #[test]
+    fn a_library_tab_loads_again_in_the_order_chosen() {
+        let mut h = Harness::new();
+        h.act(Action::SortLibrary(SortOrder {
+            title: "A to Z".into(),
+            browse_id: "FEmusic_liked_videos".into(),
+            params: "az".into(),
+        }));
+        let asked = |requests: Vec<Request>| {
+            requests.into_iter().find_map(|r| match r {
+                Request::Page {
+                    route: Route::LibrarySongs,
+                    order,
+                    ..
+                } => Some(order),
+                _ => None,
+            })
+        };
+        assert_eq!(asked(h.requests()), Some(Some("az".to_string())));
+        // Later loadings keep it; other tabs keep their own.
+        h.app.load(Route::LibrarySongs);
+        assert_eq!(asked(h.requests()), Some(Some("az".to_string())));
+        h.app.load(Route::LibraryAlbums);
+        assert!(h.requests().iter().any(|r| matches!(
+            r,
+            Request::Page {
+                route: Route::LibraryAlbums,
+                order: None,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn a_removed_past_search_stays_gone() {
+        let mut h = Harness::new();
+        let past = |text: &str, token: &str| SuggestedWords {
+            text: text.into(),
+            forget: Some(token.into()),
+        };
+        let found = ytfast_core::read::Suggestions {
+            words: vec![past("faded", "t1"), past("yellow", "t2")],
+            items: Vec::new(),
+        };
+        h.act(Action::Suggest(String::new()));
+        h.answer(Event::Suggestions(String::new(), found.clone()));
+        h.requests();
+        h.act(Action::ForgetSearch {
+            words: "faded".into(),
+            token: "t1".into(),
+        });
+        // Gone from the list at once, and YouTube is asked to forget it.
+        let shown: Vec<&str> = h
+            .app
+            .suggestions
+            .1
+            .words
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect();
+        assert_eq!(shown, ["yellow"]);
+        assert!(h.requests().iter().any(|r| matches!(
+            r,
+            Request::Edit(Edit::ForgetSearch { token, .. }) if token == "t1"
+        )));
+        // An answer asked for before YouTube forgot it leaves it out too.
+        h.act(Action::Suggest(String::new()));
+        h.answer(Event::Suggestions(String::new(), found.clone()));
+        assert_eq!(h.app.suggestions.1.words.len(), 1);
+        // Refused: it may show again.
+        h.answer(Event::EditFailed(
+            Edit::ForgetSearch {
+                words: "faded".into(),
+                token: "t1".into(),
+            },
+            "no".into(),
+        ));
+        h.answer(Event::Suggestions(String::new(), found));
+        assert_eq!(h.app.suggestions.1.words.len(), 2);
     }
 
     #[test]

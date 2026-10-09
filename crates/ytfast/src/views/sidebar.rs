@@ -21,7 +21,7 @@ pub fn width(app: &App) -> f32 {
 const PAGES: [(Icon, &str, Route); 3] = [
     (Icon::Home, "Home", Route::Home),
     (Icon::Explore, "Explore", Route::Explore),
-    (Icon::Library, "Library", Route::Library),
+    (Icon::Library, "Library", Route::LibraryRecent),
 ];
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
@@ -124,13 +124,9 @@ fn entry_fill(ui: &egui::Ui, rect: Rect, lit: bool, hovered: bool) {
 /// Whether `route` is the page showing (not hidden by the player page).
 fn showing(app: &App, route: &Route) -> bool {
     // Library stays lit on all its tabs, as on YouTube Music.
-    let library = |r: &Route| {
-        matches!(
-            r,
-            Route::Library | Route::LibrarySongs | Route::LibraryAlbums | Route::LibraryArtists
-        )
-    };
-    !app.now_playing && (app.route == *route || (*route == Route::Library && library(&app.route)))
+    let library = |r: &Route| r.library_tab().is_some();
+    !app.now_playing
+        && (app.route == *route || (*route == Route::LibraryRecent && library(&app.route)))
 }
 
 /// Home, Explore, Library: an icon and a name, 48 high.
@@ -189,10 +185,10 @@ fn mini_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route)
     }
 }
 
-/// "+ New playlist", a wide pill.
+/// "+ New playlist", a wide pill: 200 wide, 20 in (measured signed in).
 fn new_playlist(app: &App, ui: &mut egui::Ui) {
     let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::hover());
-    let rect = slot.shrink2(vec2(24.0, 0.0));
+    let rect = slot.shrink2(vec2(20.0, 0.0));
     let response = ui.interact(rect, ui.id().with("new-playlist"), Sense::click());
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New playlist"));
@@ -220,12 +216,15 @@ fn new_playlist(app: &App, ui: &mut egui::Ui) {
     if response.clicked() {
         app.act(Action::OpenDialog(Dialog::NewPlaylist {
             name: String::new(),
+            description: String::new(),
+            privacy: Default::default(),
             song: None,
         }));
     }
 }
 
-/// A playlist: its name over a quieter line (who made it).
+/// A playlist: its name over a quieter line (who made it), 56 high
+/// (measured signed in: padding 4 16, the two lines centred).
 fn playlist_item(
     app: &App,
     ui: &mut egui::Ui,
@@ -234,7 +233,7 @@ fn playlist_item(
     pinned: bool,
     route: Route,
 ) {
-    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
     if !ui.is_rect_visible(slot) {
         return;
     }
@@ -277,17 +276,17 @@ fn playlist_item(
     }
     let left = rect.left() + 16.0;
     let width = rect.width() - 16.0 - if hovered { 50.0 } else { 16.0 };
-    // Its name 14/500 on an 18 line, 3 under it the line under, 12/400 on
-    // a 16 line: the two centred in the 48.
+    // Its name 14/500 on an 18 line at 10.5, 3 under it the line under,
+    // 12/400 on a 16 line (measured: 10.5 and 30.5 from the top).
     theme::paint_line(
         ui,
-        pos2(left, rect.top() + 6.1),
+        pos2(left, rect.top() + 11.1),
         title,
         theme::medium(14.0),
         PALETTE.text,
         width,
     );
-    let mut below = pos2(left, rect.top() + 27.3);
+    let mut below = pos2(left, rect.top() + 31.3);
     let mut below_width = width;
     if pinned {
         let pin = Rect::from_min_size(below + vec2(0.0, 1.2), Vec2::splat(12.0));

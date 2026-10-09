@@ -143,6 +143,13 @@ Paolino), as `audio.rs` does.
   player page has the cover on the left and the tabs Up next, Lyrics and
   Related on the right. The owner wants a one-to-one copy of YouTube
   Music's look: when changing a screen, open the real one and measure.
+- On Windows the window has no Windows title bar: the top bar moves it
+  (drag) and maximizes it (double-click), YTFast draws Windows 11's
+  minimize, maximize and close at its top right, and the edges resize it
+  (`views/window_frame.rs`; the sign-in screen has a strip of its own for
+  them). Windows still rounds the corners and draws the shadow. The Mac
+  keeps its own title bar, and its Dock keeps YTFast.app's icon (eframe is
+  given no icon there, or it would show the Windows one in its place).
 - An album's or playlist's page has its cover, blurred, behind its top,
   and an artist's page its picture, both under the top bar and the menu
   (`views/backdrop.rs`, painted in a place `backdrop::paint` keeps under
@@ -228,6 +235,13 @@ Paolino), as `audio.rs` does.
 
 ### Playing
 
+- The device keeps its buffer full ahead of what is heard (200 ms on
+  Windows), and pausing does not empty it. So stopping a song (for the
+  next one) and jumping in one move to a fresh, empty device stream
+  (`Player::empty_the_device`); otherwise the end of the old sound plays
+  first. Opening one takes about 0.15 s, which made songs start later, so
+  a spare is opened while a song plays and nothing waits
+  (`Player::prepare_spare`): moving to it takes about 0.01 s.
 - A song is downloaded whole, into memory (a song over 40 MB, into a
   temporary file instead: `IN_MEMORY` in `stream.rs`), and plays from its
   first bytes while the rest arrives. Its link expires, but nothing more
@@ -469,25 +483,63 @@ with pictures, and the queue's name. Tested on the owner's Windows laptop:
 the unit tests (184, among them reading a real search and suggestions
 reply, the filter buttons, and shuffle turned off), and every changed
 screen in demo mode beside the real page at 1280 by 820 (some at 1100 and
-1440): 0% processor time when idle, about 120 MB private memory. Not yet
-tested: anything with the owner's account (real pages, covers and
-pictures, and the screens only a signed-in page has, never measured:
-Library, Liked Music, the account's own playlists, the account menu),
-what shows only under the pointer (like, dislike and ⋮ on rows), and the
-Mac.
+1440): 0% processor time when idle, about 120 MB private memory. The
+owner then ran CI's 0.5.0 builds with their account (8 October 2026):
+"It works perfectly." 0.5.0 is YTFast's first public release, offered
+from the owner's own website.
+
+After 0.5.0 (8 October 2026, not yet released), the screens only a
+signed-in page has were measured on music.youtube.com with the owner's
+account, in the built-in browser (only measured: nothing on the account
+changed, nothing played), and built: the account's menu with its photo;
+the Library's front page, its six chips (Profiles and Podcasts are new)
+and each tab's sort button with its own orders, kept per tab in Settings;
+the playlist form (title, description, privacy) for New and Edit; an own
+playlist's buttons; YouTube Music's keyboard shortcuts and their list
+(`?`); past searches in the search box (a clock, and a bin that removes
+one from the account's history); the explicit "E" on songs and cards; the
+card of the album or playlist playing keeps its button; toasts as wide as
+their words. Tested on the owner's Windows laptop: the unit tests (191,
+among them the sort orders read from real tokens, a removed past search
+staying gone, and a tab loading again in its order), and the demo at 1280
+by 820 and 960 by 600: 0% processor time when idle, about 118 MB private
+memory. Not yet tested: any of it in YTFast with the owner's account, and
+the Mac.
+
+Then, at the owner's word (8 October 2026): a moment of the old song
+played when another was chosen (the device's buffer, above), now emptied;
+on Windows, YTFast's own title bar and window buttons; on the Mac, the
+Dock keeps YTFast.app's icon while it runs. Tested on the owner's Windows
+laptop: the unit tests, and in the demo the buttons (Maximize fills the
+screen above the taskbar, Restore and Minimize), the corners and shadow,
+and 0% processor time when idle. Not yet tested: the sound fix (the demo
+plays no sound), dragging, double-clicking and resizing the window (they
+need the real mouse), the sign-in screen's strip, and the Mac's Dock.
+
+The owner then found songs starting later (the fresh stream, above, now
+ready ahead: a switch measured 8 ms with the spare, 120 ms without, at
+volume 0 on that laptop's device), and songs that showed no name: an
+artist's Shuffle and Mix, Start mix and some Play buttons name only the
+first song's ID, and the placeholder ("Song", no artist or cover) was
+never filled. Now the player's answer gives it its name and artist, and
+Up next's its cover and album (`App::fill_in`, `queue::fill_in`; tested:
+`a_song_started_by_its_id_alone_gets_its_name`, and an artist's Mix in
+the demo). Not yet tested: both with the owner's account.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
-(a browser has its own); History and Settings are in the account's menu;
-the account button shows the name's first letter, not the account's
-photo; the playing song's bars do not move (moving ones would keep the
-window drawing); and what only a signed-in page shows was not measured.
-What it does differently: disliking the playing song does not skip it;
-clicking a song in History queues the rest of that list; Edit playlist
-only renames, with new playlists always private (no description and no
-privacy choice); Up next is reordered with Move up and Move down, not by
-dragging, and shows the Autoplay switch for radios too.
+(a browser has its own); on Windows the window's own buttons take the
+top bar's right corner, so the account and the arrows stand 16 before
+them when the content would reach there; History and Settings are in the
+account's menu; the playing song's bars do not move (moving ones would keep the window
+drawing). The signed-in screens (the account's menu, Library, the playlist
+form, an own playlist's buttons) were measured on 8 October 2026 with the
+owner's account; nothing of theirs is in the notes. What it does
+differently: disliking the playing song does not skip it; clicking a song
+in History queues the rest of that list; the playlist form has no
+Collaborate switch; Up next is reordered with Move up and Move down, not
+by dragging, and shows the Autoplay switch for radios too.
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp
