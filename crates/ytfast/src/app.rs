@@ -2846,6 +2846,79 @@ mod tests {
             .count()
     }
 
+    /// The whole window drawn in the Dynamic Background theme, without a
+    /// real window: the sign-in screen; signed in with a song playing,
+    /// the pointer resting all over the window (what shows only under
+    /// it); Settings; the player page's three tabs; a dialog and a toast.
+    /// Nothing may fail, and every frame draws something.
+    #[test]
+    fn the_dynamic_background_theme_draws_every_part_of_the_window() {
+        use crate::theme::Theme;
+        let mut h = Harness::new();
+        h.app.settings.theme = Theme::DynamicBackground;
+        let size = egui::vec2(1280.0, 820.0);
+        let draw = |h: &mut Harness, pointer: Option<egui::Pos2>| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            if let Some(at) = pointer {
+                input.events.push(egui::Event::PointerMoved(at));
+            }
+            let app = &h.app;
+            let mut output = h.ctx.run_ui(input, |ui| {
+                crate::theme::set(app.settings.theme);
+                crate::dynamic::paint(app, ui);
+                views::show(app, ui);
+            });
+            assert!(!output.shapes.is_empty());
+            // No window takes the frame's new textures here.
+            output.textures_delta.clear();
+        };
+
+        // Signed out: the sign-in screen.
+        assert!(!matches!(h.app.auth, Auth::SignedIn { .. }));
+        draw(&mut h, None);
+        draw(&mut h, Some(egui::pos2(640.0, 400.0)));
+
+        // Signed in, a song playing, the pointer resting everywhere.
+        h.app.auth = Auth::SignedIn {
+            name: "Listener".into(),
+            handle: None,
+            photo: None,
+        };
+        h.play(&["a", "b", "c"]);
+        for y in (8..820).step_by(48) {
+            for x in (8..1280).step_by(96) {
+                draw(&mut h, Some(egui::pos2(x as f32, y as f32)));
+            }
+        }
+        h.act(Action::Navigate(Route::Settings));
+        draw(&mut h, None);
+
+        // The player page, each tab, as it rises.
+        h.app.now_playing = true;
+        for tab in [NpTab::UpNext, NpTab::Lyrics, NpTab::Related] {
+            h.app.np_tab = tab;
+            for x in [700.0, 1000.0, 1200.0] {
+                draw(&mut h, Some(egui::pos2(x, 300.0)));
+            }
+        }
+
+        // A dialog, and a toast.
+        h.app.now_playing = false;
+        h.act(Action::OpenDialog(Dialog::NewPlaylist {
+            name: String::new(),
+            description: String::new(),
+            privacy: ytfast_core::library::Privacy::Private,
+            songs: Vec::new(),
+        }));
+        h.app.notice = Some(("Added to the queue".into(), Instant::now()));
+        draw(&mut h, None);
+        draw(&mut h, Some(egui::pos2(640.0, 400.0)));
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
     #[test]
     fn an_answer_about_a_song_no_longer_wanted_changes_nothing() {
         let mut h = Harness::new();
