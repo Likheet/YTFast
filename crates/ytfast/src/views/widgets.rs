@@ -104,9 +104,6 @@ pub struct Row {
     /// Their room is kept even while they are hidden (an artist's top
     /// songs); else the length shows there.
     pub keep_room: bool,
-    /// The words are 16 from a window 1364 wide
-    /// (`--ytmusic-responsive-font-size`).
-    pub grows: bool,
     /// The colour of the line under the title and of the length.
     pub quiet: Color32,
     /// Under the pointer the length gives its place to ⋮ (Up next).
@@ -151,7 +148,6 @@ impl Row {
         // it, ⋮ at 110.
         buttons: Some([200.5, 162.0, 110.0]),
         keep_room: false,
-        grows: true,
         quiet: PALETTE.secondary,
         menu_for_length: false,
     };
@@ -181,7 +177,6 @@ impl Row {
         // after it, then 8, ⋮ at 44.
         buttons: Some([134.5, 96.0, 44.0]),
         keep_room: true,
-        grows: true,
         quiet: PALETTE.secondary,
         menu_for_length: false,
     };
@@ -203,7 +198,6 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        grows: true,
         quiet: PALETTE.secondary,
         menu_for_length: false,
     };
@@ -231,7 +225,6 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        grows: false,
         quiet: PALETTE.secondary,
         menu_for_length: false,
     };
@@ -253,7 +246,6 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        grows: false,
         quiet: PALETTE.dim,
         menu_for_length: true,
     };
@@ -274,7 +266,6 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        grows: false,
         quiet: PALETTE.secondary,
         menu_for_length: false,
     };
@@ -396,7 +387,8 @@ pub enum Place {
 }
 
 /// A song row in Up next (`place` is its entry), whose menu edits the
-/// queue.
+/// queue; there the row can be dragged (its response says so; `None` while
+/// it is out of sight).
 #[allow(clippy::too_many_arguments)]
 pub fn track_row_in(
     app: &App,
@@ -407,7 +399,7 @@ pub fn track_row_in(
     playing: bool,
     place: Place,
     on_click: impl FnOnce() -> Action,
-) {
+) -> Option<egui::Response> {
     let queued = matches!(place, Place::Queue(_));
     // The playing song's menu does not edit the queue.
     let place = if playing && queued {
@@ -423,17 +415,27 @@ pub fn track_row_in(
     // then scrolled into view.
     let near = rect.expand2(vec2(0.0, style.height + style.gap));
     if !ui.is_rect_visible(near) {
-        return;
+        return None;
     }
     let id = placed.id.with("row");
-    let response = ui.interact(rect, id, Sense::click());
+    // Up next's rows move when dragged (the pointer shows it), as YouTube
+    // Music's (`cursor: move`).
+    let sense = if queued {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let response = ui.interact(rect, id, sense);
+    if queued && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+    }
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &track.title));
     if response.gained_focus() {
         response.scroll_to_me(None);
     }
     if !ui.is_rect_visible(rect) {
-        return;
+        return Some(response);
     }
     // Shift+F10 opens the menu of the row the keyboard is on.
     if response.has_focus()
@@ -463,7 +465,9 @@ pub fn track_row_in(
     );
     // From a window 1364 wide an album's or playlist's words are 16 (an
     // album's second line stays 14).
-    let big = style.grows && ui.ctx().content_rect().width() >= 1364.0;
+    // Every row's words are 16 from a window 1364 wide
+    // (`--ytmusic-responsive-font-size`).
+    let big = theme::text_size(ui) > 14.0;
     let size = if big { 16.0 } else { 14.0 };
     let under_size = if big && style.under != Under::ArtistsCount {
         16.0
@@ -552,7 +556,15 @@ pub fn track_row_in(
         if style.keep_room || hovered {
             right = rect.right() - places[0];
         }
-        if !duration.is_empty() && (style.keep_room || !hovered) {
+        // An album's or playlist's rows have a tick box at their right end,
+        // under the pointer, and on every row while some are ticked (the
+        // length then makes way for it), as YouTube Music's.
+        let tickable = !style.keep_room && place == Place::Page;
+        let picking = tickable && !app.selected.is_empty();
+        if tickable && (hovered || picking) {
+            tick_box(app, ui, rect, id, track, &mut clicked_menu);
+        }
+        if !duration.is_empty() && (style.keep_room || !hovered) && !picking {
             let end = if style.keep_room { right - 16.0 } else { right };
             let galley =
                 ui.painter()
@@ -601,7 +613,7 @@ pub fn track_row_in(
     } else if !duration.is_empty() {
         let galley = ui
             .painter()
-            .layout_no_wrap(duration, theme::regular(14.0), PALETTE.secondary);
+            .layout_no_wrap(duration, theme::regular(size), PALETTE.secondary);
         let at = pos2(
             right - 32.0 - galley.size().x,
             rect.center().y - galley.size().y / 2.0,
@@ -629,7 +641,7 @@ pub fn track_row_in(
     }
 
     // A chart's place: 4 after the cover, a 52 column (the number in its
-    // last 24, 14/500 white), then 16.
+    // last 24, 14/500 white, 16 from a window 1364 wide), then 16.
     let mut text_left = art.right() + style.art_gap;
     if let Some(rank) = track.rank() {
         let column = Rect::from_min_size(
@@ -640,7 +652,7 @@ pub fn track_row_in(
             pos2(column.right() - 12.0, column.center().y),
             egui::Align2::CENTER_CENTER,
             rank,
-            theme::medium(14.0),
+            theme::medium(size),
             PALETTE.text,
         );
         text_left = column.right() + 16.0;
@@ -730,6 +742,50 @@ pub fn track_row_in(
         app.act(on_click());
     }
     theme::context_menu(&response).show(|ui| song_menu(app, ui, track, place));
+    Some(response)
+}
+
+/// A row's tick box (YouTube Music's, 24, 18 from the row's right end): an
+/// outline `#aaa`; white with a black tick once ticked. Ticked songs bring
+/// up the bar of what can be done with them (`selection_bar`).
+fn tick_box(app: &App, ui: &egui::Ui, rect: Rect, id: egui::Id, track: &Track, clicked: &mut bool) {
+    let ticked = app
+        .selected
+        .iter()
+        .any(|t| t.video_id == track.video_id && t.set_video_id == track.set_video_id);
+    let spot = Rect::from_min_size(
+        pos2(rect.right() - 42.0, rect.center().y - 12.0),
+        Vec2::splat(24.0),
+    );
+    let response = ui.interact(spot, id.with("tick"), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Checkbox,
+            true,
+            ticked,
+            format!("Tick {}", track.title),
+        )
+    });
+    let square = Rect::from_center_size(spot.center(), Vec2::splat(18.0));
+    if ticked {
+        ui.painter()
+            .rect_filled(square, CornerRadius::same(2), PALETTE.text);
+        theme::paint_icon(ui, Icon::Check, square, 16.0, PALETTE.window);
+    } else {
+        ui.painter().rect_stroke(
+            square,
+            CornerRadius::same(2),
+            egui::Stroke::new(2.0, PALETTE.dim),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked() {
+        app.act(Action::ToggleSelected(track.clone()));
+        *clicked = true;
+    }
 }
 
 /// YouTube's "E" for explicit: 16 across, white@0.70, `at` its top left.
@@ -920,14 +976,8 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
     }
     match place {
         Place::Queue(id) => {
+            // (Moved elsewhere by dragging its row, as on YouTube Music.)
             item(ui, Icon::PlayNext, "Play next", Action::MoveNextInQueue(id));
-            item(ui, Icon::MoveUp, "Move up", Action::ShiftInQueue(id, true));
-            item(
-                ui,
-                Icon::MoveDown,
-                "Move down",
-                Action::ShiftInQueue(id, false),
-            );
         }
         Place::Page | Place::Playing if track.playable => {
             item(
@@ -972,7 +1022,7 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
         Icon::SaveToPlaylist,
         "Save to playlist",
         Action::OpenDialog(crate::app::Dialog::SaveToPlaylist {
-            video_id: track.video_id.clone(),
+            video_ids: vec![track.video_id.clone()],
         }),
     );
     if let Place::Queue(id) = place {
@@ -995,8 +1045,7 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
             "Remove from playlist",
             Action::RemoveFromPlaylist {
                 playlist_id,
-                video_id: track.video_id.clone(),
-                set_video_id: set_video_id.clone(),
+                songs: vec![(track.video_id.clone(), set_video_id.clone())],
             },
         );
     }
@@ -1053,7 +1102,14 @@ fn plays_from(app: &App, card: &Card) -> bool {
     app.playback.entry.is_some() && app.queue.source.as_deref().map(bare) == Some(bare(list))
 }
 
+/// A card: its picture `size` across, its words 14 (16 from a window 1364
+/// wide, [`theme::responsive`]).
 pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
+    card_with_text(app, ui, card, size, theme::text_size(ui));
+}
+
+/// [`card`] with words `text` big (the Library's grid keeps 14).
+pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text: f32) {
     let center = card.round;
     // A video's card is as tall and 16:9 wide.
     let height = size;
@@ -1062,14 +1118,14 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
     } else {
         size
     };
-    let title = theme::fit(ui, &card.title, theme::medium(14.0), PALETTE.text, size, 2);
+    let title = theme::fit(ui, &card.title, theme::medium(text), PALETTE.text, size, 2);
     // An explicit card's "E" (16, then 4) begins its subtitle's first line.
     let badge = if card.look.explicit { 20.0 } else { 0.0 };
     let subtitle = (!card.subtitle.is_empty()).then(|| {
         theme::fit_indented(
             ui,
             &card.subtitle,
-            theme::regular(14.0),
+            theme::regular(text),
             PALETTE.secondary,
             size,
             2,
@@ -1243,7 +1299,8 @@ pub fn card(app: &App, ui: &mut egui::Ui, card: &Card, size: f32) {
     if let Some(subtitle) = subtitle {
         let at = place(&subtitle, top);
         if badge > 0.0 {
-            explicit_badge(ui, pos2(at.x, at.y + 0.4));
+            // Centred on the first line (1.2 times the words' size).
+            explicit_badge(ui, pos2(at.x, at.y + (text * 1.2 - 16.0) / 2.0));
         }
         ui.painter().galley(at, subtitle, PALETTE.secondary);
     }

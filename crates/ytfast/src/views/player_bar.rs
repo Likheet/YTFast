@@ -17,6 +17,15 @@ use crate::views::widgets;
 /// of 48 with their margins, the arrow 36 and 4 after it).
 const RIGHT_WIDTH: f32 = 284.0;
 
+/// Below this window width, volume, repeat and shuffle move into a strip
+/// that a "…" button opens (YouTube Music's `@media (max-width:1149px)`,
+/// `ytmusic-player-expanding-menu`).
+const NARROW: f32 = 1150.0;
+
+/// The right group's width then: the "…" button 36 and 8, the arrow 36
+/// and 4 after it.
+const NARROW_RIGHT_WIDTH: f32 = 36.0 + 8.0 + 36.0 + 4.0 + 16.0;
+
 /// `#f1f1f1`: like, dislike and the menu.
 const SOFT: Color32 = Color32::from_rgb(0xf1, 0xf1, 0xf1);
 
@@ -39,9 +48,19 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             }
 
             let left_end = left_group(app, ui, bar);
-            let right_start = bar.right() - RIGHT_WIDTH;
-            right_group(app, ui, bar);
+            let narrow = ui.ctx().content_rect().width() < NARROW;
+            let right_start = bar.right()
+                - if narrow {
+                    NARROW_RIGHT_WIDTH
+                } else {
+                    RIGHT_WIDTH
+                };
+            let expand = right_group(app, ui, bar, narrow);
             middle_group(app, ui, bar, left_end, right_start, entry);
+            // Over the song's words, which it covers while open.
+            if let Some(expand) = expand {
+                expanding_menu(app, ui, bar, expand);
+            }
             // Last, so it is over the bar's own things.
             progress_line(app, ui, bar);
         });
@@ -172,8 +191,9 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
     x + 16.0
 }
 
-/// The song: its cover 40 (r 2), 16 after it its title (14/500 white) and
-/// "Artist • Album" (14/400 white@0.70, each a link), 8 after them like
+/// The song: its cover 40 (r 2), 16 after it its title (14/500 white, 16
+/// from a window 1364 wide) and "Artist • Album" (14/400 white@0.70, the
+/// same 16, each a link), 8 after them like
 /// and dislike (36 each), then the menu (36), 16 after; the group centred
 /// between the left and right groups, the words as wide as they need up
 /// to what is left.
@@ -188,7 +208,10 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
         PlayState::Failed(message) => (message.clone(), PALETTE.danger),
         _ => (String::new(), PALETTE.secondary),
     };
-    let title = theme::fit(ui, &track.title, theme::medium(14.0), PALETTE.text, room, 1);
+    // Lines 1.2 times the words' size.
+    let size = theme::text_size(ui);
+    let line_height = size * 1.2;
+    let title = theme::fit(ui, &track.title, theme::medium(size), PALETTE.text, room, 1);
     let parts = byline_parts(track);
     let under_width = if line.is_empty() {
         let joined = parts
@@ -197,13 +220,13 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
             .collect::<Vec<_>>()
             .join(" \u{2022} ");
         ui.fonts_mut(|f| {
-            f.layout_no_wrap(joined, theme::regular(14.0), PALETTE.secondary)
+            f.layout_no_wrap(joined, theme::regular(size), PALETTE.secondary)
                 .size()
                 .x
         })
     } else {
         ui.fonts_mut(|f| {
-            f.layout_no_wrap(line.clone(), theme::regular(14.0), line_color)
+            f.layout_no_wrap(line.clone(), theme::regular(size), line_color)
                 .size()
                 .x
         })
@@ -221,27 +244,27 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
         CornerRadius::same(2),
     );
     let text_left = art.right() + 16.0;
-    // Two lines of 16.8, together centred down.
-    let top = y - 16.8;
+    // Two lines, together centred down.
+    let top = y - line_height;
     ui.painter().galley(
-        pos2(text_left, top + (16.8 - title.size().y) / 2.0),
+        pos2(text_left, top + (line_height - title.size().y) / 2.0),
         title,
         PALETTE.text,
     );
-    let under_top = top + 16.8;
+    let under_top = top + line_height;
     if line.is_empty() {
-        byline(app, ui, pos2(text_left, under_top), &parts, words);
+        byline(app, ui, pos2(text_left, under_top), &parts, words, size);
     } else {
-        let galley = theme::fit(ui, &line, theme::regular(14.0), line_color, words, 1);
+        let galley = theme::fit(ui, &line, theme::regular(size), line_color, words, 1);
         ui.painter().galley(
-            pos2(text_left, under_top + (16.8 - galley.size().y) / 2.0),
+            pos2(text_left, under_top + (line_height - galley.size().y) / 2.0),
             galley,
             line_color,
         );
     }
     // How the song was found, for whoever rests the pointer on the words.
     if !app.playback.format.is_empty() {
-        let words_rect = Rect::from_min_size(pos2(text_left, top), vec2(words, 33.6));
+        let words_rect = Rect::from_min_size(pos2(text_left, top), vec2(words, 2.0 * line_height));
         ui.interact(words_rect, ui.id().with("how-found"), Sense::hover())
             .on_hover_text(&app.playback.format);
     }
@@ -270,21 +293,23 @@ fn byline_parts(track: &ytfast_core::read::Track) -> Vec<(String, Option<Route>)
 }
 
 /// "Artist • Album", each name a link (underlined under the pointer), cut
-/// at `width`.
+/// at `width`, in words `size` on a line 1.2 times as tall.
 fn byline(
     app: &App,
     ui: &mut egui::Ui,
     at: egui::Pos2,
     parts: &[(String, Option<Route>)],
     width: f32,
+    size: f32,
 ) {
-    let font = theme::regular(14.0);
+    let font = theme::regular(size);
+    let line_height = size * 1.2;
     let mut x = at.x;
     let end = at.x + width;
     for (index, (text, to)) in parts.iter().enumerate() {
         if index > 0 {
             let dot = ui.painter().text(
-                pos2(x, at.y + 8.4),
+                pos2(x, at.y + line_height / 2.0),
                 Align2::LEFT_CENTER,
                 " \u{2022} ",
                 font.clone(),
@@ -298,7 +323,7 @@ fn byline(
         }
         let galley = theme::fit(ui, text, font.clone(), PALETTE.secondary, room, 1);
         let rect = Rect::from_min_size(
-            pos2(x, at.y + (16.8 - galley.size().y) / 2.0),
+            pos2(x, at.y + (line_height - galley.size().y) / 2.0),
             galley.size(),
         );
         ui.painter().galley(rect.min, galley, PALETTE.secondary);
@@ -373,12 +398,25 @@ fn likes(app: &App, ui: &mut egui::Ui, x: &mut f32, y: f32, track: &ytfast_core:
 /// From the right edge: the arrow (36, 4 in), shuffle, repeat and volume
 /// (36 each, 48 apart, grey `#909090`, white when on), and the volume's
 /// slider (100) left of them.
-fn right_group(app: &App, ui: &mut egui::Ui, bar: Rect) {
+/// The player page's arrow at the right end, and before it volume, repeat
+/// and shuffle; in a narrow window, the "…" button in their place, whose
+/// spot is returned.
+fn right_group(app: &App, ui: &mut egui::Ui, bar: Rect, narrow: bool) -> Option<Rect> {
     let y = bar.center().y;
     let arrow = Rect::from_min_size(pos2(bar.right() - 4.0 - 36.0, y - 18.0), Vec2::splat(36.0));
     page_arrow(app, ui, arrow);
+    let next_to_arrow =
+        Rect::from_min_size(pos2(arrow.left() - 8.0 - 36.0, y - 18.0), Vec2::splat(36.0));
+    if narrow {
+        return Some(next_to_arrow);
+    }
+    controls(app, ui, next_to_arrow);
+    None
+}
 
-    let shuffle = Rect::from_min_size(pos2(arrow.left() - 8.0 - 36.0, y - 18.0), Vec2::splat(36.0));
+/// Shuffle in `shuffle`, then repeat and volume (with its slider) 48 and
+/// 96 before it.
+fn controls(app: &App, ui: &mut egui::Ui, shuffle: Rect) {
     let repeat = shuffle.translate(vec2(-48.0, 0.0));
     let volume_button = repeat.translate(vec2(-48.0, 0.0));
 
@@ -400,6 +438,60 @@ fn right_group(app: &App, ui: &mut egui::Ui, bar: Rect) {
         app.act(Action::CycleRepeat);
     }
     volume(app, ui, volume_button);
+}
+
+/// A narrow window's "…" button (YouTube Music's expand button, ⋮ turned
+/// across) and the strip it opens to its left: `#212121`, padding 0 8,
+/// fading in over 0.2 s, holding volume (with its slider), repeat and
+/// shuffle. A click elsewhere closes it.
+fn expanding_menu(app: &App, ui: &mut egui::Ui, bar: Rect, button: Rect) {
+    let id = ui.id().with("expanding-menu");
+    let mut open: bool = ui.data(|d| d.get_temp(id)).unwrap_or(false);
+    let response = ui.interact(button, id.with("button"), Sense::click());
+    let name = if open {
+        "Close the volume, repeat and shuffle"
+    } else {
+        "Volume, repeat and shuffle"
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    if response.hovered() {
+        ui.painter()
+            .circle_filled(button.center(), 18.0, PALETTE.surface_hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    // Three dots across, 4 apart.
+    for dx in [-6.0, 0.0, 6.0] {
+        ui.painter()
+            .circle_filled(button.center() + vec2(dx, 0.0), 2.0, SOFT);
+    }
+    // The strip: volume's slider 100, 4, its button 36, 12, repeat 36, 12,
+    // shuffle 36, with 8 at each end.
+    let width = 8.0 + 100.0 + 4.0 + 36.0 + 12.0 + 36.0 + 12.0 + 36.0 + 8.0;
+    let strip = Rect::from_min_max(
+        pos2(button.left() - 8.0 - width, bar.top()),
+        pos2(button.left() - 8.0, bar.bottom()),
+    );
+    if response.clicked() {
+        open = !open;
+    } else if open && ui.input(|i| i.pointer.primary_clicked()) && !ui.rect_contains_pointer(strip)
+    {
+        open = false;
+    }
+    let shown = ui.ctx().animate_bool_with_time(id.with("shown"), open, 0.2);
+    if shown > 0.0 {
+        // Over the song's words: the strip takes the pointer there.
+        ui.interact(strip, id.with("strip"), Sense::click());
+        ui.painter()
+            .rect_filled(strip, 0.0, PALETTE.panel.gamma_multiply(shown));
+        if open {
+            let shuffle = Rect::from_min_size(
+                pos2(strip.right() - 8.0 - 36.0, bar.center().y - 18.0),
+                Vec2::splat(36.0),
+            );
+            controls(app, ui, shuffle);
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, open));
 }
 
 /// The triangle that opens the player page (pointing up) and closes it

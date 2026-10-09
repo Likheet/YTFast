@@ -26,7 +26,7 @@ param(
     [string]$Exe,
     [string]$Names,
     [string]$Text,
-    [ValidateSet('Return', 'Escape', 'Right', 'Left', 'Up', 'Down', 'Space', 'Tab')][string]$Key,
+    [ValidateSet('Return', 'Escape', 'Right', 'Left', 'Up', 'Down', 'Space', 'Tab', 'End', 'Home', 'PageDown', 'PageUp')][string]$Key,
     [string]$Name,
     [double]$Width = 1280,
     [double]$Height = 820,
@@ -137,7 +137,7 @@ function Send-Key([System.Diagnostics.Process]$demo, [uint32]$vk) {
     Start-Sleep -Milliseconds 30
 }
 
-$keys = @{ Return = 0x0D; Escape = 0x1B; Right = 0x27; Left = 0x25; Up = 0x26; Down = 0x28; Space = 0x20; Tab = 0x09 }
+$keys = @{ Return = 0x0D; Escape = 0x1B; Right = 0x27; Left = 0x25; Up = 0x26; Down = 0x28; Space = 0x20; Tab = 0x09; End = 0x23; Home = 0x24; PageDown = 0x22; PageUp = 0x21 }
 
 function Save-Shot([System.Diagnostics.Process]$demo, [string]$name) {
     New-Item -ItemType Directory -Force $shots | Out-Null

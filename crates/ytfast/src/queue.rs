@@ -297,20 +297,21 @@ impl Queue {
         }
     }
 
-    /// Moves a coming song one place earlier (`up`) or later, never past
-    /// the song playing.
-    pub fn shift(&mut self, id: u64, up: bool) {
-        let first = self.current.map_or(0, |c| c + 1);
-        let Some(i) = self.entries.iter().position(|e| e.id == id) else {
+    /// Moves an entry to place `to` in the queue (as Up next's rows are
+    /// dragged). The song playing stays the one playing, wherever it then
+    /// stands; songs moved after it play next.
+    pub fn move_to(&mut self, id: u64, to: usize) {
+        let Some(from) = self.entries.iter().position(|e| e.id == id) else {
             return;
         };
-        if i < first {
+        let to = to.min(self.entries.len() - 1);
+        if from == to {
             return;
         }
-        let j = if up { i.checked_sub(1) } else { Some(i + 1) };
-        if let Some(j) = j.filter(|j| *j >= first && *j < self.entries.len()) {
-            self.entries.swap(i, j);
-        }
+        let playing = self.current.map(|c| self.entries[c].id);
+        let entry = self.entries.remove(from);
+        self.entries.insert(to, entry);
+        self.current = playing.and_then(|p| self.entries.iter().position(|e| e.id == p));
     }
 
     /// Moves a coming song to play right after the current one.
@@ -531,16 +532,19 @@ mod tests {
                 .unwrap()
                 .id
         };
-        // The playing song cannot be removed or moved.
+        // The playing song cannot be removed.
         let b = id(&q, "b");
         q.remove(b);
-        q.shift(b, false);
         assert_eq!(ids(&q), ["a", "b", "c", "d"]);
-        q.shift(id(&q, "d"), true);
+        // Dragged to a new place; the song playing stays the one playing.
+        q.move_to(id(&q, "d"), 2);
         assert_eq!(ids(&q), ["a", "b", "d", "c"]);
-        // Not past the song playing.
-        q.shift(id(&q, "d"), true);
+        q.move_to(b, 3);
+        assert_eq!(ids(&q), ["a", "d", "c", "b"]);
+        assert_eq!(q.current().unwrap().track.video_id, "b");
+        q.move_to(b, 1);
         assert_eq!(ids(&q), ["a", "b", "d", "c"]);
+        assert_eq!(q.current().unwrap().track.video_id, "b");
         q.move_next(id(&q, "c"));
         assert_eq!(ids(&q), ["a", "b", "c", "d"]);
         q.remove(id(&q, "a"));

@@ -9,6 +9,7 @@ mod now_playing;
 mod page;
 mod player_bar;
 mod queue_panel;
+mod selection_bar;
 mod settings;
 mod sidebar;
 mod signin;
@@ -84,6 +85,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             }
         });
     notice(app, ui);
+    selection_bar::show(app, ui);
     dialogs::show(app, ui);
 }
 

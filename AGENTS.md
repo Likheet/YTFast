@@ -526,6 +526,36 @@ Up next's its cover and album (`App::fill_in`, `queue::fill_in`; tested:
 `a_song_started_by_its_id_alone_gets_its_name`, and an artist's Mix in
 the demo). Not yet tested: both with the owner's account.
 
+On 9 October 2026 (after Likheet/YTFast#7 was merged), at the owner's
+word, more of YouTube Music's differences, measured signed in at the
+owner's maximised window (1707 by 1019): the search box's placeholder is
+16 and centred; text is 16 from a window 1364 wide wherever YouTube Music
+grows it (`theme::responsive`: cards but the Library's grid, every song
+row, Up next, the player bar's song, straplines, the top result,
+suggestions, Save to playlist); a search of one kind loads its next
+results when its end comes into view, one request at a time
+(`Request::MoreResults`); Up next's rows are dragged to a new place (Move
+up and Move down are gone, as on YouTube Music); the Moods & genres page
+is grids of striped buttons under smaller titles; below 1150 wide the
+player bar's volume, repeat and shuffle sit in a strip behind a "…"
+button. The owner decided to keep YTFast's scroll bars. Tested: the unit
+tests (194), and the demo at 1707 by 1019 and 1000 by 700 (0% processor
+time once settled). Not yet tested: dragging in Up next (it needs the
+real mouse), and a real search's next results (a made-up reply in
+YouTube's shape was used, as a real one would add a search to the owner's
+history).
+
+Then, at the owner's word (9 October 2026): tick boxes on an album's or
+playlist's rows and the bar for the ticked songs (Save to playlist, Play
+next, Add to queue, Remove from playlist), as YouTube Music's
+(`views/selection_bar.rs`); a playlist's Sort (Default ordering, Title,
+Artist, Album; newest and oldest added first are left out); the page's
+menu entry stays lit under the player page. The owner decided to keep
+YTFast's lyrics, the 960 smallest window, and no Home picture. Tested: the
+unit tests (195) and Sort in the demo; the tick boxes need the real
+mouse. A playlist sorted in YTFast still plays in YouTube's order from its
+Play button.
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
@@ -538,8 +568,7 @@ form, an own playlist's buttons) were measured on 8 October 2026 with the
 owner's account; nothing of theirs is in the notes. What it does
 differently: disliking the playing song does not skip it; clicking a song
 in History queues the rest of that list; the playlist form has no
-Collaborate switch; Up next is reordered with Move up and Move down, not
-by dragging, and shows the Autoplay switch for radios too.
+Collaborate switch; Up next shows the Autoplay switch for radios too.
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp

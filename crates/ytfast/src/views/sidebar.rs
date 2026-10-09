@@ -123,10 +123,10 @@ fn entry_fill(ui: &egui::Ui, rect: Rect, lit: bool, hovered: bool) {
 
 /// Whether `route` is the page showing (not hidden by the player page).
 fn showing(app: &App, route: &Route) -> bool {
-    // Library stays lit on all its tabs, as on YouTube Music.
+    // Library stays lit on all its tabs, as on YouTube Music; the page's
+    // entry stays lit under the player page, which covers only the page.
     let library = |r: &Route| r.library_tab().is_some();
-    !app.now_playing
-        && (app.route == *route || (*route == Route::LibraryRecent && library(&app.route)))
+    app.route == *route || (*route == Route::LibraryRecent && library(&app.route))
 }
 
 /// Home, Explore, Library: an icon and a name, 48 high.
@@ -218,7 +218,7 @@ fn new_playlist(app: &App, ui: &mut egui::Ui) {
             name: String::new(),
             description: String::new(),
             privacy: Default::default(),
-            song: None,
+            songs: Vec::new(),
         }));
     }
 }

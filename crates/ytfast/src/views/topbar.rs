@@ -397,16 +397,23 @@ fn search_box(app: &App, ui: &mut egui::Ui, rect: Rect) {
     let icon = Rect::from_center_size(pos2(rect.left() + 27.0, rect.center().y), Vec2::splat(18.0));
     theme::paint_icon(ui, Icon::Search, icon, 18.0, tint);
 
+    // The words (and the placeholder, the same 16) on one line centred in
+    // the box, as the page's input centres its line.
+    let font = theme::regular(16.0);
+    let line = ui.fonts_mut(|f| f.row_height(&font));
     let field_rect = Rect::from_min_max(
-        pos2(rect.left() + 53.0, rect.top() + 10.0),
-        pos2(rect.right() - 56.0, rect.bottom() - 10.0),
+        pos2(rect.left() + 53.0, rect.center().y - line / 2.0),
+        pos2(rect.right() - 56.0, rect.center().y + line / 2.0),
     );
-    let hint = egui::RichText::new("Search songs, albums, artists, podcasts").color(PALETTE.hint);
+    let hint = egui::RichText::new("Search songs, albums, artists, podcasts")
+        .font(font.clone())
+        .color(PALETTE.hint);
     let edit = egui::TextEdit::singleline(&mut text)
         .id(super::SEARCH_BOX.into())
         .hint_text(hint)
-        .font(theme::regular(16.0))
+        .font(font)
         .frame(Frame::NONE)
+        .margin(Margin::ZERO)
         .text_color(PALETTE.text);
     let response = ui.put(field_rect, edit);
 
@@ -698,20 +705,22 @@ fn suggestions(
                         }
                         let left = picture.right() + 16.0;
                         let width = (row.right() - 12.0 - left).max(0.0);
-                        let top = row.center().y - (16.8 * 2.0 + 3.0) / 2.0;
+                        let size = theme::text_size(ui);
+                        let line_height = size * 1.2;
+                        let top = row.center().y - (line_height * 2.0 + 3.0) / 2.0;
                         theme::paint_line(
                             ui,
                             pos2(left, top),
                             title,
-                            theme::medium(14.0),
+                            theme::medium(size),
                             PALETTE.text,
                             width,
                         );
                         theme::paint_line(
                             ui,
-                            pos2(left, top + 16.8 + 3.0),
+                            pos2(left, top + line_height + 3.0),
                             &line,
-                            theme::regular(14.0),
+                            theme::regular(size),
                             PALETTE.secondary,
                             width,
                         );
@@ -787,7 +796,8 @@ fn track_line(track: &Track) -> String {
 }
 
 /// A suggestion's words: the part that begins as typed in 500 weight, the
-/// rest in 400, all white@0.50, cut at `width`.
+/// rest in 400, all white@0.50, 14 (16 from a window 1364 wide), cut at
+/// `width`.
 fn suggestion_words(
     ui: &egui::Ui,
     suggestion: &str,
@@ -804,13 +814,14 @@ fn suggestion_words(
         0
     };
     let mut job = LayoutJob::default();
+    let size = theme::text_size(ui);
     let format = |font| {
         let mut format = TextFormat::simple(font, PALETTE.hint);
-        format.line_height = Some(16.8);
+        format.line_height = Some(size * 1.2);
         format
     };
-    job.append(&suggestion[..lead], 0.0, format(theme::medium(14.0)));
-    job.append(&suggestion[lead..], 0.0, format(theme::regular(14.0)));
+    job.append(&suggestion[..lead], 0.0, format(theme::medium(size)));
+    job.append(&suggestion[lead..], 0.0, format(theme::regular(size)));
     job.wrap = egui::text::TextWrapping {
         max_width: width.max(0.0),
         max_rows: 1,
