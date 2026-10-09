@@ -3,18 +3,19 @@
 //! top bar closes it to a strip of icons.
 
 use egui::{Align2, CornerRadius, Frame, Rect, Sense, Vec2, pos2, vec2};
-use ytfast_core::read::{Item, Target};
+use ytfast_core::read::{Item, Target, Thumb};
 
 use crate::app::{Action, App, Dialog, Loadable};
 use crate::backend::Route;
 use crate::theme::{self, Icon, PALETTE};
+use crate::views::widgets;
 
 /// How wide the menu is now.
 pub fn width(app: &App) -> f32 {
     if app.settings.mini_guide {
         theme::GUIDE_MINI_WIDTH
     } else {
-        theme::GUIDE_WIDTH
+        theme::guide_width()
     }
 }
 
@@ -34,6 +35,8 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .animate_bool_with_time(egui::Id::new("guide-solid"), solid, 0.2);
     let fill = if mini {
         PALETTE.window.gamma_multiply(shown)
+    } else if theme::premium() {
+        PALETTE.panel
     } else {
         PALETTE.window
     };
@@ -77,7 +80,21 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 egui::Stroke::new(1.0, PALETTE.divider),
             );
             // The divider is a border, a point high, then 24.
-            ui.add_space(25.0);
+            if theme::premium() {
+                // Premium: "YOUR LIBRARY" over New playlist.
+                ui.add_space(20.0);
+                let (heading, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+                ui.painter().text(
+                    pos2(heading.left() + 24.0, heading.center().y),
+                    Align2::LEFT_CENTER,
+                    "YOUR LIBRARY",
+                    theme::medium(11.0),
+                    PALETTE.dim,
+                );
+            } else {
+                ui.add_space(25.0);
+            }
             new_playlist(app, ui);
             ui.add_space(16.0);
 
@@ -86,7 +103,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    playlist_item(app, ui, "Liked Music", "Auto playlist", true, Route::Liked);
+                    playlist_item(app, ui, "Liked Music", "Auto playlist", None, Route::Liked);
                     if let Some(Loadable::Ready(page)) = app.pages.get(&Route::Library) {
                         for section in &page.sections {
                             for item in &section.items {
@@ -99,7 +116,14 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                                     continue;
                                 }
                                 let route = Route::browse(id.clone(), params.clone());
-                                playlist_item(app, ui, &card.title, &card.subtitle, false, route);
+                                playlist_item(
+                                    app,
+                                    ui,
+                                    &card.title,
+                                    &card.subtitle,
+                                    card.thumbnail.as_ref(),
+                                    route,
+                                );
                             }
                         }
                     }
@@ -121,6 +145,12 @@ fn entry_fill(ui: &egui::Ui, rect: Rect, lit: bool, hovered: bool) {
     ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
 }
 
+/// Whether an entry takes the fill under the pointer: also when the
+/// keyboard is on it, in the Premium theme.
+fn lit_by(response: &egui::Response) -> bool {
+    response.hovered() || (theme::premium() && response.has_focus())
+}
+
 /// Whether `route` is the page showing (not hidden by the player page).
 fn showing(app: &App, route: &Route) -> bool {
     // Library stays lit on all its tabs, as on YouTube Music; the page's
@@ -132,28 +162,40 @@ fn showing(app: &App, route: &Route) -> bool {
 /// Home, Explore, Library: an icon and a name, 48 high.
 fn nav_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route) {
     let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
-    let rect = slot.shrink2(vec2(8.0, 0.0));
+    let premium = theme::premium();
+    let rect = slot.shrink2(if premium {
+        vec2(12.0, 2.0)
+    } else {
+        vec2(8.0, 0.0)
+    });
     let response = ui.interact(rect, ui.id().with(("nav", text)), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
     let lit = showing(app, &route);
-    entry_fill(ui, rect, lit, response.hovered());
+    entry_fill(ui, rect, lit, lit_by(&response));
     let icon_rect = Rect::from_min_size(
         pos2(rect.left() + 16.0, rect.center().y - 12.0),
         Vec2::splat(24.0),
     );
     theme::paint_icon(ui, icon, icon_rect, 24.0, PALETTE.text);
-    // 16/400, and 500 for the page showing.
+    // 16/400, and 500 for the page showing (Premium: 15, the others
+    // quieter).
+    let size = if premium { 15.0 } else { 16.0 };
     let font = if lit {
-        theme::medium(16.0)
+        theme::medium(size)
     } else {
-        theme::regular(16.0)
+        theme::regular(size)
+    };
+    let color = if premium && !lit {
+        PALETTE.secondary
+    } else {
+        PALETTE.text
     };
     ui.painter().text(
         pos2(rect.left() + 60.0, rect.center().y),
         Align2::LEFT_CENTER,
         text,
         font,
-        PALETTE.text,
+        color,
     );
     if response.clicked() {
         app.act(Action::Navigate(route));
@@ -167,7 +209,7 @@ fn mini_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route)
     let rect = slot.shrink2(vec2(8.0, 0.0));
     let response = ui.interact(rect, ui.id().with(("mini", text)), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
-    entry_fill(ui, rect, showing(app, &route), response.hovered());
+    entry_fill(ui, rect, showing(app, &route), lit_by(&response));
     let icon_rect = Rect::from_min_size(
         pos2(rect.center().x - 12.0, rect.top() + 12.0),
         Vec2::splat(24.0),
@@ -197,7 +239,9 @@ fn new_playlist(app: &App, ui: &mut egui::Ui) {
     } else {
         PALETTE.surface
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(18), fill);
+    let corners = if theme::premium() { 10 } else { 18 };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(corners), fill);
     // YouTube's tonal button: its icon 24 with 6 after it, words 14/500
     // `#f1f1f1`, together centred.
     let words = ui.painter().layout_no_wrap(
@@ -224,16 +268,19 @@ fn new_playlist(app: &App, ui: &mut egui::Ui) {
 }
 
 /// A playlist: its name over a quieter line (who made it), 56 high
-/// (measured signed in: padding 4 16, the two lines centred).
+/// (measured signed in: padding 4 16, the two lines centred). Premium: its
+/// cover and its name, 52 high, who made it under the pointer.
 fn playlist_item(
     app: &App,
     ui: &mut egui::Ui,
     title: &str,
     subtitle: &str,
-    pinned: bool,
+    thumbnail: Option<&Thumb>,
     route: Route,
 ) {
-    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
+    let premium = theme::premium();
+    let height = if premium { 52.0 } else { 56.0 };
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     if !ui.is_rect_visible(slot) {
         return;
     }
@@ -241,7 +288,12 @@ fn playlist_item(
     let response = ui.interact(rect, ui.id().with(("playlist", &route)), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     let hovered = ui.rect_contains_pointer(rect);
-    entry_fill(ui, rect, showing(app, &route), hovered);
+    entry_fill(
+        ui,
+        rect,
+        showing(app, &route),
+        hovered || (premium && response.has_focus()),
+    );
     // Under the pointer, a white disc 24 with a play icon 16 at the right
     // (16 in), and the words stop 50 from the right.
     let playlist = match &route {
@@ -274,6 +326,31 @@ fn playlist_item(
             ));
         }
     }
+    if premium {
+        let art = Rect::from_min_size(
+            pos2(rect.left() + 12.0, rect.center().y - 17.0),
+            Vec2::splat(34.0),
+        );
+        widgets::cover_with(app, ui, art, thumbnail, CornerRadius::same(7));
+        if route == Route::Liked {
+            theme::paint_icon(ui, Icon::ThumbsUpFilled, art, 18.0, PALETTE.accent);
+        }
+        let left = art.right() + 12.0;
+        let width = (rect.right() - left - if hovered { 50.0 } else { 12.0 }).max(0.0);
+        theme::paint_line(
+            ui,
+            pos2(left, rect.center().y - 8.4),
+            title,
+            theme::medium(14.0),
+            PALETTE.text,
+            width,
+        );
+        if response.clicked() && !pressed {
+            app.act(Action::Navigate(route));
+        }
+        response.on_hover_text(subtitle);
+        return;
+    }
     let left = rect.left() + 16.0;
     let width = rect.width() - 16.0 - if hovered { 50.0 } else { 16.0 };
     // Its name 14/500 on an 18 line at 10.5, 3 under it the line under,
@@ -288,7 +365,7 @@ fn playlist_item(
     );
     let mut below = pos2(left, rect.top() + 31.3);
     let mut below_width = width;
-    if pinned {
+    if route == Route::Liked {
         let pin = Rect::from_min_size(below + vec2(0.0, 1.2), Vec2::splat(12.0));
         theme::paint_icon(ui, Icon::Pin, pin, 12.0, PALETTE.secondary);
         below.x += 16.0;

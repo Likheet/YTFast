@@ -73,7 +73,8 @@ packaging/            app icon files, the Mac Info.plist and its
 docs/                 plan, how to run the app and the check
 docs/look/            the look: how YouTube Music is measured (README),
                       its sizes (reference.md), and every difference
-                      left, as a checklist (gaps.md)
+                      left, as a checklist (gaps.md); the Premium theme
+                      (premium.md)
 tools/look/           measuring YouTube Music in a browser (measure.js),
                       and driving the demo on Windows by button names
                       (demo.ps1)
@@ -162,6 +163,11 @@ Paolino), as `audio.rs` does.
 - Changes to the account (`backend::Edit`) show at once and go to YouTube
   one at a time, in order; a refusal from YouTube (`Event::EditFailed`)
   undoes them (back to what was shown before) and says so.
+- Two looks, chosen in Settings (Theme): YouTube Music's own, the
+  default, and Premium (charcoal, rounder, a warm accent;
+  `docs/look/premium.md`). Each frame draws in the chosen one
+  (`theme::set`, `theme::premium()`); `PALETTE` and the sizes that differ
+  follow it.
 - The interface font is Roboto, YouTube Music's own (Roboto Bold stands
   in for YouTube Sans, which may not be shipped), with Inter behind it for
   any letter Roboto lacks. The computer's fonts for other scripts
@@ -555,6 +561,16 @@ YTFast's lyrics, the 960 smallest window, and no Home picture. Tested: the
 unit tests (195) and Sort in the demo; the tick boxes need the real
 mouse. A playlist sorted in YTFast still plays in YouTube's order from its
 Play button.
+
+Then (10 October 2026), at the owner's word, the Premium look made on
+`codex/premium-ui` became a theme to choose in Settings, YouTube Music's
+own staying the default, with every feature of `main` kept in both.
+Tested: the unit tests (197, among them Premium's page sizes and player
+page), and in the demo on the owner's Windows laptop: choosing each theme
+changes the whole window at once and back again, every main screen in
+Premium, and 0% processor time when idle. Not yet tested: Premium with
+the owner's account, and the Mac. The owner means to develop Premium
+further.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
