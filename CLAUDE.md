@@ -74,6 +74,14 @@ nothing then), so whatever keeps the music going belongs there, not in
   margins, colours). Do not round or "tidy" them; to change a screen,
   open the real one, measure it (the page's computed styles), then check
   the result in `--demo` beside it.
+- **Two themes.** `PALETTE` and the sizes that differ by theme
+  (`top_bar_height()`, `player_bar_height()`, `guide_width()`,
+  `page_foot()`, `Row::themed`) follow the theme chosen in Settings, so
+  read them while drawing, never into a `const`. A screen that looks
+  different in Premium keeps YouTube Music's code untouched and adds its
+  own behind `theme::premium()` (`docs/look/premium.md`). Tests that draw
+  or size things in Premium call `theme::set` themselves (it is per
+  thread).
 - **Give every new button a name** (`response.widget_info`). Screen
   readers need it, and it is how the demo is driven on the owner's laptop
   (see AGENTS.md, "Where things can be tested").

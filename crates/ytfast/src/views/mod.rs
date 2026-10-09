@@ -113,7 +113,7 @@ fn notice(app: &App, ui: &egui::Ui) {
     // On the player bar's top edge (12 above the window's foot without
     // one), 12 from the left.
     let lift = if app.playback.entry.is_some() {
-        theme::PLAYER_BAR_HEIGHT
+        theme::player_bar_height()
     } else {
         12.0
     };

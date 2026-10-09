@@ -128,3 +128,16 @@ fn gradient_shape(rect: Rect, top: Color32, bottom: Color32) -> Shape {
     mesh.add_triangle(0, 2, 3);
     Shape::mesh(mesh)
 }
+
+/// Premium's player page: a still wash of the small cover already loaded
+/// (no blur pass, nothing moving), fading to the window's colour.
+pub fn listening(ui: &egui::Ui, rect: Rect, texture: TextureId) {
+    ui.painter().image(
+        texture,
+        rect,
+        Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
+        Color32::from_white_alpha(42),
+    );
+    ui.painter()
+        .add(gradient_shape(rect, Color32::TRANSPARENT, PALETTE.window));
+}

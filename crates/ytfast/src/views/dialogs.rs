@@ -16,7 +16,14 @@ pub fn show(app: &App, ui: &egui::Ui) {
     let window = ui.ctx().content_rect().width();
     // The first field takes the keyboard once, as the dialog opens.
     let fresh = app.dialog_fresh.replace(false);
+    let premium = theme::premium();
     let frame = match current {
+        // Premium: one frame for every dialog, corners 16.
+        _ if premium => egui::Frame::new()
+            .fill(PALETTE.panel)
+            .stroke(egui::Stroke::new(1.0, PALETTE.outline))
+            .corner_radius(egui::CornerRadius::same(16))
+            .shadow(SHADOW),
         // `ytmusic-add-to-playlist-renderer`.
         Dialog::SaveToPlaylist { .. } => egui::Frame::new()
             .fill(PALETTE.panel)
@@ -44,7 +51,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
         .frame(frame)
         // YouTube Music dims the window behind a dialog by 30% (measured
         // signed in).
-        .backdrop_color(egui::Color32::from_black_alpha(77))
+        .backdrop_color(egui::Color32::from_black_alpha(if premium { 140 } else { 77 }))
         .show(ui.ctx(), |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             match current {
@@ -264,16 +271,24 @@ fn form(
             let size = if window >= 1150.0 { 24.0 } else { 20.0 };
             theme::label(ui, heading, theme::bold(size), PALETTE.text);
         });
+    // Premium: boxed fields, closer together.
+    let premium = theme::premium();
+    let (above, between, before_privacy) = if premium {
+        (24, 20.0, 20.0)
+    } else {
+        (32, 32.0, 40.0)
+    };
+    let field = if premium { premium_field } else { field };
     egui::Frame::new()
-        .inner_margin(egui::Margin::symmetric(24, 32))
+        .inner_margin(egui::Margin::symmetric(24, above))
         .show(ui, |ui| {
             ui.set_width(width - 48.0);
             if field(ui, "Title", name, false, fresh) {
                 done = Some(true);
             }
-            ui.add_space(32.0);
+            ui.add_space(between);
             field(ui, "Description", description, true, false);
-            ui.add_space(40.0);
+            ui.add_space(before_privacy);
             privacy_menu(ui, privacy);
         });
     egui::Frame::new()
@@ -305,6 +320,57 @@ fn form(
         done = None;
     }
     done
+}
+
+/// Premium's text field: its label (13) above a box of the field colour,
+/// r 10, outlined in the accent while focused. True when Enter is pressed
+/// in a one-line field.
+fn premium_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    text: &mut String,
+    lines: bool,
+    first: bool,
+) -> bool {
+    theme::label(ui, label, theme::medium(13.0), PALETTE.secondary);
+    ui.add_space(8.0);
+    let width = ui.available_width();
+    let rows = if lines {
+        text.lines().count().clamp(3, 5)
+    } else {
+        1
+    };
+    let id = ui.id().with(("playlist-field", label));
+    let focused = ui.ctx().memory(|m| m.has_focus(id));
+    let edge = if focused {
+        PALETTE.accent
+    } else {
+        PALETTE.outline
+    };
+    let frame = egui::Frame::new()
+        .fill(PALETTE.field)
+        .stroke(egui::Stroke::new(1.0, edge))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(12, 12));
+    let edit = if lines {
+        egui::TextEdit::multiline(text).desired_rows(rows)
+    } else {
+        egui::TextEdit::singleline(text)
+    };
+    let response = ui.add(
+        edit.id(id)
+            .frame(frame)
+            .font(theme::regular(15.0))
+            .text_color(PALETTE.text)
+            .desired_width(width),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, label));
+    // Asked before anything takes the focus back.
+    let enter = !lines && response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if first {
+        response.request_focus();
+    }
+    enter
 }
 
 /// A text field as YouTube Music's (`tp-yt-paper-input`): its label 14
@@ -394,7 +460,14 @@ fn privacy_menu(ui: &mut egui::Ui, privacy: &mut Privacy) {
         Privacy::Unlisted => Icon::Link,
         Privacy::Private => Icon::Lock,
     };
-    let (block, response) = ui.allocate_exact_size(vec2(183.3, 46.0), Sense::click());
+    // Premium: a box 220 by 42 under its label.
+    let premium = theme::premium();
+    let size = if premium {
+        vec2(220.0, 66.0)
+    } else {
+        vec2(183.3, 46.0)
+    };
+    let (block, response) = ui.allocate_exact_size(size, Sense::click());
     let (name, _) = privacy.words();
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("Privacy: {name}"))
@@ -409,25 +482,63 @@ fn privacy_menu(ui: &mut egui::Ui, privacy: &mut Privacy) {
         theme::regular(12.0),
         PALETTE.dim,
     );
-    let row = egui::Rect::from_min_size(pos2(block.left(), block.top() + 20.0), vec2(183.3, 24.0));
-    let mark = egui::Rect::from_min_size(row.left_top() + vec2(4.0, 0.0), egui::Vec2::splat(24.0));
-    theme::paint_icon(ui, icon(*privacy), mark, 24.0, PALETTE.text);
-    theme::paint_line(
-        ui,
-        pos2(row.left() + 35.0, row.center().y - 8.4),
-        name,
-        theme::medium(14.0),
-        PALETTE.text,
-        110.0,
-    );
-    let arrow =
-        egui::Rect::from_min_size(pos2(row.right() - 24.0, row.top()), egui::Vec2::splat(24.0));
-    theme::paint_icon(ui, Icon::DropDown, arrow, 24.0, PALETTE.text);
-    ui.painter().hline(
-        block.x_range(),
-        block.bottom() - 1.0,
-        egui::Stroke::new(1.0, PALETTE.thumb),
-    );
+    if premium {
+        let row =
+            egui::Rect::from_min_size(pos2(block.left(), block.top() + 24.0), vec2(220.0, 42.0));
+        let edge = if response.has_focus() {
+            PALETTE.accent
+        } else {
+            PALETTE.outline
+        };
+        ui.painter()
+            .rect_filled(row, egui::CornerRadius::same(10), PALETTE.field);
+        ui.painter().rect_stroke(
+            row,
+            egui::CornerRadius::same(10),
+            egui::Stroke::new(1.0, edge),
+            egui::StrokeKind::Inside,
+        );
+        let mark = egui::Rect::from_min_size(
+            pos2(row.left() + 10.0, row.center().y - 12.0),
+            egui::Vec2::splat(24.0),
+        );
+        theme::paint_icon(ui, icon(*privacy), mark, 24.0, PALETTE.text);
+        theme::paint_line(
+            ui,
+            pos2(row.left() + 44.0, row.center().y - 8.4),
+            name,
+            theme::medium(14.0),
+            PALETTE.text,
+            110.0,
+        );
+        let arrow = egui::Rect::from_min_size(
+            pos2(row.right() - 32.0, row.center().y - 12.0),
+            egui::Vec2::splat(24.0),
+        );
+        theme::paint_icon(ui, Icon::DropDown, arrow, 24.0, PALETTE.text);
+    } else {
+        let row =
+            egui::Rect::from_min_size(pos2(block.left(), block.top() + 20.0), vec2(183.3, 24.0));
+        let mark =
+            egui::Rect::from_min_size(row.left_top() + vec2(4.0, 0.0), egui::Vec2::splat(24.0));
+        theme::paint_icon(ui, icon(*privacy), mark, 24.0, PALETTE.text);
+        theme::paint_line(
+            ui,
+            pos2(row.left() + 35.0, row.center().y - 8.4),
+            name,
+            theme::medium(14.0),
+            PALETTE.text,
+            110.0,
+        );
+        let arrow =
+            egui::Rect::from_min_size(pos2(row.right() - 24.0, row.top()), egui::Vec2::splat(24.0));
+        theme::paint_icon(ui, Icon::DropDown, arrow, 24.0, PALETTE.text);
+        ui.painter().hline(
+            block.x_range(),
+            block.bottom() - 1.0,
+            egui::Stroke::new(1.0, PALETTE.thumb),
+        );
+    }
     theme::menu_popup(&response).width(288.0).show(|ui| {
         theme::menu(ui);
         for choice in Privacy::ALL {

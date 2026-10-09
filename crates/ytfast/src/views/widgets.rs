@@ -105,9 +105,27 @@ pub struct Row {
     /// songs); else the length shows there.
     pub keep_room: bool,
     /// The colour of the line under the title and of the length.
-    pub quiet: Color32,
+    pub quiet: Quiet,
     /// Under the pointer the length gives its place to ⋮ (Up next).
     pub menu_for_length: bool,
+}
+
+/// Which of the theme's quieter colours a row's second line takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quiet {
+    /// White at 70% (the theme's secondary).
+    Secondary,
+    /// `#aaa` (the theme's dim).
+    Dim,
+}
+
+impl Quiet {
+    pub fn color(self) -> Color32 {
+        match self {
+            Self::Secondary => PALETTE.secondary,
+            Self::Dim => PALETTE.dim,
+        }
+    }
 }
 
 /// White at 5%: a list's row under the pointer.
@@ -129,6 +147,30 @@ pub enum Under {
 }
 
 impl Row {
+    /// The same rows in the Premium theme: corners 8; an album's and a
+    /// playlist's songs closer together and lit under the pointer; a
+    /// shelf's songs taller and apart, without hairlines.
+    pub fn themed(self) -> Self {
+        if !theme::premium() {
+            return self;
+        }
+        let mut row = Self { corner: 8, ..self };
+        if self == Self::LIST || self == Self::PLAYLIST {
+            row.text_gap = 4.0;
+            row.hover = ROW_HOVER;
+        } else if self == Self::SHELF {
+            row = Self {
+                height: 60.0,
+                gap: 4.0,
+                art: 40.0,
+                art_gap: 16.0,
+                line: false,
+                ..row
+            };
+        }
+        row
+    }
+
     /// An album's songs.
     pub const LIST: Self = Self {
         height: 68.0,
@@ -148,7 +190,7 @@ impl Row {
         // it, ⋮ at 110.
         buttons: Some([200.5, 162.0, 110.0]),
         keep_room: false,
-        quiet: PALETTE.secondary,
+        quiet: Quiet::Secondary,
         menu_for_length: false,
     };
     /// A playlist's songs (and Liked Music's): as an album's, saying
@@ -177,7 +219,7 @@ impl Row {
         // after it, then 8, ⋮ at 44.
         buttons: Some([134.5, 96.0, 44.0]),
         keep_room: true,
-        quiet: PALETTE.secondary,
+        quiet: Quiet::Secondary,
         menu_for_length: false,
     };
     /// Search results.
@@ -198,7 +240,7 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        quiet: PALETTE.secondary,
+        quiet: Quiet::Secondary,
         menu_for_length: false,
     };
     /// Search results narrowed to one kind: a hairline between rows.
@@ -225,7 +267,7 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        quiet: PALETTE.secondary,
+        quiet: Quiet::Secondary,
         menu_for_length: false,
     };
     /// Up next: 56 high and a hairline (57 apart), the artists and the
@@ -246,7 +288,7 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        quiet: PALETTE.dim,
+        quiet: Quiet::Dim,
         menu_for_length: true,
     };
     /// The songs on the right of search's top result card.
@@ -266,7 +308,7 @@ impl Row {
         album: false,
         buttons: None,
         keep_room: false,
-        quiet: PALETTE.secondary,
+        quiet: Quiet::Secondary,
         menu_for_length: false,
     };
 
@@ -400,6 +442,7 @@ pub fn track_row_in(
     place: Place,
     on_click: impl FnOnce() -> Action,
 ) -> Option<egui::Response> {
+    let style = style.themed();
     let queued = matches!(place, Place::Queue(_));
     // The playing song's menu does not edit the queue.
     let place = if playing && queued {
@@ -447,13 +490,24 @@ pub fn track_row_in(
     let hovered = ui.rect_contains_pointer(rect) || menu_open;
     // The song playing is marked white@0.10 (a list's rows r 8); the row
     // under the pointer gets the list's own fill.
-    let radius = if style.album { 8 } else { 0 };
+    // Premium: every row r 8, and the focused one lit and outlined.
+    let premium = theme::premium();
+    let radius = if style.album || premium { 8 } else { 0 };
+    let focused = premium && response.has_focus();
     if playing {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(radius), PALETTE.surface);
-    } else if hovered {
+    } else if hovered || focused {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(radius), style.hover);
+    }
+    if focused {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(radius),
+            egui::Stroke::new(1.0, PALETTE.accent),
+            egui::StrokeKind::Inside,
+        );
     }
     // A song YouTube no longer offers is shown at 60%, without its cover,
     // and does not play.
@@ -461,7 +515,7 @@ pub fn track_row_in(
     let shown = if playable { 1.0 } else { 0.6 };
     let (title_color, line_color) = (
         PALETTE.text.gamma_multiply(shown),
-        style.quiet.gamma_multiply(shown),
+        style.quiet.color().gamma_multiply(shown),
     );
     // From a window 1364 wide an album's or playlist's words are 16 (an
     // album's second line stays 14).
@@ -1415,6 +1469,7 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
 /// A card as a row (an album or artist in search results): a cover, the
 /// title and the subtitle. Clicking opens it.
 pub fn card_row(app: &App, ui: &mut egui::Ui, style: Row, card: &Card) {
+    let style = style.themed();
     let width = ui.available_width();
     let (slot, response) =
         ui.allocate_exact_size(vec2(width, style.height + style.gap), Sense::click());
