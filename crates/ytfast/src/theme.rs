@@ -27,12 +27,12 @@ impl Theme {
     /// Its name, and what it is, as Settings lists it.
     pub fn words(self) -> (&'static str, &'static str) {
         match self {
-            Self::YouTubeMusic => ("YouTube Music", "YouTube Music's own look"),
-            Self::Premium => ("Premium", "Charcoal, rounder, with a warm accent"),
             Self::DynamicBackground => (
                 "Dynamic Background",
                 "The playing song's colours behind everything, under glass",
             ),
+            Self::YouTubeMusic => ("YouTube Music", "YouTube Music's own look"),
+            Self::Premium => ("Premium", "Charcoal, rounder, with a warm accent"),
         }
     }
 }

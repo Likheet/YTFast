@@ -375,7 +375,6 @@ pub fn rows(
     count: usize,
     mut row: impl FnMut(&mut egui::Ui, usize),
 ) {
-    // The rows' sizes in the theme worn, as each row draws itself.
     let style = style.themed();
     let step = style.height + style.gap + ui.spacing().item_spacing.y;
     let top = ui.cursor().top();

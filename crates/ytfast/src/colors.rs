@@ -10,22 +10,15 @@ pub struct Summary {
     /// The cover shrunk to a few pixels: drawn stretched over the page,
     /// it becomes a soft blur of the cover's colours.
     pub tiny: ColorImage,
-    /// The cover at 24 × 24, from which the Dynamic Background theme makes
-    /// the blurred background behind the whole window (`dynamic::wash`).
-    pub soft: ColorImage,
 }
 
 /// The side of [`Summary::tiny`].
 const TINY: usize = 6;
 
-/// The side of [`Summary::soft`]: about 2 KB a cover.
-const SOFT: usize = 24;
-
 /// Summarises a cover.
 pub fn summarize(image: &ColorImage) -> Summary {
     Summary {
         tiny: shrink(image, TINY),
-        soft: shrink(image, SOFT),
     }
 }
 
