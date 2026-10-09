@@ -13,8 +13,10 @@ its coordinates moved by slow waves.
 
 ## What it looks like
 
-- Behind the whole window, the playing song's cover: blurred (60), its
-  colours richer (×1.5) and darker (×0.7), zoomed 1.2 times. A very light
+- Behind the whole window, the playing song's cover: blurred to its broad
+  areas of colour (matched by eye against the theme with the same cover,
+  After Hours), its colours richer (×1.5) and darker (×0.7), zoomed 1.2
+  times. A very light
   cover is darkened further so white words stay readable. A new song's
   colours fade in over 1.5 s. Before anything plays, a plain `#0e0e0e`.
 - The colours drift slowly while a song plays, and stop when it is paused
