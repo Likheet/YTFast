@@ -608,7 +608,7 @@ fn expanding_menu(app: &App, ui: &mut egui::Ui, bar: Rect, button: Rect) {
             faded.set_opacity(shown);
             crate::dynamic::glass(
                 &faded,
-                strip,
+                strip.shrink2(vec2(0.0, 10.0)),
                 CornerRadius::same(crate::dynamic::RADIUS_PANEL),
             );
         } else {

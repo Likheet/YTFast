@@ -42,10 +42,33 @@ pub struct Settings {
     /// its sort button's `params` for that order.
     pub library_order: BTreeMap<String, String>,
     /// The look the window wears (Settings, Theme).
+    #[serde(serialize_with = "crate::dynamic::save_theme")]
     pub theme: crate::theme::Theme,
     /// The Dynamic Background theme's colours move while a song plays
     /// (off: they stay still).
     pub moving_background: bool,
+    /// The Dynamic Background theme is worn. It is saved here, `theme`
+    /// saying YouTube Music meanwhile, so that a build without that theme
+    /// still reads these settings (it skips what it does not know) instead
+    /// of forgetting them all. Set when saved; read by [`Settings::loaded`].
+    pub dynamic_background: bool,
+}
+
+impl Settings {
+    /// The settings as read from disk, with the Dynamic Background theme
+    /// back in `theme` when it was the one worn.
+    pub fn loaded(mut self) -> Self {
+        if self.dynamic_background {
+            self.theme = crate::theme::Theme::DynamicBackground;
+        }
+        self
+    }
+
+    /// Ready to save: `dynamic_background` says whether that theme is worn.
+    fn for_saving(&mut self) -> &Self {
+        self.dynamic_background = self.theme == crate::theme::Theme::DynamicBackground;
+        self
+    }
 }
 
 impl Default for Settings {
@@ -62,6 +85,7 @@ impl Default for Settings {
             library_order: BTreeMap::new(),
             theme: crate::theme::Theme::default(),
             moving_background: true,
+            dynamic_background: false,
         }
     }
 }
@@ -514,7 +538,8 @@ impl App {
         let script_fonts = crate::theme::install(&cc.egui_ctx);
         let settings: Settings = cc
             .storage
-            .and_then(|s| eframe::get_value(s, "ytfast"))
+            .and_then(|s| eframe::get_value::<Settings>(s, "ytfast"))
+            .map(Settings::loaded)
             .unwrap_or_default();
 
         let ctx = cc.egui_ctx.clone();
@@ -2658,7 +2683,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         // What is changed in the demo is not kept: it is for trying things.
         if !self.demo {
-            eframe::set_value(storage, "ytfast", &self.settings);
+            eframe::set_value(storage, "ytfast", self.settings.for_saving());
         }
     }
 

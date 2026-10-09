@@ -604,6 +604,20 @@ pub fn toggle(ui: &mut egui::Ui, on: bool, name: &str) -> Response {
     response
 }
 
+/// Saves the theme worn as one every YTFast build knows: Dynamic
+/// Background as YouTube Music's look, `Settings::dynamic_background`
+/// saying it is this theme (see there).
+pub fn save_theme<S: serde::Serializer>(
+    theme: &theme::Theme,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    match theme {
+        theme::Theme::DynamicBackground => theme::Theme::YouTubeMusic.serialize(serializer),
+        other => other.serialize(serializer),
+    }
+}
+
 /// `a` turning into `b` (`t` from 0 to 1), premultiplied as they are.
 pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
@@ -688,6 +702,54 @@ mod tests {
             }
         }
         assert_ne!(flow(pos2(0.3, 0.3), 0.0), flow(pos2(0.3, 0.3), 5.0));
+    }
+
+    #[test]
+    fn the_theme_is_saved_so_other_builds_still_read_the_settings() {
+        use crate::app::Settings;
+        use crate::theme::Theme;
+        // A build that knows only YouTube Music's look and Premium, as
+        // builds before this theme are.
+        #[derive(serde::Deserialize)]
+        enum OlderTheme {
+            YouTubeMusic,
+            Premium,
+        }
+        #[derive(serde::Deserialize)]
+        struct OlderSettings {
+            volume: f32,
+            theme: OlderTheme,
+        }
+        let mut worn = Settings {
+            theme: Theme::DynamicBackground,
+            volume: 0.3,
+            ..Settings::default()
+        };
+        worn.dynamic_background = true;
+        let saved = serde_json::to_string(&worn).expect("settings save");
+        let older: OlderSettings = serde_json::from_str(&saved).expect("an older build reads it");
+        assert!(matches!(older.theme, OlderTheme::YouTubeMusic));
+        assert_eq!(older.volume, 0.3);
+        // This build reads the theme back.
+        let again: Settings = serde_json::from_str(&saved).expect("settings load");
+        assert_eq!(again.loaded().theme, Theme::DynamicBackground);
+        // Premium, and settings saved by an older build, are as they were.
+        for theme in [Theme::Premium, Theme::YouTubeMusic] {
+            let plain = Settings {
+                theme,
+                ..Settings::default()
+            };
+            let saved = serde_json::to_string(&plain).expect("settings save");
+            let again: Settings = serde_json::from_str(&saved).expect("settings load");
+            assert_eq!(again.loaded().theme, theme);
+        }
+        let older_file = r#"{"volume":0.5,"theme":"Premium"}"#;
+        let again = serde_json::from_str::<Settings>(older_file)
+            .expect("settings load")
+            .loaded();
+        assert_eq!(again.theme, Theme::Premium);
+        assert!(again.moving_background);
+        let _ = OlderTheme::Premium;
     }
 
     #[test]
