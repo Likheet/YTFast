@@ -25,6 +25,11 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking"] 
 # installed by a helper while YTFast is closed, and rolled back if the new
 # version will not start.
 fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1", features = ["reqwest"] }
+# The Mac's own updates (update_mac.rs): the release's signature and the
+# disk image's checksum, checked as fastframe-update checks them (the same
+# libraries and versions).
+ring = "0.17"
+sha2 = "0.10"
 directories = "6"
 # The window, as in Spotifast: glow keeps the binary and the build small;
 # a 2D music app needs no wgpu. AccessKit gives screen readers the controls.
@@ -45,6 +50,9 @@ fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 fastframe-now-playing = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
 # Scrolling that feels like the platform's.
 fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 # The icon and name in the Windows program file.

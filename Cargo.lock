@@ -5996,8 +5996,11 @@ dependencies = [
  "log",
  "rand 0.9.5",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
  "ytfast-core",
 ]
