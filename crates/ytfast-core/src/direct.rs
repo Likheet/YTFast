@@ -64,6 +64,51 @@ pub struct Direct {
     player: Mutex<Option<Player>>,
     failed: std::sync::Mutex<Option<Failed>>,
     found: std::sync::Mutex<HashMap<String, (Instant, Found)>>,
+    finding: Underway<Result<Found, String>>,
+}
+
+/// Work under way, by song, so a song asked for again while it is being
+/// found (pointed at, then clicked before the answer came) is asked of
+/// YouTube once: the second asker waits for the first's answer.
+struct Underway<T> {
+    cells: std::sync::Mutex<HashMap<String, Arc<tokio::sync::OnceCell<T>>>>,
+}
+
+impl<T: Clone> Underway<T> {
+    fn new() -> Self {
+        Self {
+            cells: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// `work`'s answer for `key`, or the answer of the same work already
+    /// under way; and whether this call's own `work` ran. Once answered,
+    /// the next call starts afresh.
+    async fn once<F, Fut>(&self, key: &str, work: F) -> (T, bool)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = T>,
+    {
+        let lock = || {
+            self.cells
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let cell = Arc::clone(lock().entry(key.to_string()).or_default());
+        let mut ran = false;
+        let answer = cell
+            .get_or_init(|| {
+                ran = true;
+                work()
+            })
+            .await
+            .clone();
+        let mut cells = lock();
+        if cells.get(key).is_some_and(|c| Arc::ptr_eq(c, &cell)) {
+            cells.remove(key);
+        }
+        (answer, ran)
+    }
 }
 
 impl Direct {
@@ -75,6 +120,7 @@ impl Direct {
             player: Mutex::new(None),
             failed: std::sync::Mutex::new(None),
             found: std::sync::Mutex::new(HashMap::new()),
+            finding: Underway::new(),
         }
     }
 
@@ -244,6 +290,22 @@ impl Direct {
         if let Some(found) = self.remembered(video_id) {
             return Ok(found);
         }
+        // A click on a song still being found ahead waits for that answer
+        // rather than asking YouTube again.
+        let (answer, ran) = self
+            .finding
+            .once(video_id, || self.find_now(video_id, wait))
+            .await;
+        match answer {
+            // The find ahead it waited for gave up (it does not wait for a
+            // player being got ready): a song played is found by itself.
+            Err(_) if wait && !ran => self.find_now(video_id, true).await,
+            answer => answer,
+        }
+    }
+
+    /// Asks YouTube where `video_id`'s audio is, and remembers the answer.
+    async fn find_now(&self, video_id: &str, wait: bool) -> Result<Found, String> {
         let started = Instant::now();
         let player = self.player(wait).await?;
         let reply = self
@@ -480,6 +542,32 @@ fn with_query(url: &str, name: &str, value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Asked twice at once, the work runs once and both get its answer;
+    /// once answered, it runs again when asked again.
+    #[tokio::test]
+    async fn work_under_way_is_shared() {
+        let underway = Underway::new();
+        let runs = std::sync::atomic::AtomicU32::new(0);
+        let work = || async {
+            runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            "found"
+        };
+        let (first, second) = tokio::join!(underway.once("a", work), async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            underway.once("a", work).await
+        });
+        assert_eq!(first, ("found", true));
+        assert_eq!(second, ("found", false));
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Another song is its own work.
+        assert_eq!(underway.once("b", work).await, ("found", true));
+        // Answered: asked again, it runs again.
+        assert_eq!(underway.once("a", work).await, ("found", true));
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(underway.cells.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn reads_the_player_address() {

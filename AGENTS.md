@@ -127,10 +127,12 @@ Paolino), as `audio.rs` does.
   are asked for (YouTube Music's Up next) when the queue is about to run
   out. At the end of a playlist or album, with autoplay on, a radio of
   its last song follows. The top search result and a song the pointer
-  rests on (0.35 s on its row, its tile, or the Play button that starts
-  it; not rows scrolling past) are found ahead of time too, and its
+  rests on (0.15 s still on its row, its tile, or the Play button that
+  starts it; not rows scrolling past) are found ahead of time too, and its
   server is asked for one byte (`stream::touch`), so it has the song at
-  hand and the connection stays open: found, not downloaded. Without
+  hand and the connection stays open: found, not downloaded. A click on
+  a song still being found waits for that answer rather than asking
+  YouTube again (`direct::Underway`). Without
   that byte the first piece took 0.05 to 0.9 s after a click (the slow
   ones, songs the server did not have at hand); after it, under 0.03 s
   (measured on the owner's laptop, 10 October 2026).
@@ -676,6 +678,18 @@ for every browser with and without the permission, and the release
 tool's files, packed again to the same bytes), compiled on Windows; the
 Mac's own code and the disk image only in CI's Mac build. Not yet tested:
 any of it on the owner's Mac.
+
+Then, at the owner's word (10 October 2026, not yet released): a song is
+found ahead once the pointer rests on it 0.15 s (was 0.35 s), and a click
+on a song still being found waits for that answer instead of asking
+YouTube again. Measured on the owner's laptop with their sign-in (nothing
+played or reported), from the click until the song was ready: 0.37 to
+0.46 s clicked straight away, 0.24 to 0.29 s with the pointer stopped 0.1 s
+before the click. YouTube's answer about a song takes 0.21 to 0.29 s of
+its own and the network trip 0.005 s, so a song clicked before anything
+was found ahead cannot start much sooner. Tested: the unit tests (among
+them work under way shared between two askers, and a song found after
+0.2 s of rest, which fails at 0.35 s).
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
