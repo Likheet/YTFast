@@ -124,6 +124,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
                     }
                 }
                 Dialog::Shortcuts => close = shortcuts(ui, window),
+                Dialog::Update => close = update_window(app, ui),
                 // The whole description (its look is not measured yet).
                 Dialog::Description { title, text } => {
                     ui.set_width(dialog_width(window));
@@ -245,6 +246,146 @@ const SHADOW: egui::Shadow = egui::Shadow {
 
 /// A form dialog's width (`--ytmusic-dialog-width`): 560, 640 from a window
 /// 1364 wide.
+/// The update window, as Spotifast's: "Update YTFast" and a close button,
+/// the versions ("0.6.0 → 0.6.1"), then what the update is doing: its
+/// download with a bar and the megabytes, "Ready to install" with a word
+/// that music stops on the restart and Restart to update, or why it could
+/// not be downloaded and Retry. 420 wide. True when it should close.
+fn update_window(app: &App, ui: &mut egui::Ui) -> bool {
+    use crate::update::State;
+    let mut close = false;
+    let state = app
+        .updates
+        .as_ref()
+        .map(crate::update::Updates::state)
+        .unwrap_or_default();
+    let found = app.update_found.clone().unwrap_or_default();
+    ui.set_width(420.0_f32.min((ui.ctx().content_rect().width() - 64.0).max(240.0)));
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(24))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                theme::label(ui, "Update YTFast", theme::bold(20.0), PALETTE.text);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close |= theme::round_button(
+                        ui,
+                        Icon::Close,
+                        32.0,
+                        20.0,
+                        theme::Round::Plain,
+                        PALETTE.secondary,
+                        "Close update",
+                    )
+                    .clicked();
+                });
+            });
+            ui.add_space(4.0);
+            theme::label(
+                ui,
+                &format!("{} → {found}", env!("CARGO_PKG_VERSION")),
+                theme::regular(14.0),
+                PALETTE.secondary,
+            );
+            ui.add_space(20.0);
+            let mut action = None;
+            match state {
+                State::Downloading {
+                    received, total, ..
+                } => {
+                    let checking = total > 0 && received >= total;
+                    let words = if checking {
+                        "Checking download..."
+                    } else {
+                        "Downloading update..."
+                    };
+                    theme::label(ui, words, theme::medium(14.0), PALETTE.text);
+                    ui.add_space(8.0);
+                    let (bar, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 6.0),
+                        egui::Sense::hover(),
+                    );
+                    let corners = egui::CornerRadius::same(3);
+                    ui.painter().rect_filled(bar, corners, PALETTE.surface);
+                    let part = if total > 0 {
+                        (received as f32 / total as f32).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let done = egui::Rect::from_min_size(
+                        bar.min,
+                        egui::vec2(bar.width() * part, bar.height()),
+                    );
+                    ui.painter().rect_filled(done, corners, PALETTE.switch);
+                    ui.add_space(6.0);
+                    if total > 0 {
+                        let megabytes = |bytes: u64| bytes as f64 / 1_000_000.0;
+                        theme::label(
+                            ui,
+                            &format!("{:.1} of {:.1} MB", megabytes(received), megabytes(total)),
+                            theme::regular(12.0),
+                            PALETTE.secondary,
+                        );
+                    }
+                }
+                State::Ready { .. } => {
+                    theme::label(ui, "Ready to install", theme::medium(14.0), PALETTE.text);
+                    ui.add_space(6.0);
+                    wrapped(
+                        ui,
+                        "Music playing on this computer will stop when YTFast restarts.",
+                    );
+                    action = Some(("Restart to update", Action::RestartToUpdate));
+                }
+                State::Restarting => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(16.0).color(PALETTE.switch));
+                        ui.add_space(8.0);
+                        theme::label(
+                            ui,
+                            "Preparing to restart...",
+                            theme::regular(14.0),
+                            PALETTE.text,
+                        );
+                    });
+                }
+                State::Available {
+                    note: Some(note), ..
+                } => wrapped(ui, &note),
+                State::Available { note: None, .. } => {
+                    action = Some(("Download update", Action::InstallUpdate));
+                }
+                State::Failed(message) => {
+                    wrapped(ui, &message);
+                    action = Some(("Retry download", Action::InstallUpdate));
+                }
+                State::Idle | State::Checking | State::UpToDate => {
+                    wrapped(ui, "YTFast is up to date.");
+                }
+            }
+            if let Some((words, action)) = action {
+                ui.add_space(20.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if theme::pill_button(ui, words, true).clicked() {
+                        app.act(action);
+                    }
+                });
+            }
+        });
+    close
+}
+
+/// Words in the quieter grey, 14, wrapped to the dialog.
+fn wrapped(ui: &mut egui::Ui, words: &str) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(words)
+                .font(theme::regular(14.0))
+                .color(PALETTE.secondary),
+        )
+        .wrap(),
+    );
+}
+
 fn dialog_width(window: f32) -> f32 {
     if window >= 1364.0 { 640.0 } else { 560.0 }
 }
