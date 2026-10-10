@@ -168,6 +168,14 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                     two_columns(app, ui, &route, page, header);
                 }
                 _ => {
+                    // A page that loads more as it is scrolled stops at its
+                    // end, as a browser's does (`hold_at_end`).
+                    let hold = route
+                        .loads_more()
+                        .then(|| egui::Id::new(("page-end", &route)));
+                    if let Some(id) = hold {
+                        hold_at_end(ui, id);
+                    }
                     let shown = from_top(app, egui::ScrollArea::vertical())
                         .id_salt(("page", &route))
                         .auto_shrink([false, false])
@@ -175,12 +183,79 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                             scroll_by_keys(ui);
                             one_column(app, ui, &route, page);
                         });
+                    if let Some(id) = hold {
+                        let end = (shown.content_size.y - shown.inner_rect.height()).max(0.0);
+                        note_end(ui, id, end > 0.0 && shown.state.offset.y >= end - 1.0);
+                    }
                     scrolled(app, ui, shown.state.offset.y);
                 }
             }
             app.fresh_page.set(false);
         }
     }
+}
+
+/// How long scrolling must pause, in seconds, before a page held at its
+/// end scrolls on (`hold_at_end`).
+const END_PAUSE: f64 = 0.15;
+
+/// Where a page that loads more stands at its end ([`hold_at_end`]).
+#[derive(Clone, Copy, Default)]
+struct EndHold {
+    /// The page was at its end last frame.
+    at_end: bool,
+    /// A scroll reached the end, and what is left of it goes nowhere.
+    held: bool,
+    /// Input time of the last scrolling down (the wheel's or touchpad's
+    /// own movement, not egui's smoothing after it).
+    last_down: f64,
+}
+
+/// A scroll that reaches the end of a page that loads more (Home, a
+/// search of one kind) stops there, as a browser's does: what is left of
+/// it (a touchpad's glide, a wheel still turning) does not carry on into
+/// what loads meanwhile, which shows below where the page stopped. A
+/// scroll that starts after a pause ([`END_PAUSE`] since the last one), or
+/// one up, goes where it can. Call before the page's scroll area reads the
+/// input.
+fn hold_at_end(ui: &egui::Ui, id: egui::Id) {
+    let (now, wheel_down, gliding_down, up) = ui.input(|i| {
+        let wheel_down = i
+            .events
+            .iter()
+            .any(|e| matches!(e, egui::Event::MouseWheel { delta, .. } if delta.y < 0.0));
+        (
+            i.time,
+            wheel_down,
+            i.smooth_scroll_delta.y < 0.0,
+            i.smooth_scroll_delta.y > 0.0,
+        )
+    });
+    let mut hold: EndHold = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    if up {
+        hold.held = false;
+    }
+    if wheel_down {
+        // Judged as the scroll goes on: the window draws nothing during a
+        // pause.
+        if now - hold.last_down > END_PAUSE {
+            hold.held = false;
+        }
+        hold.held |= hold.at_end;
+        hold.last_down = now;
+    }
+    if hold.held && gliding_down {
+        ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
+    }
+    ui.data_mut(|d| d.insert_temp(id, hold));
+}
+
+/// Notes, after the page's scroll area, whether it is at its end.
+fn note_end(ui: &egui::Ui, id: egui::Id, at_end: bool) {
+    ui.data_mut(|d| {
+        let hold: &mut EndHold = d.get_temp_mut_or_default(id);
+        hold.at_end = at_end;
+    });
 }
 
 /// Notes whether the page is scrolled from its top, for the top bar; when
@@ -389,8 +464,9 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
             }
             sections(app, ui, route, page, &look);
             // A search of one kind loads its next results, and a page of
-            // shelves (Home) its next shelves, once its end comes into view,
-            // as YouTube Music's does; a spinner while they come.
+            // shelves (Home) its next shelves, as its end comes near: a
+            // screen and a half before it shows, so a steady scroll seldom
+            // reaches it, as on YouTube Music. A spinner while they come.
             if route.loads_more() {
                 if app.more_results.get(route) == Some(&true) {
                     ui.add_space(24.0);
@@ -399,7 +475,8 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                     });
                 }
                 let (end, _) = ui.allocate_exact_size(vec2(1.0, 1.0), Sense::hover());
-                if ui.is_rect_visible(end) {
+                let seen = ui.clip_rect();
+                if end.top() < seen.bottom() + seen.height() * 1.5 {
                     app.act(Action::MoreResults(route.clone()));
                 }
             }
