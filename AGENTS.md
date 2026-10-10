@@ -196,6 +196,11 @@ Paolino), as `audio.rs` does.
   (`theme::ScriptFonts`).
 - Long lists (a playlist, Liked Music) show their first songs at once and
   load the rest in the background (`Session::more_tracks`).
+- Home (and Explore, a mood's Home: `Route::shelves`) shows the shelves
+  YouTube sends first, and asks for its next ones as its end comes into
+  view, one batch at a time, as YouTube Music's own does
+  (`Session::more_shelves`; a spinner while they come). The owner's Home
+  sent three shelves first, then four more batches of three.
 - Every page is a header and sections of songs or cards (`read::Page`), so
   one view draws Home, Explore, search, albums, artists and playlists.
 - `--demo` replaces the account with made-up music and no network or
@@ -277,6 +282,9 @@ Paolino), as `audio.rs` does.
   - A playlist queued as a whole takes up to 5 more batches of its songs
     (`MAX_QUEUE_BATCHES` in `innertube.rs`), and the Library's tabs up to
     9 more batches of their cards (`MAX_LIBRARY_BATCHES`).
+  - A page of shelves (Home) and a search of one kind ask for their next
+    part only when their end comes into view, one request at a time
+    (`Request::MoreResults`), never by themselves.
   - When the fast way cannot get a player ready, it rests for 15 minutes
     (`REST_AFTER_FAILURE` in `direct.rs`) and yt-dlp finds songs
     meanwhile, rather than trying again for every song.
@@ -729,7 +737,20 @@ Tested: the unit tests (among them the laptop's layout unchanged to the
 point, and the spread on a 2560 wide screen), and the demo with
 `YTFAST_DEMO_ZOOM` laid out as 3440 by 1440, 2560 by 1440 and 1920 by
 1080 screens (Up next, Lyrics, Related) and at the laptop's own size. Not
-yet tested: on the owner's monitor.
+yet tested: on the owner's monitor. The owner then updated their Mac
+from 0.6.4 to 0.6.5 by the Update button: the Mac's own updates work.
+
+Then, at the owner's word (10 October 2026, not yet released): Home loads
+its next shelves as its end comes into view. It showed only the three
+shelves YouTube sends first: YouTube Music asks for more as the page is
+scrolled, and YTFast never did. Read on the owner's Home with their
+sign-in (only counts printed, nothing changed): three shelves first, then
+four more batches of three, then no more. Explore and a mood's Home do
+the same. Tested: the unit tests (the token in YouTube's older and newer
+replies and in the reply with more shelves; Home asking once while its
+end is in view, adding the shelves, dropping an older loading's, stopping
+at the last), and the demo (one more made-up batch, after jumping to the
+end).
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

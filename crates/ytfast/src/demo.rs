@@ -1011,6 +1011,47 @@ fn monthly_audience(name: &str) -> String {
 /// filtered search shows it.
 /// The next results of a search of one kind: more made-up songs (or
 /// cards), once.
+/// Home's next shelves, as a signed-in Home has several batches of them:
+/// one batch here.
+pub fn more_shelves(route: &Route) -> Vec<Section> {
+    if *route != Route::Home {
+        return Vec::new();
+    }
+    vec![
+        section(
+            "Albums for you",
+            vec![
+                album_card("Harvest"),
+                album_card("Postcards"),
+                album_card("Insert Coin"),
+                album_card("Signals"),
+                album_card("Night Ferries"),
+            ],
+        ),
+        shaped("Forgotten favourites", songs(4, 8), Shape::Carousel),
+        section(
+            "From the community",
+            vec![
+                card(
+                    "Late night drive",
+                    "Playlist • Demo listener",
+                    PageKind::Playlist,
+                ),
+                card(
+                    "Sunday slow",
+                    "Playlist • Demo listener",
+                    PageKind::Playlist,
+                ),
+                card(
+                    "Coastal summer",
+                    "Playlist • Demo listener",
+                    PageKind::Playlist,
+                ),
+            ],
+        ),
+    ]
+}
+
 pub fn more_results(query: &str, params: &str) -> Vec<Item> {
     let kind = params.strip_prefix("demo:").unwrap_or(params);
     if kind == "Songs" {
