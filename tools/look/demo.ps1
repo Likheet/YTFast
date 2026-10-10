@@ -27,6 +27,9 @@
 # Pictures are of the window's inside at the screen's own pixels (1920x1230
 # for 1280x820 points at 150% scaling). They go to target\look\app, which
 # git ignores.
+#
+# A screen larger than this one: set $env:YTFAST_DEMO_ZOOM before start
+# (0.4962 with size 1707x715 lays it out as a 3440x1440 screen, smaller).
 param(
     [Parameter(Mandatory, Position = 0)]
     [ValidateSet('start', 'press', 'search', 'type', 'key', 'rclick', 'shot', 'list', 'size', 'tour', 'cost', 'stop')]
