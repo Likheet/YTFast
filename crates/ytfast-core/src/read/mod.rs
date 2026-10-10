@@ -21,7 +21,8 @@ pub use edit::{created_playlist_id, edit_status, feedback_processed};
 pub use formats::{StreamFormat, best_stream, stream_formats};
 pub use page::{
     Card, CardButton, CardLook, Header, HeaderButtons, Item, Page, PageKind, Section, Shape,
-    Target, Thumb, TopResult, more_items, page, queue_continuation, queue_title, up_next,
+    Target, Thumb, TopResult, more_items, page, queue_continuation, queue_title,
+    shelf_continuation, up_next,
 };
 pub use search::{SuggestedWords, Suggestions, search_suggestions};
 pub use song::{Rating, SongDetails, lyrics, song_details};

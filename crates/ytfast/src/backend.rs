@@ -15,7 +15,9 @@ use ytfast_core::innertube::{ApiError, Renewer, Renewing, Session};
 use ytfast_core::library::{LibraryTab, Privacy};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
-use ytfast_core::read::{Continuation, Item, Page, PlayerInfo, Rating, Shape, SongDetails, Track};
+use ytfast_core::read::{
+    Continuation, Item, Page, PlayerInfo, Rating, Section, Shape, SongDetails, Track,
+};
 use ytfast_core::solver::{self, Solver};
 use ytfast_core::stream::SongData;
 use ytfast_core::ytdlp::{Browser, YtDlp};
@@ -56,6 +58,27 @@ impl Route {
     /// Pages that are not loaded from YouTube.
     pub fn is_local(&self) -> bool {
         matches!(self, Self::Settings)
+    }
+
+    /// A page of shelves that YouTube Music loads more of as its end
+    /// comes into view (Home, Explore, a mood's Home): its browse ID and
+    /// `params`.
+    pub fn shelves(&self) -> Option<(&str, Option<&str>)> {
+        match self {
+            Self::Home => Some(("FEmusic_home", None)),
+            Self::Explore => Some(("FEmusic_explore", None)),
+            Self::Browse { id, params } if id.starts_with("FEmusic") => {
+                Some((id.as_str(), params.as_deref()))
+            }
+            _ => None,
+        }
+    }
+
+    /// A page whose next part is loaded as its end comes into view
+    /// ([`Request::MoreResults`]): a page of shelves, or a search of one
+    /// kind.
+    pub fn loads_more(&self) -> bool {
+        matches!(self, Self::SearchOnly(..)) || self.shelves().is_some()
     }
 
     /// The playlist a page lists (its ID without `VL`; Liked Music's is
@@ -145,8 +168,10 @@ pub enum Request {
     },
     /// Suggestions for what is being typed in the search box.
     Suggest(String),
-    /// The next results of a search of one kind (`Route::SearchOnly`), its
-    /// list's end having come into view, for the `load` that showed it.
+    /// The next part of a page whose end has come into view
+    /// ([`Route::loads_more`]), for the `load` that showed it: a search of
+    /// one kind's next results ([`Event::MoreResults`]), or a page of
+    /// shelves' next shelves ([`Event::MoreSections`]).
     MoreResults {
         route: Route,
         load: u64,
@@ -334,6 +359,14 @@ pub enum Event {
         route: Route,
         load: u64,
         items: Vec<Item>,
+        done: bool,
+    },
+    /// The next shelves of a page of shelves (Home's, [`Request::MoreResults`]);
+    /// `done` when there are no more after them.
+    MoreSections {
+        route: Route,
+        load: u64,
+        sections: Vec<Section>,
         done: bool,
     },
     Image(String, Option<Picture>),
@@ -800,6 +833,12 @@ fn failure_for(request: &Request) -> Option<Event> {
         Request::Image(url) => Event::Image(url.clone(), None),
         Request::Edit(change) => Event::EditFailed(change.clone(), failed()),
         // No more, rather than asking again while the end is in view.
+        Request::MoreResults { route, load } if route.shelves().is_some() => Event::MoreSections {
+            route: route.clone(),
+            load: *load,
+            sections: Vec::new(),
+            done: true,
+        },
         Request::MoreResults { route, load } => Event::MoreResults {
             route: route.clone(),
             load: *load,
@@ -810,10 +849,11 @@ fn failure_for(request: &Request) -> Option<Event> {
     })
 }
 
-/// How many searches' next results are remembered.
+/// How many pages' next parts are remembered (searches of one kind, pages
+/// of shelves).
 const MORE_RESULTS_KEPT: usize = 8;
 
-/// Remembers where `route`'s next results come from, for its `load`.
+/// Remembers where `route`'s next part comes from, for its `load`.
 fn keep_more_results(shared: &Shared, route: &Route, load: u64, from: Continuation) {
     if let Ok(mut kept) = shared.more_results.lock() {
         kept.retain(|(r, ..)| r != route);
@@ -824,8 +864,8 @@ fn keep_more_results(shared: &Shared, route: &Route, load: u64, from: Continuati
     }
 }
 
-/// The next results of a search of one kind, as its list's end comes into
-/// view: one request each time, as YouTube Music asks.
+/// The next part of a page, as its end comes into view: one request each
+/// time, as YouTube Music asks.
 async fn more_results(shared: &Shared, route: Route, load: u64) {
     let from = shared.more_results.lock().ok().and_then(|mut kept| {
         let at = kept
@@ -833,6 +873,9 @@ async fn more_results(shared: &Shared, route: Route, load: u64) {
             .position(|(r, l, _)| *r == route && *l == load)?;
         kept.remove(at).map(|(.., from)| from)
     });
+    if route.shelves().is_some() {
+        return more_shelves(shared, route, load, from).await;
+    }
     let answer = |items: Vec<Item>, done: bool| Event::MoreResults {
         route: route.clone(),
         load,
@@ -866,6 +909,59 @@ async fn more_results(shared: &Shared, route: Route, load: u64) {
         }
         Err(e) => {
             log::warn!("more search results did not load");
+            api_error(shared, e);
+            shared.send(answer(Vec::new(), true));
+        }
+    }
+}
+
+/// A page of shelves (`Route::shelves`); where its next shelves come from
+/// is kept for when its end comes into view.
+async fn shelves_page(
+    shared: &Shared,
+    session: &Session,
+    route: &Route,
+    load: u64,
+) -> Result<(Page, Option<Continuation>), ApiError> {
+    let (id, params) = route.shelves().unwrap_or_default();
+    let (page, more) = session.shelves_page(id, params).await?;
+    if let Some(more) = more {
+        keep_more_results(shared, route, load, more);
+    }
+    Ok((page, None))
+}
+
+/// The next shelves of a page of shelves (Home's), from `from`.
+async fn more_shelves(shared: &Shared, route: Route, load: u64, from: Option<Continuation>) {
+    let answer = |sections: Vec<Section>, done: bool| Event::MoreSections {
+        route: route.clone(),
+        load,
+        sections,
+        done,
+    };
+    let (Some(from), Some((id, params))) = (from, route.shelves()) else {
+        shared.send(answer(Vec::new(), true));
+        return;
+    };
+    if shared.demo {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        shared.send(answer(demo::more_shelves(&route), true));
+        return;
+    }
+    let Some(preparer) = shared.preparer().await else {
+        shared.send(answer(Vec::new(), true));
+        return;
+    };
+    match preparer.session.more_shelves(id, params, &from).await {
+        Ok((sections, next)) => {
+            let done = next.is_none() || sections.is_empty();
+            if let Some(next) = next.filter(|_| !done) {
+                keep_more_results(shared, &route, load, next);
+            }
+            shared.send(answer(sections, done));
+        }
+        Err(e) => {
+            log::warn!("a page's next shelves did not load");
             api_error(shared, e);
             shared.send(answer(Vec::new(), true));
         }
@@ -1155,8 +1251,9 @@ async fn page(shared: &Shared, route: Route, load: u64, order: Option<String>) {
     if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let page = demo::page(&route, order.as_deref());
-        // A search of one kind has one more batch of made-up results.
-        if matches!(route, Route::SearchOnly(..)) {
+        // A search of one kind, and Home, have one more batch of made-up
+        // results.
+        if matches!(route, Route::SearchOnly(..) | Route::Home) {
             keep_more_results(shared, &route, load, Continuation::Body("demo".into()));
         }
         shared.send(Event::Page(route.clone(), load, Ok(page)));
@@ -1168,11 +1265,12 @@ async fn page(shared: &Shared, route: Route, load: u64, order: Option<String>) {
     };
     let session = &preparer.session;
     let result = match &route {
-        Route::Home => session.home().await.map(|p| (p, None)),
-        Route::Explore => session
-            .page("FEmusic_explore", None)
-            .await
-            .map(|p| (p, None)),
+        // Pages of shelves: their next shelves wait until the page's end
+        // comes into view.
+        Route::Home | Route::Explore => shelves_page(shared, session, &route, load).await,
+        Route::Browse { id, .. } if id.starts_with("FEmusic") => {
+            shelves_page(shared, session, &route, load).await
+        }
         Route::Library => session
             .library_playlists(order.as_deref())
             .await

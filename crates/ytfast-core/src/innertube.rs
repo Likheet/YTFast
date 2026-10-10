@@ -15,7 +15,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 
 use crate::cookies::CookieJar;
-use crate::read::{self, Account, AccountFlags, Continuation, Page, PlayerInfo, Track};
+use crate::read::{self, Account, AccountFlags, Continuation, Page, PlayerInfo, Section, Track};
 use crate::ytcfg::WebConfig;
 use crate::{auth, redact};
 
@@ -466,6 +466,45 @@ impl Session {
         self.page("FEmusic_home", None).await
     }
 
+    /// A page of shelves (Home, Explore, a mood's Home), and where its
+    /// next shelves come from: YouTube Music loads them as the page's end
+    /// comes into view ([`Session::more_shelves`]).
+    pub async fn shelves_page(
+        &self,
+        browse_id: &str,
+        params: Option<&str>,
+    ) -> Result<(Page, Option<Continuation>), ApiError> {
+        let reply = self.call("browse", shelves_body(browse_id, params)).await?;
+        Ok((read::page(&reply), read::shelf_continuation(&reply)))
+    }
+
+    /// The next shelves of a page of shelves, and where the ones after
+    /// them come from (`None` at the end).
+    pub async fn more_shelves(
+        &self,
+        browse_id: &str,
+        params: Option<&str>,
+        from: &Continuation,
+    ) -> Result<(Vec<Section>, Option<Continuation>), ApiError> {
+        let reply = match from {
+            Continuation::Body(token) => {
+                self.call("browse", json!({ "continuation": token }))
+                    .await?
+            }
+            // As ytmusicapi asks for Home's: the page again, the token in
+            // the address.
+            Continuation::Address(token) => {
+                let query = [("ctoken", token.as_str()), ("continuation", token)];
+                self.call_with("browse", &query, shelves_body(browse_id, params))
+                    .await?
+            }
+        };
+        Ok((
+            read::page(&reply).sections,
+            read::shelf_continuation(&reply),
+        ))
+    }
+
     /// The playlists saved in the library, in the order `params` asks for
     /// (one of its sort button's, [`read::SortOrder`]), else YouTube's.
     pub async fn library_playlists(&self, params: Option<&str>) -> Result<Page, ApiError> {
@@ -693,6 +732,16 @@ pub(crate) fn next_body(video_id: &str, playlist_id: Option<&str>) -> Value {
             }
         }
     })
+}
+
+/// A page's `browse` body: its ID, and its `params` when it has some (a
+/// mood's Home).
+fn shelves_body(browse_id: &str, params: Option<&str>) -> Value {
+    let mut body = json!({ "browseId": browse_id });
+    if let Some(params) = params {
+        body["params"] = json!(params);
+    }
+    body
 }
 
 #[cfg(test)]

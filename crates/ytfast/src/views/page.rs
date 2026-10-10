@@ -388,9 +388,16 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                 );
             }
             sections(app, ui, route, page, &look);
-            // A search of one kind loads its next results once its end
-            // comes into view, as YouTube Music's does.
-            if matches!(route, Route::SearchOnly(..)) {
+            // A search of one kind loads its next results, and a page of
+            // shelves (Home) its next shelves, once its end comes into view,
+            // as YouTube Music's does; a spinner while they come.
+            if route.loads_more() {
+                if app.more_results.get(route) == Some(&true) {
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.add(egui::Spinner::new().size(24.0).color(PALETTE.secondary));
+                    });
+                }
                 let (end, _) = ui.allocate_exact_size(vec2(1.0, 1.0), Sense::hover());
                 if ui.is_rect_visible(end) {
                     app.act(Action::MoreResults(route.clone()));
