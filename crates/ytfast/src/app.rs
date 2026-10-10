@@ -239,6 +239,9 @@ pub enum Dialog {
     },
     /// The keyboard's shortcuts ("?").
     Shortcuts,
+    /// The update window: the new version, its download, and Restart to
+    /// update (as Spotifast's).
+    Update,
 }
 
 /// The player page's tabs.
@@ -336,8 +339,8 @@ pub enum Action {
     /// Install the downloaded version: the window closes and the new
     /// version opens.
     RestartToUpdate,
-    /// Hide the "ready" banner for this run.
-    DismissUpdate,
+    /// Open the update window (the top bar's update badge).
+    ShowUpdate,
     OpenDialog(Dialog),
     RenamePlaylist {
         playlist_id: String,
@@ -438,8 +441,13 @@ pub struct App {
     pub demo: bool,
     /// The updater (none in the demo).
     pub updates: Option<crate::update::Updates>,
-    /// The "ready to install" banner was put away for this run.
-    pub update_dismissed: bool,
+    /// The newer version known this run (the top bar's update badge shows
+    /// while there is one), and what the updater said last.
+    pub update_found: Option<String>,
+    update_seen: crate::update::State,
+    /// "Check for updates" was pressed: its answer is said, even "up to
+    /// date".
+    update_manual: bool,
     /// A freshly installed version's receipt, given back after the first
     /// frame (else the helper puts the old version back).
     receipt: Option<fastframe_update::Receipt>,
@@ -589,10 +597,28 @@ impl App {
         let mut info = now_playing::App::new("ytfast", "YTFast");
         info.can_raise = true;
         let controls = Some(now_playing::NowPlaying::start(info, wake));
-        let updates = (!demo).then(|| {
+        let updates = if demo {
+            // The demo looks for nothing; `YTFAST_DEMO_UPDATE` (downloading
+            // or ready) shows the update badge and window as they would be.
+            std::env::var("YTFAST_DEMO_UPDATE").ok().map(|kind| {
+                let version = "0.6.1".to_string();
+                crate::update::Updates::sample(if kind == "downloading" {
+                    crate::update::State::Downloading {
+                        version,
+                        received: 9_400_000,
+                        total: 20_100_000,
+                    }
+                } else {
+                    crate::update::State::Ready { version }
+                })
+            })
+        } else {
             let ctx = cc.egui_ctx.clone();
-            crate::update::Updates::start(settings.auto_update, move || ctx.request_repaint())
-        });
+            Some(crate::update::Updates::start(
+                settings.auto_update,
+                move || ctx.request_repaint(),
+            ))
+        };
         let mut app = Self::with(backend, audio, controls, script_fonts, settings, demo);
         app.updates = updates;
         app.receipt = startup.receipt;
@@ -649,7 +675,9 @@ impl App {
             controls,
             demo,
             updates: None,
-            update_dismissed: false,
+            update_found: None,
+            update_seen: crate::update::State::Idle,
+            update_manual: false,
             receipt: None,
             restarting: false,
             settings,
@@ -978,6 +1006,43 @@ impl App {
         let id = texture.id();
         *wash = Some((url, texture));
         Some(id)
+    }
+
+    /// Says what the updater found, as Spotifast does: "YTFast 0.6.1 is
+    /// available" once per version (the badge then stays in the top bar),
+    /// and after "Check for updates", that YTFast is up to date or could
+    /// not look.
+    fn watch_updates(&mut self) {
+        use crate::update::State;
+        let Some(state) = self.updates.as_ref().map(crate::update::Updates::state) else {
+            return;
+        };
+        if state == self.update_seen {
+            return;
+        }
+        self.update_seen = state.clone();
+        match state {
+            State::Available { version, .. }
+            | State::Downloading { version, .. }
+            | State::Ready { version } => {
+                if self.update_found.as_deref() != Some(version.as_str()) {
+                    self.notify(format!("YTFast {version} is available"));
+                    self.update_found = Some(version);
+                }
+            }
+            State::UpToDate => {
+                self.update_found = None;
+                if std::mem::take(&mut self.update_manual) {
+                    self.notify("YTFast is up to date");
+                }
+            }
+            State::Failed(message) => {
+                if std::mem::take(&mut self.update_manual) {
+                    self.notify(message);
+                }
+            }
+            State::Idle | State::Checking | State::Restarting => {}
+        }
     }
 
     fn notify(&mut self, text: impl Into<String>) {
@@ -2183,6 +2248,7 @@ impl App {
             }
             Action::CheckForUpdates => {
                 if let Some(updates) = &self.updates {
+                    self.update_manual = true;
                     updates.check();
                 }
             }
@@ -2196,7 +2262,10 @@ impl App {
                     updates.restart();
                 }
             }
-            Action::DismissUpdate => self.update_dismissed = true,
+            Action::ShowUpdate => {
+                *self.dialog.get_mut() = Some(Dialog::Update);
+                self.dialog_fresh.set(true);
+            }
             Action::SetTheme(theme) => self.settings.theme = theme,
             Action::OpenDialog(dialog) => {
                 *self.dialog.get_mut() = Some(dialog);
@@ -2721,6 +2790,7 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.script_fonts.add_when_read();
         self.handle_events(ctx);
+        self.watch_updates();
         self.media_controls();
         // A media key pressed while the window is hidden acts at once.
         self.apply_actions();

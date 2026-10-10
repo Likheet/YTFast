@@ -228,12 +228,12 @@ fn updates(app: &App, ui: &mut egui::Ui) {
     let about = if cfg!(target_os = "macos") {
         "YTFast looks for a new version once a day and says when one is out. On a Mac it is installed by hand for now."
     } else {
-        "YTFast looks for a new version once a day, downloads it in the background, and installs it when you restart YTFast."
+        "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it."
     };
     switch(
         app,
         ui,
-        "Install updates automatically",
+        "Download updates automatically",
         about,
         app.settings.auto_update,
         Setting::AutoUpdate,
@@ -258,7 +258,12 @@ fn updates(app: &App, ui: &mut egui::Ui) {
             format!("YTFast {version} is out."),
             Some(("Install it", true, Action::InstallUpdate)),
         ),
-        State::Downloading { version, percent } => {
+        State::Downloading {
+            version,
+            received,
+            total,
+        } => {
+            let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
             (format!("Downloading YTFast {version}... {percent}%"), None)
         }
         State::Ready { version } => (

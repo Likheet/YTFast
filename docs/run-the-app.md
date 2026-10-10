@@ -46,9 +46,9 @@ To keep it handy, move `YTFast.exe` to a folder of your choice (for example
 Documents), then right-click it and choose **Pin to Start** or **Pin to
 taskbar**.
 
-YTFast updates itself: once a day it looks for a new version, downloads it
-in the background, and a note at the bottom right says when it is ready;
-click **Restart** (or restart YTFast later) to install it. It keeps a small
+YTFast updates itself: once a day it looks for a new version and
+downloads it in the background. An **Update** button then shows at the
+top; click it, then **Restart to update** to install it. It keeps a small
 file, `ytfast-portable.txt`, next to `YTFast.exe`: leave it there, it is
 what lets YTFast update itself. **Settings**, **Updates** turns automatic
 installs off.
