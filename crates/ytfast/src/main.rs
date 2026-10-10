@@ -16,6 +16,7 @@ mod images;
 mod lyrics;
 mod queue;
 mod theme;
+mod update;
 mod views;
 
 /// Problems go to `ytfast.log` in YtFast's cache folder (made new each
@@ -64,10 +65,34 @@ fn start_log(verbose: bool, demo: bool) {
 }
 
 fn main() -> eframe::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // First of all: a run that is the updater's helper installs the new
+    // version and ends here; the update flags come off the command line.
+    let launch = fastframe_update::intercept(&update::CONFIG);
+    let args: Vec<String> = launch
+        .arguments
+        .iter()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    // The updater asks a downloaded copy its version before installing it
+    // (before the log, which this run must not make new).
+    if args.iter().any(|a| a == "--version") {
+        println!("ytfast {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--update-dry-run") {
+        std::process::exit(update::dry_run());
+    }
     let demo = args.iter().any(|a| a == "--demo");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     start_log(verbose, demo);
+    if let Some(error) = &launch.error {
+        log::warn!("updates: {error}");
+    }
+    let startup = app::Startup {
+        update_error: launch.error,
+        receipt: launch.receipt,
+    };
 
     // On the Mac the app's own icon (YTFast.app's, with the margins every
     // Mac icon has) stays in the Dock: eframe would put this one, which
@@ -103,7 +128,7 @@ fn main() -> eframe::Result<()> {
     let result = eframe::run_native(
         "YtFast",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, demo)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, demo, startup)))),
     );
     // On Windows there is no console to see this on.
     if let Err(e) = &result {

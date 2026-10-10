@@ -19,7 +19,12 @@ rand = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
-reqwest = { version = "0.12", default-features = false }
+# Blocking, for the updater's thread (fastframe-update's transport).
+reqwest = { version = "0.12", default-features = false, features = ["blocking"] }
+# Updates from YTFast's GitHub releases, as Spotifast's: signed, checked,
+# installed by a helper while YTFast is closed, and rolled back if the new
+# version will not start.
+fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1", features = ["reqwest"] }
 directories = "6"
 # The window, as in Spotifast: glow keeps the binary and the build small;
 # a 2D music app needs no wgpu. AccessKit gives screen readers the controls.

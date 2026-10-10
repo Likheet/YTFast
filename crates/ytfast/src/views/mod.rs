@@ -113,8 +113,57 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             }
         });
     notice(app, ui);
+    update_banner(app, ui);
     selection_bar::show(app, ui);
     dialogs::show(app, ui);
+}
+
+/// "YTFast 0.6.1 is ready", with Restart and Later, at the bottom right
+/// just above the player bar, once a new version has been downloaded and
+/// checked, until it is put away for this run. Still: no repaints.
+fn update_banner(app: &App, ui: &egui::Ui) {
+    let Some(updates) = &app.updates else {
+        return;
+    };
+    let crate::update::State::Ready { version } = updates.state() else {
+        return;
+    };
+    if app.update_dismissed {
+        return;
+    }
+    let lift = if app.playback.entry.is_some() {
+        theme::player_bar_height() + 12.0
+    } else {
+        12.0
+    };
+    egui::Area::new(egui::Id::new("update-banner"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -lift))
+        .show(ui.ctx(), |ui| {
+            Frame::new()
+                .fill(PALETTE.menu)
+                .stroke(egui::Stroke::new(1.0, theme::menu_edge()))
+                .corner_radius(egui::CornerRadius::same(12))
+                .inner_margin(Margin::symmetric(16, 12))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        theme::label(
+                            ui,
+                            &format!("YTFast {version} is ready"),
+                            theme::medium(14.0),
+                            PALETTE.text,
+                        );
+                        ui.add_space(8.0);
+                        if theme::pill_button(ui, "Restart", true).clicked() {
+                            app.act(crate::app::Action::RestartToUpdate);
+                        }
+                        if theme::pill_button(ui, "Later", false).clicked() {
+                            app.act(crate::app::Action::DismissUpdate);
+                        }
+                    });
+                });
+        });
 }
 
 /// A short message ("Added to the queue") at the bottom left, just above

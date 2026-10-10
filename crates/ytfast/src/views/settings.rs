@@ -77,6 +77,12 @@ fn contents(app: &App, ui: &mut egui::Ui) {
         theme_choice(app, ui, choice);
     }
 
+    if !app.demo {
+        ui.add_space(18.0);
+        heading(ui, "Updates");
+        updates(app, ui);
+    }
+
     ui.add_space(18.0);
     heading(ui, "Account");
     if let Auth::SignedIn { name, .. } = &app.auth {
@@ -211,5 +217,62 @@ fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
             app.settings.moving_background,
             Setting::MovingBackground,
         );
+    }
+}
+
+/// The updates switch, what the updater is doing, and the button that
+/// fits it: look now, install the version found, or restart to install
+/// the one downloaded.
+fn updates(app: &App, ui: &mut egui::Ui) {
+    use crate::update::State;
+    let about = if cfg!(target_os = "macos") {
+        "YTFast looks for a new version once a day and says when one is out. On a Mac it is installed by hand for now."
+    } else {
+        "YTFast looks for a new version once a day, downloads it in the background, and installs it when you restart YTFast."
+    };
+    switch(
+        app,
+        ui,
+        "Install updates automatically",
+        about,
+        app.settings.auto_update,
+        Setting::AutoUpdate,
+    );
+    let Some(updates) = &app.updates else {
+        return;
+    };
+    let current = env!("CARGO_PKG_VERSION");
+    let check = Some(("Check for updates", false, Action::CheckForUpdates));
+    let (words, button) = match updates.state() {
+        State::Idle => (format!("This is YTFast {current}."), check),
+        State::Checking => ("Looking for a new version...".to_string(), None),
+        State::UpToDate => (format!("YTFast {current} is the newest version."), check),
+        State::Available {
+            version,
+            note: Some(note),
+        } => (format!("YTFast {version} is out. {note}"), None),
+        State::Available {
+            version,
+            note: None,
+        } => (
+            format!("YTFast {version} is out."),
+            Some(("Install it", true, Action::InstallUpdate)),
+        ),
+        State::Downloading { version, percent } => {
+            (format!("Downloading YTFast {version}... {percent}%"), None)
+        }
+        State::Ready { version } => (
+            format!("YTFast {version} is ready to install."),
+            Some(("Restart to update", true, Action::RestartToUpdate)),
+        ),
+        State::Restarting => ("Restarting...".to_string(), None),
+        State::Failed(message) => (message, check),
+    };
+    text(ui, &words);
+    if let Some((label, primary, action)) = button {
+        ui.add_space(8.0);
+        if theme::pill_button(ui, label, primary).clicked() {
+            app.act(action);
+        }
     }
 }
