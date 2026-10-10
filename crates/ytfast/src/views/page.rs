@@ -1319,7 +1319,7 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
             // header's own button plays.
             let header_play = header.play().cloned().filter(|_| count == 0);
             ui.add_enabled_ui(count > 0 || header_play.is_some(), |ui| {
-                if theme::round_button(
+                let button = theme::round_button(
                     ui,
                     Icon::Play,
                     play,
@@ -1327,9 +1327,22 @@ fn header_buttons(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
                     Round::Filled,
                     PALETTE.text,
                     "Play",
-                )
-                .clicked()
+                );
+                // The song it starts is found ahead, as a song's row is.
+                if button.hovered()
+                    && header_play.is_none()
+                    && let Some(first) =
+                        page.sections
+                            .iter()
+                            .flat_map(|s| &s.items)
+                            .find_map(|item| match item {
+                                Item::Track(t) if t.playable => Some(t),
+                                _ => None,
+                            })
                 {
+                    widgets::warm_when_resting(app, ui, &first.video_id);
+                }
+                if button.clicked() {
                     app.act(match header_play {
                         Some(target) => Action::Play(target, None),
                         None => Action::PlayTracks {

@@ -69,7 +69,9 @@ the owner's word.
 ## In every look
 
 - The window's own buttons (Windows) are as tall as the top bar, their
-  glyphs on its middle line with the bar's other buttons, in its white.
+  glyphs on its middle line with the bar's other buttons, in its white,
+  the last 4 from the window's edge; close answers the pointer up to the
+  window's top right corner.
 - Settings is one column in the middle of the page (at most 640;
   Premium's 760).
 - A mood button on Home (or a filter over Liked Music) keeps the page

@@ -376,6 +376,23 @@ fn font_line(font: &egui::FontId) -> f32 {
 /// How long the pointer rests on a song before it is found ahead of time.
 const WARM_AFTER: f32 = 0.35;
 
+/// A song the pointer rests on (its row, its tile, or the Play button that
+/// starts it) is found ahead of time, and its server gets it ready, so a
+/// click starts it at once. Call while the pointer is on it. Rows scrolled
+/// under a still pointer are only passing: resting counts from when this
+/// song came under it.
+pub fn warm_when_resting(app: &App, ui: &egui::Ui, video_id: &str) {
+    let resting = app.resting_on(ui.ctx(), video_id);
+    if resting >= WARM_AFTER {
+        app.warm(video_id);
+    } else {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f32(
+                WARM_AFTER - resting + 0.05,
+            ));
+    }
+}
+
 /// Draws `count` song rows in `style` from the cursor down, but only those
 /// on screen (and one more at each end, so the keyboard can move on to
 /// them); the rest is empty space of the same height. A list of thousands
@@ -555,18 +572,7 @@ pub fn track_row_in(
         14.0
     };
     if response.hovered() && playable {
-        // A song the pointer rests on is found ahead of time, so a click
-        // starts it at once. Rows scrolled under a still pointer are only
-        // passing: resting counts from when this row came under it.
-        let resting = app.resting_on(ui.ctx(), &track.video_id);
-        if resting >= WARM_AFTER {
-            app.warm(&track.video_id);
-        } else {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs_f32(
-                    WARM_AFTER - resting + 0.05,
-                ));
-        }
+        warm_when_resting(app, ui, &track.video_id);
     }
 
     let art = Rect::from_min_size(
@@ -1257,6 +1263,14 @@ pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text
     // buttons over the cover must not make the card think the pointer
     // left (that made it flicker).
     let hovered = ui.rect_contains_pointer(rect);
+    if hovered
+        && let Some(Target::Watch {
+            video_id: Some(song),
+            ..
+        }) = &card.play
+    {
+        warm_when_resting(app, ui, song);
+    }
     let lit = ui
         .ctx()
         .animate_bool_with_time(response.id.with("hover"), hovered, 0.2);
@@ -1536,6 +1550,13 @@ pub fn card_row(app: &App, ui: &mut egui::Ui, style: Row, card: &Card) {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &card.title));
     if response.hovered() {
         ui.painter().rect_filled(rect, 0.0, style.hover);
+        if let Some(Target::Watch {
+            video_id: Some(song),
+            ..
+        }) = &card.play
+        {
+            warm_when_resting(app, ui, song);
+        }
     }
     let art = Rect::from_min_size(
         pos2(rect.left() + style.pad, rect.center().y - style.art / 2.0),
