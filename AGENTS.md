@@ -149,7 +149,8 @@ Paolino), as `audio.rs` does.
   Music's look: when changing a screen, open the real one and measure.
 - On Windows the window has no Windows title bar: the top bar moves it
   (drag) and maximizes it (double-click), YTFast draws Windows 11's
-  minimize, maximize and close at its top right, and the edges resize it
+  minimize, maximize and close at its right end (as tall as the bar, their
+  glyphs on its middle line with its other buttons), and the edges resize it
   (`views/window_frame.rs`; the sign-in screen has a strip of its own for
   them). Windows still rounds the corners and draws the shadow. The Mac
   keeps its own title bar, and its Dock keeps YTFast.app's icon (eframe is
@@ -302,7 +303,11 @@ Paolino), as `audio.rs` does.
   picture with `PrintWindow`. Posted mouse moves do not work (the pointer
   is taken as gone at once), so what shows only under the pointer cannot
   be seen this way. Give new buttons a name, for this and for screen
-  readers.
+  readers. The owner uses the laptop meanwhile: `tools/look/demo.ps1`
+  opens the demo off the screen (minimised, then placed far left without
+  being brought forward; pictures still work), so only its taskbar button
+  shows. Do every check in one run; search and tour give the window the
+  keyboard, which brings it forward.
 - On the owner's Mac, build and install with
   `packaging/macos/install.sh`. It puts YTFast in Applications, signed
   with that Mac's own fixed signature ("YTFast Local Signing", kept in the
@@ -573,7 +578,28 @@ page), and in the demo on the owner's Windows laptop: choosing each theme
 changes the whole window at once and back again, every main screen in
 Premium, and 0% processor time when idle. Not yet tested: Premium with
 the owner's account, and the Mac. The owner means to develop Premium
-further.
+further. The same day Premium was reworked (`docs/look/premium.md`): one
+charcoal with see-through menu and bars, a pink-red accent, the playing
+song's colours behind the whole player page, lyrics fading at the edges,
+a centred scrubber with the times, a larger album header. Tested: the
+unit tests (197) and the demo at 1707 by 1019. Running the demo on the
+owner's laptop takes their screen while they use it: open it once per
+task at most.
+
+The owner then ran it with their account and found it not premium
+enough; reworked again (10 October 2026, `docs/look/premium.md`): the
+player bar a glass panel with a clear edge and calmer buttons; the player
+page's tabs and what they show on one glass panel beside the cover; the
+song's colours a real blur of its cover (not one averaged grey), and a
+background of the playing song's colours on the main pages too; the
+search box glass; the top bar balanced (back and forward by the menu, the
+search box in the middle); Settings centred; roomier margins. In both
+looks: the window's buttons on the top bar's middle line, and a mood
+button on Home keeps the page (dimmed) until the new one arrives. Tested:
+the unit tests (199), and the demo off the screen at 1707 by 1019 and
+960 by 600 (0% processor time paused on the player page). Not yet tested:
+any of it with the owner's account (real covers, a real mood button's
+page), and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

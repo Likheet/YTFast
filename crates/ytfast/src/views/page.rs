@@ -56,9 +56,9 @@ impl Look {
         Self {
             // Beside an album's or playlist's header, 28 at every width
             // (`--rhs-subheading-font-size`).
-            // Premium: shelves' titles smaller, as a list's.
+            // Premium: 28 from 1150, else 24.
             title: if theme::premium() {
-                theme::display2(grid.window)
+                if grid.window >= 1150.0 { 28.0 } else { 24.0 }
             } else if beside_header {
                 28.0
             } else {
@@ -100,16 +100,45 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         app.page_scrolled.set(false);
         let window = ui.ctx().content_rect().width();
         let grid = theme::Grid::new(window, area.width());
-        let inner = Rect::from_min_size(
-            pos2(area.left() + grid.left, area.top()),
-            vec2(grid.width, area.height()),
-        );
+        // Premium centres its column in the whole page (its scroll bar at
+        // the window's edge).
+        let inner = if theme::premium() {
+            area
+        } else {
+            Rect::from_min_size(
+                pos2(area.left() + grid.left, area.top()),
+                vec2(grid.width, area.height()),
+            )
+        };
         let mut ui = ui.new_child(UiBuilder::new().max_rect(inner));
         crate::views::settings::show(app, &mut ui);
         return;
     }
     match app.pages.get(&route) {
         None | Some(Loadable::Loading) => {
+            if let Some((previous, page)) = stand_in(app, &route) {
+                // The page just left stays, dimmed, while this one loads,
+                // its button for this one lit at once.
+                app.standing_in.set(true);
+                let shown = egui::ScrollArea::vertical()
+                    .id_salt(("page", previous))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_opacity(0.5);
+                        one_column(app, ui, previous, page);
+                    });
+                app.standing_in.set(false);
+                scrolled(app, ui, shown.state.offset.y);
+                let spot = Rect::from_center_size(
+                    pos2(area.center().x, area.top() + 140.0),
+                    Vec2::splat(32.0),
+                );
+                ui.put(
+                    spot,
+                    egui::Spinner::new().size(32.0).color(PALETTE.secondary),
+                );
+                return;
+            }
             app.page_scrolled.set(false);
             ui.add_space(96.0);
             ui.vertical_centered(|ui| {
@@ -184,6 +213,33 @@ fn from_top(app: &App, area: egui::ScrollArea) -> egui::ScrollArea {
     } else {
         area
     }
+}
+
+/// While `route` loads: the page just left, when it is the same page with
+/// another of its buttons chosen (Home and its moods, Podcasts...; Liked
+/// Music and its filters) and is still here, so the page does not empty
+/// and fill again.
+fn stand_in<'a>(app: &'a App, route: &Route) -> Option<(&'a Route, &'a Page)> {
+    let previous = app.came_from()?;
+    if !same_page(previous, route) {
+        return None;
+    }
+    match app.pages.get(previous) {
+        Some(Loadable::Ready(page)) => Some((previous, page)),
+        _ => None,
+    }
+}
+
+/// Whether `a` and `b` are one page with different buttons chosen: the
+/// same YouTube page ID, asked for differently.
+fn same_page(a: &Route, b: &Route) -> bool {
+    let id = |route: &Route| match route {
+        Route::Home => Some("FEmusic_home".to_string()),
+        Route::Liked => Some("VLLM".to_string()),
+        Route::Browse { id, .. } => Some(id.clone()),
+        _ => None,
+    };
+    a != b && id(a).is_some() && id(a) == id(b)
 }
 
 /// Page Up and Page Down, Home and End scroll the page, as in a browser.
@@ -908,6 +964,9 @@ fn two_columns(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header:
 /// gradient (`backdrop::album_cover`), moving up with the page and fading
 /// in over 0.5 s once the cover has arrived.
 fn album_backdrop(app: &App, ui: &egui::Ui, header: &Header) {
+    if header.thumbnail.is_some() {
+        app.page_backdrop.set(true);
+    }
     let (Some(thumb), Some(slot)) = (&header.thumbnail, app.backdrop_slot.get()) else {
         return;
     };
@@ -1072,9 +1131,10 @@ fn header_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, heade
 
 /// Save (or rename, for the account's own playlist), the big Play, and
 /// the menu.
-/// Premium's album or playlist header: the cover (224, or 176 in less
-/// room; r 16) beside the words, left-aligned, over the songs at full
-/// width; in a narrow page the cover (144) over the words.
+/// Premium's album or playlist header: the cover (248, or 192 in less
+/// room; r 12) beside the words, left-aligned and at most 760 wide, over
+/// the songs at full width; in a narrow page the cover (160) over the
+/// words.
 fn premium_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, header: &Header) {
     if header.thumbnail.is_none() {
         title(ui, &header.title);
@@ -1084,24 +1144,24 @@ fn premium_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
     ui.add_space(32.0);
     let width = ui.available_width();
     if width >= 580.0 {
-        let side = if width >= 900.0 { 224.0 } else { 176.0 };
+        let side = if width >= 900.0 { 248.0 } else { 192.0 };
         ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 32.0;
+            ui.spacing_mut().item_spacing.x = 40.0;
             let (art, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
             widgets::cover_with(
                 app,
                 ui,
                 art,
                 header.thumbnail.as_ref(),
-                CornerRadius::same(16),
+                CornerRadius::same(12),
             );
             ui.vertical(|ui| {
-                ui.set_width((width - side - 32.0).max(0.0));
+                ui.set_width((width - side - 40.0).clamp(0.0, 760.0));
                 premium_header_details(app, ui, route, page, header);
             });
         });
     } else {
-        let (art, _) = ui.allocate_exact_size(Vec2::splat(144.0_f32.min(width)), Sense::hover());
+        let (art, _) = ui.allocate_exact_size(Vec2::splat(160.0_f32.min(width)), Sense::hover());
         widgets::cover_with(
             app,
             ui,
@@ -1112,14 +1172,12 @@ fn premium_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, head
         ui.add_space(20.0);
         premium_header_details(app, ui, route, page, header);
     }
-    ui.add_space(32.0);
-    ui.separator();
-    ui.add_space(16.0);
+    ui.add_space(40.0);
 }
 
-/// Premium's header words: what it is, the title (36, or 28), the maker
-/// with their picture, how long, the description (2 lines, a click shows
-/// it whole), then the buttons.
+/// Premium's header words: what it is, the title (48, or 32 in less room),
+/// the maker with their picture, how long, the description (3 lines, a
+/// click shows it whole), then the buttons.
 fn premium_header_details(
     app: &App,
     ui: &mut egui::Ui,
@@ -1145,7 +1203,7 @@ fn premium_header_details(
         );
         ui.add_space(12.0);
     }
-    let size = if width >= 500.0 { 36.0 } else { 28.0 };
+    let size = if width >= 560.0 { 48.0 } else { 32.0 };
     line(ui, &header.title, theme::bold(size), PALETTE.text, 2);
     ui.add_space(12.0);
     if !header.owner.is_empty() {
@@ -1175,7 +1233,7 @@ fn premium_header_details(
             &header.description,
             theme::regular(14.0),
             PALETTE.secondary,
-            2,
+            3,
         );
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Description")
@@ -1659,6 +1717,7 @@ fn artist_header(
 /// (`backdrop::artist_picture`), `top` the header's top in the window and
 /// `height` its height.
 fn artist_picture(app: &App, ui: &egui::Ui, header: &Header, top: f32, height: f32, fade: f32) {
+    app.page_backdrop.set(true);
     let Some(slot) = app.backdrop_slot.get() else {
         return;
     };
@@ -2397,4 +2456,26 @@ fn carousel(ui: &mut egui::Ui, id: egui::Id, add: impl FnOnce(&mut egui::Ui)) {
     shelf.view = output.inner_rect.width();
     shelf.max = (output.content_size.x - shelf.view).max(0.0);
     ui.data_mut(|d| d.insert_temp(id, shelf));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mood_button_opens_the_same_page_with_another_chosen() {
+        let home = |params: &str| Route::browse("FEmusic_home".into(), Some(params.into()));
+        // Home and its moods (or Podcasts), whichever way round.
+        assert!(same_page(&Route::Home, &home("energize")));
+        assert!(same_page(&home("energize"), &Route::Home));
+        assert!(same_page(&home("energize"), &home("relax")));
+        // Liked Music and its filters.
+        let filter = Route::browse("VLLM".into(), Some("pop".into()));
+        assert!(same_page(&Route::Liked, &filter));
+        // Not the page itself, nor another page.
+        assert!(!same_page(&Route::Home, &Route::Home));
+        assert!(!same_page(&Route::Home, &Route::Explore));
+        let album = |id: &str| Route::browse(id.into(), None);
+        assert!(!same_page(&album("MPREb_1"), &album("MPREb_2")));
+    }
 }
