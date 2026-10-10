@@ -214,10 +214,9 @@ fn premium_places(bar: Rect, guide: f32, name_right: f32) -> (Rect, Rect, Rect) 
 /// The account's round button (its photo 26 on `#909090`; the name's first
 /// letter until the photo arrives), and its menu as YouTube Music's
 /// (measured signed in): 300 wide, `#282828`, r 12; a header with the
-/// photo 40, the name and handle (16/400 on 22 lines) and "Manage your
-/// Google Account" (14, `#3ea6ff`); then two groups of entries 40 high
-/// (an icon 18 at 16, the words 14/400 at 50), a white@0.20 line between.
-/// Entries YTFast cannot do itself open the page in the browser.
+/// photo 40 and the name and handle (16/400 on 22 lines), a white@0.20
+/// line, then entries 40 high (an icon 18 at 16, the words 14/400 at 50):
+/// History, Settings and Sign out, what YTFast does itself.
 fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
     let Auth::SignedIn {
         name,
@@ -259,15 +258,19 @@ fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
             }
             ui.set_width(300.0);
             ui.spacing_mut().item_spacing = Vec2::ZERO;
-            // The header: 16 around, the photo 40 and 16 after it.
-            let lines = if handle.is_some() { 3 } else { 2 };
-            let height = 16.0 + 22.0 * (lines - 1) as f32 + 8.0 + 20.0 + 16.0;
+            // The header: 16 around, the photo 40 and 16 after it, the name
+            // and handle (16, on 22 lines) beside it.
+            let lines = if handle.is_some() { 2.0 } else { 1.0 };
+            let height = (16.0 + 22.0 * lines + 16.0_f32).max(72.0);
             let (top, _) = ui.allocate_exact_size(vec2(300.0, height), Sense::hover());
-            let picture = Rect::from_min_size(top.min + vec2(16.0, 16.0), Vec2::splat(40.0));
+            let picture = Rect::from_min_size(
+                pos2(top.left() + 16.0, top.center().y - 20.0),
+                Vec2::splat(40.0),
+            );
             face(app, ui, picture, name, photo.as_deref());
             let left = picture.right() + 16.0;
             let room = top.right() - 16.0 - left;
-            let mut y = top.top() + 16.0;
+            let mut y = top.center().y - 11.0 * lines;
             for words in std::iter::once(name.as_str()).chain(handle.as_deref()) {
                 theme::paint_line(
                     ui,
@@ -279,40 +282,12 @@ fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
                 );
                 y += 22.0;
             }
-            y += 8.0;
-            let manage = ui.painter().layout_no_wrap(
-                "Manage your Google Account".into(),
-                theme::regular(14.0),
-                PALETTE.switch,
+            let (rule, _) = ui.allocate_exact_size(vec2(300.0, 1.0), Sense::hover());
+            ui.painter().hline(
+                rule.x_range(),
+                rule.center().y,
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(51)),
             );
-            let link = Rect::from_min_size(pos2(left, y), vec2(manage.size().x, 20.0));
-            let linked = ui.interact(link, ui.id().with("manage-account"), Sense::click());
-            linked.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::Link,
-                    true,
-                    "Manage your Google Account",
-                )
-            });
-            if linked.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            ui.painter()
-                .galley(pos2(left, y + 1.6), manage, PALETTE.switch);
-            if linked.clicked() {
-                ui.ctx()
-                    .open_url(egui::OpenUrl::new_tab("https://myaccount.google.com/"));
-                ui.close();
-            }
-            let line = |ui: &mut egui::Ui| {
-                let (rule, _) = ui.allocate_exact_size(vec2(300.0, 1.0), Sense::hover());
-                ui.painter().hline(
-                    rule.x_range(),
-                    rule.center().y,
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(51)),
-                );
-            };
-            line(ui);
             let entry = |ui: &mut egui::Ui, icon: Icon, words: &str| -> egui::Response {
                 let (row, response) = ui.allocate_exact_size(vec2(300.0, 40.0), Sense::click());
                 response.widget_info(|| {
@@ -321,6 +296,7 @@ fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
                 if response.hovered() {
                     ui.painter()
                         .rect_filled(row, 0.0, egui::Color32::from_white_alpha(26));
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 let mark = Rect::from_min_size(
                     pos2(row.left() + 16.0, row.center().y - 9.0),
@@ -337,54 +313,23 @@ fn account(app: &App, ui: &mut egui::Ui, rect: Rect) {
                 );
                 response
             };
-            let web = |ui: &mut egui::Ui, icon: Icon, words: &str, address: &str| {
-                if entry(ui, icon, words).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(address));
-                    ui.close();
-                }
-            };
+            // Only what YTFast does itself: the account's web pages (its
+            // channel, memberships, Google's help and policies) are left
+            // out, as this window opens no web pages.
             ui.add_space(8.0);
-            if let Some(handle) = handle {
-                web(
-                    ui,
-                    Icon::AccountBox,
-                    "Your channel",
-                    &format!("https://www.youtube.com/{handle}"),
-                );
-            }
-            web(
-                ui,
-                Icon::Paid,
-                "Paid memberships",
-                "https://www.youtube.com/paid_memberships",
-            );
-            if !app.demo && entry(ui, Icon::LogOut, "Sign out").clicked() {
-                app.act(Action::SignOut);
-                ui.close();
-            }
-            ui.add_space(8.0);
-            line(ui);
-            ui.add_space(8.0);
-            let go = |ui: &mut egui::Ui, icon: Icon, words: &str, route: Route| {
+            for (icon, words, route) in [
+                (Icon::History, "History", Route::History),
+                (Icon::Settings, "Settings", Route::Settings),
+            ] {
                 if entry(ui, icon, words).clicked() {
                     app.act(Action::Navigate(route));
                     ui.close();
                 }
-            };
-            go(ui, Icon::History, "History", Route::History);
-            go(ui, Icon::Settings, "Settings", Route::Settings);
-            web(
-                ui,
-                Icon::Policy,
-                "Terms & privacy policy",
-                "https://policies.google.com/",
-            );
-            web(
-                ui,
-                Icon::Help,
-                "Help",
-                "https://support.google.com/youtubemusic",
-            );
+            }
+            if !app.demo && entry(ui, Icon::LogOut, "Sign out").clicked() {
+                app.act(Action::SignOut);
+                ui.close();
+            }
             ui.add_space(8.0);
         });
 }
@@ -498,6 +443,16 @@ fn search_box(app: &App, ui: &mut egui::Ui, rect: Rect) {
         .margin(Margin::ZERO)
         .text_color(PALETTE.text);
     let response = ui.put(field_rect, edit);
+    // As YouTube Music's: a hand over the box until it is typed in, the
+    // text cursor while it is.
+    if ui.rect_contains_pointer(rect) {
+        let icon = if focused {
+            egui::CursorIcon::Text
+        } else {
+            egui::CursorIcon::PointingHand
+        };
+        ui.ctx().set_cursor_icon(icon);
+    }
 
     // ×: 32 across, 11 in from the right, once something is typed.
     if !text.is_empty() {

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use fastframe_audio::{Buffer, BufferSize, Maintained, OutputOptions, Render};
+use fastframe_audio::{Buffer, BufferSize, Device, Maintained, OutputOptions, Render};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
 use symphonia::core::errors::Error as DecodeError;
@@ -489,15 +489,73 @@ struct Loaded {
 const WHOLE_SONG_WAIT: Duration = Duration::from_secs(60);
 
 /// The device's stream, paused, with the mixer that feeds it.
-type OpenedOutput = (
-    fastframe_audio::Output<MixerRender>,
-    MixerSlot,
-    rodio::mixer::Mixer,
-);
+struct OpenedOutput {
+    output: fastframe_audio::Output<MixerRender>,
+    made: MixerSlot,
+    mixer: rodio::mixer::Mixer,
+    /// Opened by the default output's name, not as Windows' default: it
+    /// does not follow the default by itself ([`Player::maintain`] does).
+    by_name: bool,
+}
 
 /// Opens the default output, paused (the device rests until there is a
 /// song to play).
+///
+/// Windows' virtual default device, which follows the default by itself,
+/// can refuse to open (seen with Bluetooth headphones: "Failed to get audio
+/// client"). Then the default output is opened by its name, the way most
+/// programs open a device.
 fn open_output() -> Result<OpenedOutput, AudioError> {
+    match open_output_on(Device::Default) {
+        Ok(opened) => Ok(opened),
+        Err(error) => {
+            let Some(name) = default_output_name() else {
+                log::warn!("audio output: {error}");
+                return Err(error);
+            };
+            log::warn!("audio output: {error}; opening {name} by its name instead");
+            match open_output_on(Device::Named(name.clone())) {
+                Ok(opened) => Ok(OpenedOutput {
+                    by_name: true,
+                    ..opened
+                }),
+                Err(again) => {
+                    log::warn!("audio output: {name} would not open either: {again}");
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
+/// The default output's name, or `None` when there is none (or the audio
+/// library fails while asking: it can, while a device comes or goes).
+pub fn default_output_name() -> Option<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    std::panic::catch_unwind(|| {
+        let device = cpal::default_host().default_output_device()?;
+        let description = device.description().ok()?;
+        Some(description.name().to_string())
+    })
+    .ok()
+    .flatten()
+}
+
+/// How often an output opened by name looks for a new default output.
+const DEFAULT_CHECK: Duration = Duration::from_secs(2);
+
+/// What [`Player::maintain`] did that is worth telling.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Maintenance {
+    /// Sound moved to this device (the default output changed, or the
+    /// stream failed and opened again), and plays on.
+    Moved(String),
+    /// Something is wrong with the sound, in words for the window.
+    Problem(String),
+}
+
+/// Opens `device`, paused.
+fn open_output_on(device: Device) -> Result<OpenedOutput, AudioError> {
     let made = MixerSlot::default();
     let render = MixerRender {
         source: None,
@@ -505,6 +563,7 @@ fn open_output() -> Result<OpenedOutput, AudioError> {
         made: Arc::clone(&made),
     };
     let options = OutputOptions {
+        device,
         channels: 2,
         // YouTube's audio is 44.1 kHz; the device's own rate is used if
         // it cannot run at that.
@@ -521,7 +580,12 @@ fn open_output() -> Result<OpenedOutput, AudioError> {
         .take()
         .ok_or_else(|| AudioError::Device("the audio output did not start".into()))?;
     output.pause();
-    Ok((output, made, mixer))
+    Ok(OpenedOutput {
+        output,
+        made,
+        mixer,
+        by_name: false,
+    })
 }
 
 /// Plays one song at a time. Lives on one thread (the audio device handle
@@ -559,13 +623,25 @@ pub struct Player {
     paused: bool,
     /// The listener's volume, 0 to 1, on top of the song's loudness gain.
     volume: f32,
+    /// The output was opened by the default's name ([`OpenedOutput`]), so
+    /// `maintain` follows the default itself, looking every
+    /// [`DEFAULT_CHECK`].
+    by_name: bool,
+    default_checked: Instant,
 }
 
 impl Player {
     pub fn open() -> Result<Self, AudioError> {
-        let (output, made, mixer) = open_output()?;
+        let OpenedOutput {
+            output,
+            made,
+            mixer,
+            by_name,
+        } = open_output()?;
         let sink = rodio::Sink::connect_new(&mixer);
         Ok(Self {
+            by_name,
+            default_checked: Instant::now(),
             output,
             made,
             mixer,
@@ -612,11 +688,8 @@ impl Player {
             None => open_output(),
         };
         match fresh {
-            Ok((output, made, mixer)) => {
-                self.output = output;
-                self.made = made;
-                self.mixer = mixer;
-                self.sink = rodio::Sink::connect_new(&self.mixer);
+            Ok(fresh) => {
+                self.install(fresh);
                 self.fed = false;
                 log::debug!(
                     "audio output: a fresh stream in {} ms",
@@ -628,6 +701,15 @@ impl Player {
                  sound may play: {error}"
             ),
         }
+    }
+
+    /// Makes `opened` the device's stream, with a sink of its own.
+    fn install(&mut self, opened: OpenedOutput) {
+        self.output = opened.output;
+        self.made = opened.made;
+        self.mixer = opened.mixer;
+        self.by_name = opened.by_name;
+        self.sink = rodio::Sink::connect_new(&self.mixer);
     }
 
     /// Opens a spare stream for the next song or jump, while a song plays
@@ -772,8 +854,11 @@ impl Player {
     }
 
     /// Keeps the output on a working device. Call a few times a second.
-    /// Returns a message worth showing when something changed.
-    pub fn maintain(&mut self) -> Option<String> {
+    /// Returns what changed, when something did.
+    pub fn maintain(&mut self) -> Option<Maintenance> {
+        if let Some(moved) = self.follow_default_by_name() {
+            return Some(moved);
+        }
         let mut note = None;
         let maintained = self.output.maintain();
         // The spare was opened on the device of then: after a move to
@@ -798,28 +883,89 @@ impl Player {
                     self.mixer = mixer;
                     self.sink = rodio::Sink::connect_new(&self.mixer);
                     if let Err(error) = self.restart_at(at) {
-                        note = Some(format!("Could not continue on {device}: {error}"));
+                        note = Some(Maintenance::Problem(format!(
+                            "Could not continue on {device}: {error}"
+                        )));
                     }
                 }
                 if reason != fastframe_audio::Reason::Resumed {
-                    note.get_or_insert(format!("Sound is now playing on {device}"));
+                    log::warn!("audio output: now on {device} ({reason:?})");
+                    note.get_or_insert(Maintenance::Moved(device));
                 }
             }
-            Maintained::Failed(error) => note = Some(format!("No sound output: {error}")),
+            Maintained::Failed(error) => {
+                log::warn!("audio output: {error}");
+                note = Some(Maintenance::Problem(format!("No sound output: {error}")));
+            }
             Maintained::Released | Maintained::Unchanged => {}
         }
         for error in self.output.take_errors() {
+            log::warn!("audio output: {error}");
             if error.is_fatal() {
-                note = Some(format!("Audio problem: {error}"));
+                note = Some(Maintenance::Problem(format!("Audio problem: {error}")));
             }
         }
         note
+    }
+
+    /// An output opened by name stays on its device: when the default
+    /// output is another, sound moves there (by the same steps as
+    /// [`open_output`]), and the song carries on from where it was.
+    fn follow_default_by_name(&mut self) -> Option<Maintenance> {
+        if !self.by_name || self.default_checked.elapsed() < DEFAULT_CHECK {
+            return None;
+        }
+        self.default_checked = Instant::now();
+        let default = default_output_name()?;
+        if default == self.output.device_name() {
+            return None;
+        }
+        log::warn!(
+            "audio output: the default output is now {default} (was {})",
+            self.output.device_name()
+        );
+        let at = self.position();
+        let opened = match open_output() {
+            Ok(opened) => opened,
+            Err(error) => {
+                return Some(Maintenance::Problem(format!(
+                    "Could not move the sound to {default}: {error}"
+                )));
+            }
+        };
+        self.install(opened);
+        self.spare = None;
+        self.fed = false;
+        let device = self.output.device_name().to_string();
+        if self.song.is_some() {
+            if let Err(error) = self.restart_at(at) {
+                return Some(Maintenance::Problem(format!(
+                    "Could not continue on {device}: {error}"
+                )));
+            }
+            if !self.paused {
+                self.output.resume();
+                self.fed = true;
+            }
+        }
+        Some(Maintenance::Moved(device))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn the_default_output_opens_by_its_name() {
+        let name = default_output_name().expect("a default output");
+        let opened = open_output_on(Device::Named(name.clone())).expect("it opens by name");
+        assert_eq!(opened.output.device_name(), name);
+        // And the usual way, as Windows' default.
+        let opened = open_output().expect("it opens");
+        assert!(!opened.by_name, "{}", opened.output.device_name());
+    }
 
     fn tone() -> Vec<u8> {
         std::fs::read(format!(
