@@ -362,7 +362,14 @@ Paolino), as `audio.rs` does.
   opens the demo off the screen (minimised, then placed far left without
   being brought forward; pictures still work), so only its taskbar button
   shows. Do every check in one run; search and tour give the window the
-  keyboard, which brings it forward.
+  keyboard, which brings it forward. A large screen, on that laptop's
+  smaller one: `YTFAST_DEMO_ZOOM` lays the demo out as another screen's
+  (0.4962 at 1707 by 715 is a 3440 by 1440 screen, at 1270 by 715 a 2560
+  by 1440 one, at 953 by 536 a 1920 by 1080 one), smaller. The demo starts
+  in YouTube Music's look (it saves no settings), and the theme's radio
+  buttons cannot be pressed by name: with the demo closed, add
+  `"ytfast": "(theme:Premium)",` at the top of its `demo-window.ron`, and
+  take it out after.
 - On the owner's Mac, build and install with
   `packaging/macos/install.sh`. It puts YTFast in Applications, signed
   with that Mac's own fixed signature ("YTFast Local Signing", kept in the
@@ -710,6 +717,19 @@ already did; and a song row's ⋮, like and dislike show the hand, in Up
 next too, where the rest of the row keeps the move arrows. Tested: the
 unit tests (a right-click on the player bar, and the pointer over an Up
 next row and its ⋮, in each theme; both fail on the code before).
+
+Version 0.6.5 (10 October 2026), at the owner's word: Premium's player
+page on a large screen. It kept to at most 1280 in the middle, which on
+the owner's external monitor looked huddled in the centre (on the laptop
+it looked right, and stays as it was up to a page 1520 wide). Now the
+margins stay 120 and the rest goes to what it shows: the panel to at most
+960, the cover to at most 900 as the height allows, 160 between them, the
+song's name larger with a larger cover (`now_playing::listening_layout`).
+Tested: the unit tests (among them the laptop's layout unchanged to the
+point, and the spread on a 2560 wide screen), and the demo with
+`YTFAST_DEMO_ZOOM` laid out as 3440 by 1440, 2560 by 1440 and 1920 by
+1080 screens (Up next, Lyrics, Related) and at the laptop's own size. Not
+yet tested: on the owner's monitor.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

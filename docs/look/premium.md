@@ -20,7 +20,11 @@ the owner's word.
   and dark parts stay where they were, its colours made richer and kept
   dark enough for white words, darkened toward the foot and the corners.
   The cover (at most 480, r 16) with the song's name and artist centred
-  under it; beside it the tabs and what they show, straight on the song's
+  under it (up to a page 1520 wide, within at most 1280 in the middle; on
+  a large screen the margins stay 120 and the rest goes to what is shown,
+  so it does not huddle in the middle: the panel to at most 960, the cover
+  to at most 900 as the height allows, 160 between them, the song's name
+  to 34, the tabs' capsule to 560); beside it the tabs and what they show, straight on the song's
   colours with no box round them, as YouTube Music sets a playlist's songs
   beside its cover. The tabs are clear glass: a capsule barely filled with
   no edge, the chosen tab a clear capsule with one thin rim. Up next's
