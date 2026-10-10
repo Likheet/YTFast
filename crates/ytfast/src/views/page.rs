@@ -98,19 +98,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     let area = ui.max_rect();
     if route == Route::Settings {
         app.page_scrolled.set(false);
-        let window = ui.ctx().content_rect().width();
-        let grid = theme::Grid::new(window, area.width());
-        // Premium centres its column in the whole page (its scroll bar at
-        // the window's edge).
-        let inner = if theme::premium() {
-            area
-        } else {
-            Rect::from_min_size(
-                pos2(area.left() + grid.left, area.top()),
-                vec2(grid.width, area.height()),
-            )
-        };
-        let mut ui = ui.new_child(UiBuilder::new().max_rect(inner));
+        // Its column is centred in the whole page (its scroll bar at the
+        // window's edge).
+        let mut ui = ui.new_child(UiBuilder::new().max_rect(area));
         crate::views::settings::show(app, &mut ui);
         return;
     }
