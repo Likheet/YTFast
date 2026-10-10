@@ -475,10 +475,19 @@ pub struct App {
     /// Where this frame's album background goes: kept under the bars and
     /// the menu (`backdrop::paint`).
     pub backdrop_slot: std::cell::Cell<Option<egui::layers::ShapeIdx>>,
+    /// The page drawn this frame has a background of its own (an album's
+    /// cover, an artist's picture), so Premium's ambient colours stay off.
+    pub page_backdrop: std::cell::Cell<bool>,
+    /// The page drawn is the one just left, standing in while the page
+    /// wanted loads (`page::stand_in`): its mood buttons light the one
+    /// wanted, not their own.
+    pub standing_in: std::cell::Cell<bool>,
     /// The cover behind an album's or playlist's page: its address, its
     /// middle band shrunk to a few pixels (drawn stretched, a blur), and
     /// when it was made (it fades in).
     pub page_cover: RefCell<Option<(String, egui::TextureHandle, f64)>>,
+    /// Premium's wash of the playing song's cover (`listening_wash`).
+    listening_wash: RefCell<Option<(String, egui::TextureHandle)>>,
     /// "/" just opened the search box: its character, arriving in the next
     /// frame, is not typed there.
     drop_slash: bool,
@@ -614,7 +623,10 @@ impl App {
             page_offset: std::cell::Cell::new(0.0),
             dialog_fresh: std::cell::Cell::new(false),
             backdrop_slot: std::cell::Cell::new(None),
+            page_backdrop: std::cell::Cell::new(false),
+            standing_in: std::cell::Cell::new(false),
             page_cover: RefCell::new(None),
+            listening_wash: RefCell::new(None),
             drop_slash: false,
             go_to: None,
         }
@@ -869,6 +881,29 @@ impl App {
         let id = texture.id();
         *cover = Some((url.to_string(), texture, since));
         Some((id, since))
+    }
+
+    /// The playing song's cover as Premium's player page wears it behind
+    /// the whole window (`colors::wash`), once the cover has arrived. One
+    /// is kept, for the song playing.
+    pub fn listening_wash(&self, ctx: &egui::Context) -> Option<egui::TextureId> {
+        let thumb = self.playback.entry.as_ref()?.track.thumbnail.as_ref()?;
+        let url = thumb.sized(120);
+        let mut wash = self.listening_wash.borrow_mut();
+        if let Some((made_for, texture)) = wash.as_ref()
+            && *made_for == url
+        {
+            return Some(texture.id());
+        }
+        let summary = self.images.borrow_mut().summary(&url, &self.backend)?;
+        let texture = ctx.load_texture(
+            format!("listening wash {url}"),
+            crate::colors::wash(&summary.small),
+            egui::TextureOptions::LINEAR,
+        );
+        let id = texture.id();
+        *wash = Some((url, texture));
+        Some(id)
     }
 
     fn notify(&mut self, text: impl Into<String>) {
@@ -1758,6 +1793,11 @@ impl App {
         // where it was left).
         self.fresh_page.set(true);
         self.show_current();
+    }
+
+    /// The page shown before this one, if any.
+    pub fn came_from(&self) -> Option<&Route> {
+        self.back.last()
     }
 
     pub fn can_go_back(&self) -> bool {

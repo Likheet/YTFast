@@ -1,81 +1,115 @@
 //! YTFast's settings: a few switches, the account, and where problems are
 //! noted.
 
+use egui::{Align, Layout, Rect, UiBuilder, pos2, vec2};
+
 use crate::app::{Action, App, Auth, Setting};
 use crate::theme::{self, PALETTE, Theme};
+
+/// Premium's column: at most this wide, in the page's middle.
+const PREMIUM_COLUMN: f32 = 760.0;
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical()
         .id_salt("settings")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.set_max_width(640.0);
-            // Premium: a larger title, and each setting on a card.
-            let (above, size, below) = if theme::premium() {
-                (32.0, 36.0, 24.0)
-            } else {
-                (20.0, 30.0, 18.0)
-            };
-            ui.add_space(above);
-            theme::label(ui, "Settings", theme::bold(size), PALETTE.text);
-            ui.add_space(below);
-
-            heading(ui, "Playback");
-            switch(
-                app,
-                ui,
-                "Start songs the fast way",
-                "Songs start in about a second, the way the website does it. Turn this off if songs fail to start: YTFast then always uses yt-dlp, which takes about ten seconds per song.",
-                app.settings.fast_way,
-                Setting::FastWay,
-            );
-            switch(
-                app,
-                ui,
-                "Keep playing when the queue ends",
-                "Carry on with songs like the last one, as YouTube Music's autoplay does.",
-                app.settings.autoplay,
-                Setting::Autoplay,
-            );
-            switch(
-                app,
-                ui,
-                "Even out loudness",
-                "Turn loud songs down to the level YouTube Music plays them at, from the next song.",
-                app.settings.even_loudness,
-                Setting::EvenLoudness,
-            );
-
-            ui.add_space(18.0);
-            heading(ui, "Theme");
-            for choice in Theme::ALL {
-                theme_choice(app, ui, choice);
+            if !theme::premium() {
+                ui.set_max_width(640.0);
+                contents(app, ui);
+                return;
             }
-
-            ui.add_space(18.0);
-            heading(ui, "Account");
-            if let Auth::SignedIn { name, .. } = &app.auth {
-                let browser = app.settings.browser.as_deref().unwrap_or("your browser");
-                text(ui, &format!("Signed in as {name}, with the sign-in from {browser}."));
-            }
-            ui.add_space(8.0);
-            if !app.demo && theme::pill_button(ui, "Sign out", false).clicked() {
-                app.act(Action::SignOut);
-            }
-
-            ui.add_space(18.0);
-            heading(ui, "About");
-            text(ui, crate::app::VERSION);
-            text(
-                ui,
-                "Problems are noted in ytfast.log, in YTFast's cache folder. It has no passwords or cookies in it, so it is safe to send.",
+            // Premium: one column in the middle of the page, as much room
+            // either side of it.
+            let full = ui.max_rect();
+            // At least 24 clear of the menu and the window's edge.
+            let width = (full.width() - 48.0).clamp(0.0, PREMIUM_COLUMN);
+            let column = Rect::from_min_size(
+                pos2(full.center().x - width / 2.0, ui.cursor().top()),
+                vec2(width, full.height()),
             );
-            ui.add_space(8.0);
-            if theme::pill_button(ui, "Open that folder", false).clicked() {
-                app.act(Action::OpenLogFolder);
-            }
-            ui.add_space(40.0);
+            ui.scope_builder(
+                UiBuilder::new()
+                    .max_rect(column)
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| {
+                    ui.set_width(width);
+                    contents(app, ui);
+                },
+            );
         });
+}
+
+/// Everything Settings shows, from its title down.
+fn contents(app: &App, ui: &mut egui::Ui) {
+    // Premium: a larger title, and each setting on a card.
+    let (above, size, below) = if theme::premium() {
+        (32.0, 36.0, 24.0)
+    } else {
+        (20.0, 30.0, 18.0)
+    };
+    ui.add_space(above);
+    theme::label(ui, "Settings", theme::bold(size), PALETTE.text);
+    ui.add_space(below);
+
+    heading(ui, "Playback");
+    switch(
+        app,
+        ui,
+        "Start songs the fast way",
+        "Songs start in about a second, the way the website does it. Turn this off if songs fail to start: YTFast then always uses yt-dlp, which takes about ten seconds per song.",
+        app.settings.fast_way,
+        Setting::FastWay,
+    );
+    switch(
+        app,
+        ui,
+        "Keep playing when the queue ends",
+        "Carry on with songs like the last one, as YouTube Music's autoplay does.",
+        app.settings.autoplay,
+        Setting::Autoplay,
+    );
+    switch(
+        app,
+        ui,
+        "Even out loudness",
+        "Turn loud songs down to the level YouTube Music plays them at, from the next song.",
+        app.settings.even_loudness,
+        Setting::EvenLoudness,
+    );
+
+    ui.add_space(18.0);
+    heading(ui, "Theme");
+    for choice in Theme::ALL {
+        theme_choice(app, ui, choice);
+    }
+
+    ui.add_space(18.0);
+    heading(ui, "Account");
+    if let Auth::SignedIn { name, .. } = &app.auth {
+        let browser = app.settings.browser.as_deref().unwrap_or("your browser");
+        text(
+            ui,
+            &format!("Signed in as {name}, with the sign-in from {browser}."),
+        );
+    }
+    ui.add_space(8.0);
+    if !app.demo && theme::pill_button(ui, "Sign out", false).clicked() {
+        app.act(Action::SignOut);
+    }
+
+    ui.add_space(18.0);
+    heading(ui, "About");
+    text(ui, crate::app::VERSION);
+    text(
+        ui,
+        "Problems are noted in ytfast.log, in YTFast's cache folder. It has no passwords or cookies in it, so it is safe to send.",
+    );
+    ui.add_space(8.0);
+    if theme::pill_button(ui, "Open that folder", false).clicked() {
+        app.act(Action::OpenLogFolder);
+    }
+    ui.add_space(40.0);
 }
 
 fn heading(ui: &mut egui::Ui, text: &str) {
@@ -91,8 +125,9 @@ fn text(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// A setting's row; on a card (the panel's colour, r 12, 16 in) in the
-/// Premium theme. Returns its rectangle.
+/// A setting's row; on a glass card in the Premium theme (white@0.05, a
+/// white@0.06 edge, r 12, 16 in), so the page's colours show through.
+/// Returns its rectangle.
 fn row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
     if !theme::premium() {
         let rect = ui.horizontal(add).response.rect;
@@ -100,7 +135,8 @@ fn row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
         return rect;
     }
     let rect = egui::Frame::new()
-        .fill(PALETTE.panel)
+        .fill(egui::Color32::from_white_alpha(13))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(16)))
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::same(16))
         .show(ui, |ui| ui.horizontal(add))
@@ -149,8 +185,9 @@ fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (spot, _) = ui.allocate_exact_size(egui::vec2(36.0, 20.0), egui::Sense::hover());
             let centre = egui::pos2(spot.right() - 10.0, spot.center().y);
+            // The switches' colour (blue in YouTube Music's look).
             let ring = if chosen {
-                PALETTE.accent
+                PALETTE.switch
             } else {
                 PALETTE.secondary
             };
