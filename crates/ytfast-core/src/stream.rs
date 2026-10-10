@@ -187,6 +187,12 @@ impl SongData {
         Self::with_limit(total, IN_MEMORY)
     }
 
+    /// An empty download kept in a temporary file whatever its size: a
+    /// video's pictures, tens of megabytes read once, in order.
+    pub fn new_on_disk(total: Option<u64>) -> Arc<Self> {
+        Self::with_limit(total, 0)
+    }
+
     fn with_limit(total: Option<u64>, in_memory: u64) -> Arc<Self> {
         let data = Self::empty(in_memory);
         if let Some(total) = total {
@@ -686,6 +692,17 @@ fn content_range_total(value: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_video_is_kept_on_disk_and_read_back() {
+        // On disk from the start, however small.
+        let data = SongData::new_on_disk(Some(6));
+        assert!(data.on_disk());
+        data.push_for_test(b"abc");
+        data.push_for_test(b"def");
+        data.finish_for_test();
+        assert!(read_all(data.reader(true), 4) == b"abcdef");
+    }
 
     #[test]
     fn a_reader_waits_for_bytes_still_coming() {

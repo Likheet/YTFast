@@ -3,13 +3,17 @@
 **YouTube Music, native and fast.** YTFast (YouTube Music Fast) is a desktop app for YouTube Music that
 aims to open in under a second and stay light on memory, in the spirit of
 [Spotifast](https://github.com/crmne/spotifast). The goal is everything the
-YouTube Music app does except video, with its own screens instead of a web
-page.
+YouTube Music app does, with its own screens instead of a web page.
 
 For YouTube Music **Premium** accounts, on **Mac (Apple Silicon)** and
 **Windows**.
 
-## Status: version 0.4.0
+## Status: version 1.0.0
+
+Version 1.0.0 adds a video mode: the Song and Video switch on the player
+page plays the queue's songs as their music videos, which YTFast decodes
+itself (H.264, up to 720p), joining each at the same music and keeping
+the lyrics in time.
 
 The app is laid out as YouTube Music itself is, with its sizes and colours:
 the bar across the top with search and your account; the menu on the left
@@ -80,7 +84,10 @@ Paolino), [ytmusicapi](https://github.com/sigma67/ytmusicapi) (MIT),
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense). Its look is
 inspired by [Better Lyrics](https://betterlyrics.org)' Even Better Lyrics
 Plus theme, recreated without its code. Lyrics come partly from
-[LRCLIB](https://lrclib.net). Icons are from [Lucide](https://lucide.dev)
+[LRCLIB](https://lrclib.net). Music videos are decoded by
+[rusty_h264](https://github.com/remade-with-rust/rusty_h264) (BSD
+2-Clause), with SIMD kernels from
+[OpenH264](https://github.com/cisco/openh264) (BSD 2-Clause). Icons are from [Lucide](https://lucide.dev)
 (ISC), and the font is [Inter](https://github.com/rsms/inter) (SIL Open
 Font License). The licence texts for these and for the Rust libraries
 YTFast is built from are in

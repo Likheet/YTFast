@@ -164,6 +164,20 @@
                     }
                    }
                   }
+                 },
+                 "segmentMap": {
+                  "segment": [
+                   {
+                    "primaryVideoStartTimeMilliseconds": "0",
+                    "counterpartVideoStartTimeMilliseconds": "3385",
+                    "durationMilliseconds": "169615"
+                   },
+                   {
+                    "primaryVideoStartTimeMilliseconds": "169616",
+                    "counterpartVideoStartTimeMilliseconds": "176229",
+                    "durationMilliseconds": "33124"
+                   }
+                  ]
                  }
                 }
                ]
