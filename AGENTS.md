@@ -679,7 +679,7 @@ tool's files, packed again to the same bytes), compiled on Windows; the
 Mac's own code and the disk image only in CI's Mac build. Not yet tested:
 any of it on the owner's Mac.
 
-Then, at the owner's word (10 October 2026, not yet released): a song is
+Then, at the owner's word (10 October 2026, released in 0.6.3): a song is
 found ahead once the pointer rests on it 0.15 s (was 0.35 s), and a click
 on a song still being found waits for that answer instead of asking
 YouTube again. Measured on the owner's laptop with their sign-in (nothing
@@ -691,7 +691,7 @@ was found ahead cannot start much sooner. Tested: the unit tests (among
 them work under way shared between two askers, and a song found after
 0.2 s of rest, which fails at 0.35 s).
 
-Then, at the owner's word (10 October 2026, not yet released): a
+Then, at the owner's word (10 October 2026, released in 0.6.3): a
 right-click on the player bar (not on its buttons) opens the playing
 song's menu where the pointer is, as its ⋮ does and as a song's row
 already did; and a song row's ⋮, like and dislike show the hand, in Up
