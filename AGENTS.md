@@ -127,8 +127,13 @@ Paolino), as `audio.rs` does.
   are asked for (YouTube Music's Up next) when the queue is about to run
   out. At the end of a playlist or album, with autoplay on, a radio of
   its last song follows. The top search result and a song the pointer
-  rests on (0.35 s on that row, not rows scrolling past) are found ahead
-  of time too (found only, not downloaded).
+  rests on (0.35 s on its row, its tile, or the Play button that starts
+  it; not rows scrolling past) are found ahead of time too, and its
+  server is asked for one byte (`stream::touch`), so it has the song at
+  hand and the connection stays open: found, not downloaded. Without
+  that byte the first piece took 0.05 to 0.9 s after a click (the slow
+  ones, songs the server did not have at hand); after it, under 0.03 s
+  (measured on the owner's laptop, 10 October 2026).
 - A song that cannot play is skipped only when the problem is that song's
   (removed, private, not offered here), and at most five in a row; any
   other problem stops and waits for Play (`App::song_failed`).
@@ -156,7 +161,9 @@ Paolino), as `audio.rs` does.
   (drag) and maximizes it (double-click), YTFast draws Windows 11's
   minimize, maximize and close at its right end, round and on its middle
   line as the bar's other small buttons (close turns red under the
-  pointer), and the edges resize it
+  pointer), each answering the pointer over the bar's whole height and
+  close up to the window's corner, so the pointer thrown into the top
+  right corner closes, as on Windows' own title bars; the edges resize it
   (`views/window_frame.rs`; the sign-in screen has a strip of its own for
   them). Windows still rounds the corners and draws the shadow. The Mac
   keeps its own title bar, and its Dock keeps YTFast.app's icon (eframe is
@@ -256,6 +263,10 @@ Paolino), as `audio.rs` does.
   - When the fast way cannot get a player ready, it rests for 15 minutes
     (`REST_AFTER_FAILURE` in `direct.rs`) and yt-dlp finds songs
     meanwhile, rather than trying again for every song.
+  - A song found ahead (the pointer resting on it, the top search
+    result) gets one request for its first byte only (`stream::touch`),
+    once per song (`App::warm`); nothing more of it is fetched until it
+    plays.
 - Every song played is reported twice: when it starts, and how long it
   played (`playreport.rs`). Without this, History and recommendations stop
   learning.
@@ -627,6 +638,23 @@ the unit tests (199), and the demo off the screen at 1707 by 1019 and
 960 by 600 (0% processor time paused on the player page). Not yet tested:
 any of it with the owner's account (real covers, a real mood button's
 page), and the Mac.
+
+Version 0.6.1 (10 October 2026), at the owner's word. Songs had become
+slow to start again (half a second to a second). The code that starts
+them was the same as in the fast build; measured on the owner's laptop
+with their sign-in (nothing played or reported), the wait was YouTube's
+server sending the first piece: 0.05 to 0.9 s, the slow ones songs it
+did not have at hand. A song found ahead now has its server get it ready
+(one byte, above), and song tiles and an album's or playlist's Play
+button find their song ahead too: the first piece then came in under
+0.03 s for every song tried. The player itself starts in 0.01 to 0.03 s
+(0.11 s for the first song, which opens the device). And the window's
+buttons sit 4 from the edge and answer the pointer up to the corner.
+Tested: the unit tests (among them that a song is found ahead from its
+row, a tile and the Play button in each theme, and that a press in the
+window's very corner closes it in each theme), the timings above, and
+the demo off the screen. Not yet tested: with Bluetooth headphones,
+which add a delay of their own before anything is heard, and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
