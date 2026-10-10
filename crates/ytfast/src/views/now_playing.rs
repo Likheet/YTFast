@@ -9,6 +9,9 @@
 //! show, straight on the song's own colours (no box round them), as
 //! YouTube Music sets a playlist's songs beside its cover; the lyrics
 //! larger.
+//!
+//! Over the cover, in every look, the Song and Video switch; in the video
+//! mode the music video takes the cover's place (`views::video`).
 
 use egui::{
     Align, Align2, Color32, CornerRadius, Layout, Rect, Sense, UiBuilder, Vec2, pos2, vec2,
@@ -18,7 +21,7 @@ use crate::app::{Action, App, NpTab, PlayState};
 use crate::lyrics::{Lyrics, State};
 use crate::queue::Entry;
 use crate::theme::{self, Icon, PALETTE};
-use crate::views::{page, queue_panel, widgets};
+use crate::views::{page, queue_panel, video, widgets};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     if theme::dynamic() {
@@ -87,21 +90,32 @@ fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> R
     );
     let panel_width = (inner.width() * share).min(800.0);
     let panel = Rect::from_min_max(pos2(inner.right() - panel_width, inner.top()), inner.max);
-    // The cover: square, at most 800, centred in what is left (with the
-    // space above kept under it too); `#606060` while it loads.
+    // The Song and Video switch over the cover (square, at most 800), the
+    // two centred in what is left (with the space above kept under it
+    // too); `#606060` while the cover loads. In the video mode the video
+    // takes its place, 16:9, as large as the room allows and with square
+    // corners (YouTube Music's `#player` keeps its 800 and its r 8 for the
+    // cover: `:not([video-mode])`).
     let main = Rect::from_min_max(inner.min, pos2(panel.left() - gap, inner.bottom() - top));
-    let length = main.width().min(main.height()).clamp(0.0, 800.0);
-    let art = Rect::from_center_size(main.center(), Vec2::splat(length));
-    ui.painter()
-        .rect_filled(art, CornerRadius::same(8), PALETTE.thumb);
-    widgets::picture(
-        app,
-        ui,
-        art,
-        entry.track.thumbnail.as_ref(),
-        CornerRadius::same(8),
-    );
+    let corners = CornerRadius::same(8);
+    if video::shown(app) {
+        let size = video::size_in(main, f32::INFINITY, f32::INFINITY);
+        let (row, place) = video::stack(main, size);
+        video::switch(app, ui, row);
+        video::paint(app, ui, place, CornerRadius::ZERO);
+        cover_click(app, ui, place);
+        return panel;
+    }
+    let length = main
+        .width()
+        .min(main.height() - video::SWITCH_ROOM)
+        .clamp(0.0, 800.0);
+    let (row, art) = video::stack(main, Vec2::splat(length));
+    video::switch(app, ui, row);
+    ui.painter().rect_filled(art, corners, PALETTE.thumb);
+    widgets::picture(app, ui, art, entry.track.thumbnail.as_ref(), corners);
     cover_click(app, ui, art);
+    video::note(app, ui, art);
     panel
 }
 
@@ -111,19 +125,26 @@ fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> R
 /// (`backdrop::listening`, painted in `views::show`). Returns where the
 /// panel goes.
 fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rect {
-    let (art, panel) = listening_layout(area);
-    let grow = ((art.width() - 480.0) / 420.0).clamp(0.0, 1.0);
-    widgets::cover_with(
-        app,
-        ui,
+    let Listening {
         art,
-        entry.track.thumbnail.as_ref(),
-        CornerRadius::same(16),
-    );
-    cover_click(app, ui, art);
+        video: place,
+        panel,
+    } = listening_layout(area);
+    let grow = ((art.width() - 480.0) / 420.0).clamp(0.0, 1.0);
+    let corners = CornerRadius::same(16);
+    let shown = if video::shown(app) {
+        video::paint(app, ui, place, corners);
+        place
+    } else {
+        widgets::cover_with(app, ui, art, entry.track.thumbnail.as_ref(), corners);
+        video::note(app, ui, art);
+        art
+    };
+    cover_click(app, ui, shown);
+    video::switch(app, ui, video::row_above(shown));
     let words = Rect::from_min_size(
-        pos2(art.left(), art.bottom() + 24.0),
-        vec2(art.width(), 80.0),
+        pos2(shown.left(), shown.bottom() + 24.0),
+        vec2(shown.width(), 80.0),
     );
     let mut details = ui.new_child(
         UiBuilder::new()
@@ -146,10 +167,20 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
     panel
 }
 
+/// Premium's places on the player page.
+struct Listening {
+    /// The cover, and the video in its place in the video mode.
+    art: Rect,
+    video: Rect,
+    panel: Rect,
+}
+
 /// Premium's places, 32 in at the sides and 24 above and below: the panel
 /// the whole height at the right (52% of the room, at most 680), and the
-/// cover (at most 480) with its words centred in the rest, 48 before it
-/// (32 in less room), so the two share a middle line.
+/// cover (at most 480) with the Song and Video switch over it and its
+/// words under it, centred in the rest, 48 before it (32 in less room),
+/// so the two share a middle line. The video, in the cover's place, is
+/// 16:9 and as wide as that room (at most 1280).
 ///
 /// Up to a page 1520 wide (a laptop's) the room is at most 1280, centred.
 /// A larger page (a large screen's) keeps margins of 120 and gives the
@@ -157,7 +188,7 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
 /// each point past 1280, the panel grows a quarter (to at most 960), the
 /// cover a quarter (to at most 900, as the height allows) and the space
 /// between them 0.15 (to at most 160).
-fn listening_layout(area: Rect) -> (Rect, Rect) {
+fn listening_layout(area: Rect) -> Listening {
     let margin = ((area.width() - 1280.0) / 2.0).clamp(32.0, 120.0);
     let width = (area.width() - 2.0 * margin).max(0.0);
     let extra = (width - 1280.0).max(0.0);
@@ -173,18 +204,27 @@ fn listening_layout(area: Rect) -> (Rect, Rect) {
         inner.min,
         pos2((panel.left() - gap).max(inner.left()), inner.bottom()),
     );
+    // Above, the switch; below, 88 of words (and 16 to spare).
+    let room = (main.height() - 104.0 - video::SWITCH_ROOM).max(0.0);
     let side = main
         .width()
-        .min((main.height() - 104.0).max(0.0))
+        .min(room)
         .min((480.0 + extra * 0.25).min(900.0));
-    let art = Rect::from_min_size(
-        pos2(
-            main.center().x - side / 2.0,
-            main.center().y - (side + 88.0) / 2.0,
-        ),
-        Vec2::splat(side),
-    );
-    (art, panel)
+    let wide = main.width().min(room * 16.0 / 9.0).min(1280.0);
+    let centred = |size: Vec2| {
+        Rect::from_min_size(
+            pos2(
+                main.center().x - size.x / 2.0,
+                main.center().y - (size.y + 88.0 + video::SWITCH_ROOM) / 2.0 + video::SWITCH_ROOM,
+            ),
+            size,
+        )
+    };
+    Listening {
+        art: centred(Vec2::splat(side)),
+        video: centred(vec2(wide, wide * 9.0 / 16.0)),
+        panel,
+    }
 }
 
 /// Premium's tabs, Up next, Lyrics and Related, in clear glass as an
@@ -258,7 +298,7 @@ fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
 /// Clear glass, as an iPhone's, as a capsule over `rect`: white `fill`
 /// inside (nearly none) and, when `rim` is more than none, one edge of
 /// light in white `rim`.
-fn glass(painter: &egui::Painter, rect: Rect, fill: f32, rim: f32) {
+pub(super) fn glass(painter: &egui::Painter, rect: Rect, fill: f32, rim: f32) {
     let radius = CornerRadius::same((rect.height() / 2.0).round() as u8);
     let white = |alpha: f32| Color32::from_white_alpha((alpha * 255.0) as u8);
     painter.rect_filled(rect, radius, white(fill));
@@ -412,7 +452,10 @@ const PREMIUM_SUNG: f32 = 0.40;
 fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let id = ui.id().with(("lyrics", video_id));
     let now = ui.input(|i| i.time);
-    let current = lyrics.current(app.audio_status.position);
+    // Timed to the song: while its video plays, by YouTube's map.
+    let current = app
+        .lyrics_clock()
+        .and_then(|position| lyrics.current(position));
     let viewport = ui.available_height();
     // Lines that follow the song move on as it plays.
     if lyrics.synced && app.audio_status.entry.is_some() && !app.audio_status.paused {
@@ -514,7 +557,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if response.clicked() {
-                    app.act(Action::Seek(start));
+                    app.act(Action::Seek(app.lyrics_moment(start)));
                     ui.data_mut(|d| d.insert_temp(id.with("manual"), 0.0f64));
                 }
             }
@@ -593,7 +636,7 @@ mod tests {
             (3600.0, 2000.0),
         ] {
             let area = Rect::from_min_size(pos2(220.0, 72.0), vec2(width, height));
-            let (art, panel) = listening_layout(area);
+            let Listening { art, video, panel } = listening_layout(area);
             assert!(area.contains_rect(art));
             assert!(area.contains_rect(panel));
             assert!(art.right() + 24.0 <= panel.left());
@@ -601,6 +644,13 @@ mod tests {
             assert!(art.bottom() + 80.0 <= area.bottom());
             assert!(panel.width() >= art.width());
             assert!(panel.width() <= 960.0);
+            // The switch over them, the words under them.
+            for shown in [art, video] {
+                assert!(shown.top() - video::SWITCH_ROOM >= area.top(), "{width}");
+                assert!(shown.bottom() + 80.0 <= area.bottom(), "{width}");
+            }
+            assert!(video.right() + 24.0 <= panel.left());
+            assert!((video.width() / video.height().max(0.01) - 16.0 / 9.0).abs() < 0.01);
         }
     }
 
@@ -610,7 +660,7 @@ mod tests {
     fn premium_player_page_is_unchanged_on_a_laptop() {
         for width in [1344.0, 1467.0, 1520.0] {
             let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(width, 851.0));
-            let (art, panel) = listening_layout(area);
+            let Listening { art, panel, .. } = listening_layout(area);
             let margin = (width - 1280.0) / 2.0;
             assert!(
                 (area.right() - panel.right() - margin).abs() < 0.01,
@@ -628,7 +678,7 @@ mod tests {
     fn premium_player_page_spreads_out_on_a_large_screen() {
         // A 2560 wide screen, the menu open.
         let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(2320.0, 1250.0));
-        let (art, panel) = listening_layout(area);
+        let Listening { art, panel, .. } = listening_layout(area);
         assert!((area.right() - panel.right() - 120.0).abs() < 0.01);
         assert!((panel.width() - 880.0).abs() < 0.01);
         assert!((art.width() - 680.0).abs() < 0.01);

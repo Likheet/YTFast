@@ -38,5 +38,6 @@ pub mod read;
 pub mod redact;
 pub mod solver;
 pub mod stream;
+pub mod video;
 pub mod ytcfg;
 pub mod ytdlp;

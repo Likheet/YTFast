@@ -77,6 +77,109 @@ impl StreamFormat {
     }
 }
 
+/// A video format (picture only: YouTube sends the sound apart), as the
+/// video mode plays them: H.264 in MP4.
+#[derive(Clone)]
+pub struct VideoFormat {
+    pub itag: u32,
+    /// "video/mp4; codecs=\"avc1.4d401f\"".
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate: u64,
+    pub content_length: Option<u64>,
+    /// The stream address, when YouTube gives it plainly. Never shown.
+    pub url: Option<String>,
+    /// Otherwise the address with a scrambled signature.
+    pub signature_cipher: Option<String>,
+    pub drm: bool,
+}
+
+impl std::fmt::Debug for VideoFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VideoFormat")
+            .field("itag", &self.itag)
+            .field("mime", &self.mime)
+            .field("size", &(self.width, self.height, self.fps))
+            .finish()
+    }
+}
+
+impl VideoFormat {
+    /// H.264 in MP4, Baseline or Main (`avc1.42…`, `avc1.4d…`): what the
+    /// video mode decodes. YouTube's 720p and smaller are Main; its larger
+    /// ones are High, whose 8×8 CABAC parts the decoder does not read.
+    /// (YouTube Music's web player is offered no AV1, and its VP9 comes in
+    /// WebM.)
+    pub fn is_decodable(&self) -> bool {
+        if !self.mime.starts_with("video/mp4") {
+            return false;
+        }
+        let codecs = self
+            .mime
+            .split_once("codecs=")
+            .map(|(_, c)| c.trim_matches(|c: char| c == '"' || c.is_whitespace()))
+            .unwrap_or_default();
+        let profile = codecs
+            .strip_prefix("avc1.")
+            .and_then(|rest| rest.get(..2))
+            .map(str::to_ascii_lowercase);
+        matches!(profile.as_deref(), Some("42" | "4d"))
+    }
+}
+
+/// Every video format in a `player` reply.
+pub fn video_formats(reply: &Value) -> Vec<VideoFormat> {
+    let formats = reply
+        .pointer("/streamingData/adaptiveFormats")
+        .and_then(Value::as_array);
+    formats
+        .into_iter()
+        .flatten()
+        .filter_map(|f| {
+            let mime = f.get("mimeType")?.as_str()?.to_string();
+            if !mime.starts_with("video/") {
+                return None;
+            }
+            let number = |key: &str| {
+                f.get(key).and_then(|v| match v {
+                    Value::Number(n) => n.as_u64(),
+                    Value::String(s) => s.parse().ok(),
+                    _ => None,
+                })
+            };
+            let text = |key: &str| f.get(key).and_then(Value::as_str).map(str::to_string);
+            Some(VideoFormat {
+                itag: u32::try_from(number("itag")?).ok()?,
+                width: u32::try_from(number("width")?).ok()?,
+                height: u32::try_from(number("height")?).ok()?,
+                fps: number("fps")
+                    .and_then(|n| u32::try_from(n).ok())
+                    .unwrap_or(30),
+                bitrate: number("bitrate").unwrap_or(0),
+                content_length: number("contentLength"),
+                url: text("url"),
+                signature_cipher: text("signatureCipher").or_else(|| text("cipher")),
+                drm: f.get("drmFamilies").is_some(),
+                mime,
+            })
+        })
+        .collect()
+}
+
+/// The video to play: one the video mode decodes, not locked, as large as
+/// fits in `height` lines (720 by default: sharp on a laptop, and less than
+/// half of 1080's work); at most 30 frames a second where a copy has them
+/// (60 doubles the work), then the highest bitrate.
+pub fn best_video(formats: &[VideoFormat], height: u32) -> Option<&VideoFormat> {
+    formats
+        .iter()
+        .filter(|f| f.is_decodable() && !f.drm && f.height <= height)
+        .filter(|f| f.url.is_some() || f.signature_cipher.is_some())
+        .max_by_key(|f| (f.height, f.fps <= 30, f.bitrate))
+}
+
 /// Every audio format in a `player` reply.
 pub fn stream_formats(reply: &Value) -> Vec<StreamFormat> {
     let formats = reply
@@ -176,6 +279,38 @@ mod tests {
         assert_eq!(best.duration_ms, Some(180_000));
         assert_eq!(best.describe(), "AAC 260 kbps (format 141)");
         assert!(!format!("{best:?}").contains("googlevideo"));
+    }
+
+    #[test]
+    fn picks_h264_main_at_720_and_30_frames_a_second() {
+        // As YouTube Music's web player is offered them (no AV1; VP9 in
+        // WebM).
+        let reply = json!({"streamingData": {"adaptiveFormats": [
+            {"itag": 136, "mimeType": "video/mp4; codecs=\"avc1.4d401f\"", "width": 1280,
+             "height": 720, "fps": 25, "bitrate": 1000000, "url": "https://v.example/136"},
+            {"itag": 298, "mimeType": "video/mp4; codecs=\"avc1.4d4020\"", "width": 1280,
+             "height": 720, "fps": 50, "bitrate": 1800000, "url": "https://v.example/298"},
+            {"itag": 137, "mimeType": "video/mp4; codecs=\"avc1.640028\"", "width": 1920,
+             "height": 1080, "fps": 25, "bitrate": 3000000, "url": "https://v.example/137"},
+            {"itag": 247, "mimeType": "video/webm; codecs=\"vp9\"", "width": 1280,
+             "height": 720, "fps": 25, "bitrate": 900000, "url": "https://v.example/247"},
+            {"itag": 135, "mimeType": "video/mp4; codecs=\"avc1.4D401E\"", "width": 854,
+             "height": 480, "fps": 25, "bitrate": 500000,
+             "signatureCipher": "s=abc&sp=sig&url=https%3A%2F%2Fv.example%2F135"},
+            {"itag": 140, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "bitrate": 130000,
+             "url": "https://a.example/140"}
+        ]}});
+        let formats = video_formats(&reply);
+        assert_eq!(formats.len(), 5);
+        // 720 at 25 frames a second, not 50; not 1080 (High profile), nor
+        // VP9 (WebM).
+        assert_eq!(best_video(&formats, 720).unwrap().itag, 136);
+        assert_eq!(best_video(&formats, 1080).unwrap().itag, 136);
+        assert_eq!(best_video(&formats, 480).unwrap().itag, 135);
+        assert!(best_video(&formats, 360).is_none());
+        assert!(!format!("{:?}", formats[0]).contains("v.example"));
+        // Audio is read apart.
+        assert_eq!(stream_formats(&reply).len(), 1);
     }
 
     #[test]

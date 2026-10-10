@@ -22,9 +22,10 @@ assistants. So:
 ## What YTFast is
 
 YTFast (YouTube Music Fast) is a native, fast, light YouTube Music desktop
-app: everything the YouTube
-Music desktop app does except video, at Spotifast's speed. Premium only,
-audio only, Mac and Windows. No web page inside the app, visible or hidden.
+app: everything the YouTube Music desktop app does, at Spotifast's speed.
+Songs play as sound; the video mode plays the queue's songs as their music
+videos, decoded by YTFast itself. Premium only, Mac and Windows. No web
+page inside the app, visible or hidden.
 
 ## Layout
 
@@ -45,6 +46,9 @@ crates/ytfast-core/   the engine (no user interface)
   src/prepare.rs      getting a song ready: the fast way, else yt-dlp
   src/stream.rs       downloading a song while it plays
   src/audio.rs        decoding, the player
+  src/video.rs        the video mode's pictures: YouTube's H.264 read as
+                      it downloads, decoded (rusty_h264) in time with the
+                      music
   src/lyrics.rs       LRCLIB's lyrics and LRC text
   src/net.rs          HTTP clients
   src/redact.rs       keeping secrets out of messages
@@ -68,8 +72,9 @@ crates/ytfast/        the app: an egui window on fastframe
                       docs/look/dynamic-background.md)
   src/theme.rs        colours, fonts, icons, drawing helpers
   src/views/          what the window draws: backdrop, sidebar, top bar,
-                      page, player bar, player page (now_playing), Up
-                      next, settings, dialogs, sign-in
+                      page, player bar, player page (now_playing), the
+                      video mode's switch and picture (video), Up next,
+                      settings, dialogs, sign-in
   assets/             icons (Google's Material Symbols, Apache 2.0), the
                       Roboto font (OFL) and the app's own mark
   build.rs            the icon and name in the Windows program
@@ -180,6 +185,41 @@ Paolino), as `audio.rs` does.
 - Lyrics: YouTube Music's timed lyrics, else LRCLIB's (lrclib.net, found
   by title, artist, album and length), else YouTube Music's plain ones.
   Asked for only when the player page shows them.
+- The video mode, YouTube Music's Song and Video switch over the cover on
+  the player page: while it says Video, the queue's songs play as their
+  music videos, sound and picture. Next, Previous, a song ending and Up
+  next keep it; a song started anywhere else (a page, search, Related)
+  plays as a song and turns it off (`App::play_tracks`). A song's video
+  is itself for a video, else its pair from Up next
+  (`TrackMore::counterpart`) or from its details (`SongDetails::video`);
+  one not known yet waits for its details before it starts
+  (`App::song_video`), and the next song is got ready ahead as its
+  video. A song without a video has Video greyed out (the mode stays on
+  for the songs after it). Each pair comes with YouTube's map of where
+  the song's music is in the video (`segmentMap`, read as `Segment`s:
+  Despacito's video starts its song 21 s in; some videos have a scene
+  of their own between two stretches), so switching partway plays the
+  other version from the same music (`App::moment_in`,
+  `Command::Play { from }`), and the lyrics, timed to the song, follow
+  the video by the same map (`App::lyrics_clock`; none lit in the
+  video's own intro). The picture is YouTube's H.264 (Baseline or Main)
+  up to 720 lines (`read::best_video`): YouTube Music's web player, whose
+  requests the fast way makes, is offered no AV1, and VP9 only in WebM.
+  It is found with the sound the fast way (`direct::Found::video`, so the
+  video mode needs the fast way), downloaded to a temporary file
+  (`SongData::new_on_disk`) and decoded on a thread of its own by
+  rusty_h264, a pure-Rust decoder (`video.rs`), a few pictures ahead of
+  the music's clock (`Status::clock`); B-frames decode before the
+  pictures they show between, so each picture takes its place by time.
+  The window is drawn again only when the next picture is due and the
+  music plays; with the player page closed the decoding rests
+  (`App::video_drawn`). Decoding 720p H.264 and turning it into colours
+  (by tables, in memory kept from picture to picture) took about 30% of
+  one core at 25 pictures a second on the owner's Windows laptop (a Ryzen
+  7 5800H), and about 55 MB; redrawing the window, about 20% more. The
+  graphics card's own decoder would take most of that off the processor,
+  but reaching it (Media Foundation, VideoToolbox, or a shader for the
+  colours) needs `unsafe` code, which the workspace forbids.
 - Changes to the account (`backend::Edit`) show at once and go to YouTube
   one at a time, in order; a refusal from YouTube (`Event::EditFailed`)
   undoes them (back to what was shown before) and says so.
@@ -399,6 +439,11 @@ Paolino), as `audio.rs` does.
 - Spotifast and fastframe: MIT, credit when copying. ytmusicapi fixtures:
   MIT, credited in the fixtures README. Better Lyrics: GPL, do not copy its
   code. yt-dlp and Deno are downloaded, not bundled in the repository.
+- The video decoder is rusty_h264 (BSD 2-Clause; its SIMD kernels from
+  OpenH264, BSD 2-Clause), with its default `global-alloc` off (it would
+  replace YTFast's allocator); its notices are in
+  THIRD-PARTY-NOTICES.txt. Read a library's licence before building on
+  it: `rav1d-safe` (AGPL, or paid) would have bound all of YTFast.
 
 ## Before you push
 
@@ -415,6 +460,11 @@ The solver's test runs only when `YTFAST_TEST_DENO` names a Deno program
 and `YTFAST_TEST_EJS` a folder with yt-dlp's `core.min.js` and
 `lib.min.js` (in the yt-dlp download, under
 `_internal/yt_dlp_ejs/yt/solver`).
+
+The video test that decodes a real video (`decodes_a_real_video_in_time`
+in `video.rs`) runs only when `YTFAST_TEST_VIDEO` names a YouTube H.264
+picture stream (720p, `yt-dlp -f 136`, as YouTube serves it); run it with
+`--release`. Such a file is never committed.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and
 Linux, and uploads the app (`YTFast-for-Mac`: YTFast.app, signed ad hoc, in
@@ -768,6 +818,28 @@ screen and a half earlier, and a scroll that reaches the end stops there
 until it pauses. Tested: the unit tests (asked well before the end, held
 at the end while shelves arrive and scrolling on after a pause; both fail
 on the code before). Not yet tested: with the owner's touchpad and mouse.
+
+Then, at the owner's word (10 October 2026, version 1.0.0): the video
+mode (above), as YouTube Music's Song and Video switch. Its first build
+decoded AV1, and the owner found every video "has no picture": YouTube
+Music's web player is offered no AV1 (read on that laptop, signed out:
+VP9 and H.264 only; the other players that get AV1 need tokens to
+download it). It decodes H.264 since, which every video has. Also at the
+owner's word: Video greyed out for a song without one; the same music
+when switching, and lyrics that follow the video, by YouTube's map (read
+on that laptop with the owner's sign-in, only the pairs printed:
+every pair carried one); Up next's rows show the open hand, closed while
+one is dragged. Tested: the unit tests (the mode keeping to the queue,
+and off for a song chosen elsewhere; switching partway onto the same
+music, in and out of a video's intro; lyrics by the map; Video greyed
+out; waiting for a song's details; a switch while a song gets ready; the
+player starting partway; the Song and Video buttons and the hand in each
+look); a real music video (720p H.264 with B-frames, saved from YouTube
+on that laptop, not committed) decoded in time: 249 pictures in 10 s at
+25 a second, none late, a jump to 1:00 shown in 0.97 s, its pictures
+right; and the demo in each look. Not yet tested: a real video in YTFast
+with the owner's account (its picture found the fast way and
+downloaded), and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
