@@ -740,7 +740,7 @@ point, and the spread on a 2560 wide screen), and the demo with
 yet tested: on the owner's monitor. The owner then updated their Mac
 from 0.6.4 to 0.6.5 by the Update button: the Mac's own updates work.
 
-Then, at the owner's word (10 October 2026, not yet released): Home loads
+Then, at the owner's word (10 October 2026, released in 0.6.6): Home loads
 its next shelves as its end comes into view. It showed only the three
 shelves YouTube sends first: YouTube Music asks for more as the page is
 scrolled, and YTFast never did. Read on the owner's Home with their
