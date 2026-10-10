@@ -3438,11 +3438,14 @@ mod tests {
 
     /// On Windows, in every theme, the window's close button reaches the
     /// top right corner: the pointer thrown into the corner, as far as it
-    /// goes, and pressed there, closes the window.
-    #[cfg(windows)]
+    /// goes, and pressed there, closes the window. (The Mac keeps its own
+    /// title bar.)
     #[test]
     fn the_windows_top_right_corner_closes_it() {
         use crate::theme::Theme;
+        if !cfg!(windows) {
+            return;
+        }
         for theme in [
             Theme::YouTubeMusic,
             Theme::Premium,
