@@ -31,6 +31,10 @@ pub fn album_cover(
     shown: f32,
     offset: f32,
 ) {
+    // Dynamic Background: the song's own background shows instead.
+    if crate::theme::dynamic() {
+        return;
+    }
     let painter = ui.ctx().layer_painter(egui::LayerId::background());
     let top = screen.top() - offset;
     let width = screen.width() - 12.0;
@@ -89,6 +93,11 @@ pub fn artist_picture(
     texture: Option<(TextureId, [usize; 2])>,
     fade: f32,
 ) {
+    if crate::theme::dynamic() {
+        // The menu is see-through: the picture runs the window's width.
+        let frame = Rect::from_x_y_ranges(screen.x_range(), frame.y_range());
+        return super::dynamic::artist_picture(ui, slot, frame, texture);
+    }
     let mut shapes = Vec::new();
     if let Some((texture, [w, h])) = texture {
         let picture = w as f32 / h.max(1) as f32;

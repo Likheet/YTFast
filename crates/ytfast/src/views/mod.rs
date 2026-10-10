@@ -5,6 +5,7 @@
 
 mod backdrop;
 mod dialogs;
+mod dynamic;
 mod now_playing;
 mod page;
 mod player_bar;
@@ -119,6 +120,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 /// A short message ("Added to the queue") at the bottom left, just above
 /// the player bar, as YouTube Music shows its own.
 fn notice(app: &App, ui: &egui::Ui) {
+    if theme::dynamic() {
+        return dynamic::notice(app, ui);
+    }
     let Some((text, at)) = &app.notice else {
         return;
     };
