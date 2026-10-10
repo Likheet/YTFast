@@ -27,19 +27,27 @@ for builds made after its public half is put in the app.
    `packaging/windows/ytfast.rc` (three numbers, higher than the last
    release), with `Cargo.lock`. Merge to `main` once the owner has tried
    the build.
-2. Wait for CI on that `main` commit, then download its two apps:
+2. Wait for CI on that `main` commit, then download its two apps (each
+   can be downloaded as soon as its own job has finished):
 
        gh run download <run id> -n YTFast-for-Windows -D dist/windows
        gh run download <run id> -n YTFast-for-Mac -D dist/mac
 
 3. Pack and sign (the version without a `v`):
 
-       cargo run -p ytfast-release -- pack 0.6.0 "%APPDATA%\YTFast-release\update-signing-key.hex" dist/release dist/windows/YTFast.exe dist/mac/YTFast-mac.zip
+       cargo run -p ytfast-release -- pack 0.6.0 "%APPDATA%\YTFast-release\update-signing-key.hex" dist/release dist/windows/YTFast.exe dist/mac/YTFast.dmg
 
-   It writes `ytfast-v0.6.0-x86_64-pc-windows-msvc.zip` (a folder of that
-   name with `ytfast.exe` and the `ytfast-portable.txt` marker: the
-   updater's layout, and the Windows download), `YTFast-0.6.0-Mac.zip`,
-   `checksums.txt` and `checksums.txt.sig`, and checks the signature.
+   It writes the two downloads, `YTFast.exe` and `YTFast.dmg` (CI's disk
+   image: the app beside a shortcut to Applications);
+   `ytfast-v0.6.0-x86_64-pc-windows-msvc.zip` (a folder of that name with
+   `ytfast.exe` and the `ytfast-portable.txt` marker: the updater's
+   layout, which installed Windows copies look for, so it must be on every
+   release); `checksums.txt` and `checksums.txt.sig`; and checks the
+   signature. The zip carries no clock time: the same program packs to
+   the same bytes, so a release can be packed again to add a file without
+   changing what copies update from.
+
+   Every release carries both builds, even when only Windows was tried.
 
 4. Publish, tagged `v` and the version, on `main`'s commit:
 

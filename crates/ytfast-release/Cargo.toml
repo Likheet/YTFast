@@ -1,6 +1,6 @@
 [package]
 name = "ytfast-release"
-description = "Makes YTFast's release files: the update signing key, the Windows update archive, checksums.txt and its signature"
+description = "Makes YTFast's release files: the downloads (YTFast.exe, YTFast.dmg), the Windows update archive, checksums.txt and its signature; and the update signing key"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

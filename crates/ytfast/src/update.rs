@@ -37,6 +37,9 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     )
 };
 
+/// The newest release's page, where a Mac copy gets a new version.
+pub const DOWNLOAD_PAGE: &str = "https://github.com/Likheet/YTFast/releases/latest";
+
 /// The first look after starting: not while the window opens.
 const FIRST_LOOK: Duration = Duration::from_secs(60);
 
@@ -259,7 +262,10 @@ fn run(
 /// Whether this copy can install updates itself; the words for why not.
 fn installable(updater: &Updater) -> Result<(), String> {
     if cfg!(target_os = "macos") {
-        return Err("On a Mac, new versions are installed by hand for now.".into());
+        return Err(
+            "On a Mac, download it from its page (YTFast.dmg) and drag YTFast into Applications, as the first time."
+                .into(),
+        );
     }
     updater.installation().map(|_| ()).map_err(|reason| {
         log::warn!("updates: this copy cannot install them: {reason}");

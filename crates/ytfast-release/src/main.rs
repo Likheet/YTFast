@@ -4,15 +4,17 @@
 //! ```text
 //! ytfast-release key <key file>         make the signing key (once; keep it safe)
 //! ytfast-release public <key file>      print its public half, for the app
-//! ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<Mac zip>]
+//! ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<YTFast.dmg>]
 //! ```
 //!
 //! `pack` writes, in the out folder:
+//! - `YTFast.exe`, the Windows program, and `YTFast.dmg`, the Mac disk
+//!   image (CI's, when given): what people download;
 //! - `ytfast-v<version>-x86_64-pc-windows-msvc.zip`: a folder of that name
-//!   holding `ytfast.exe` and the `ytfast-portable.txt` marker (the
-//!   updater's portable layout; also what a person downloads by hand);
-//! - `YTFast-<version>-Mac.zip`, a copy of the Mac build, when given (the
-//!   Mac updates by hand for now);
+//!   holding `ytfast.exe` and the `ytfast-portable.txt` marker, the
+//!   updater's portable layout, which every installed Windows copy looks
+//!   for (the Mac updates by hand for now). It carries no clock time, so
+//!   the same program always packs to the same bytes;
 //! - `checksums.txt`, every file's SHA-256 in `sha256sum` form;
 //! - `checksums.txt.sig`, the raw 64-byte Ed25519 signature of exactly
 //!   `checksums.txt`'s bytes, which the app checks against the public key it
@@ -66,7 +68,7 @@ fn main() -> Result<()> {
         }
         _ => bail!(
             "usage:\n  ytfast-release key <key file>\n  ytfast-release public <key file>\n  \
-             ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<Mac zip>]"
+             ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<YTFast.dmg>]"
         ),
     }
     Ok(())
@@ -130,8 +132,17 @@ fn pack(
     zip.finish()?;
     files.push(archive);
 
+    let download = out.join("YTFast.exe");
+    fs::write(&download, &program)?;
+    files.push(download);
+
     if let Some(mac) = mac {
-        let copy = out.join(format!("YTFast-{version}-Mac.zip"));
+        ensure!(
+            mac.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dmg")),
+            "the Mac build is CI's disk image, YTFast.dmg"
+        );
+        let copy = out.join("YTFast.dmg");
         fs::copy(mac, &copy).with_context(|| format!("copying {}", mac.display()))?;
         files.push(copy);
     }
@@ -190,7 +201,7 @@ mod tests {
 
         let exe = dir.path().join("YTFast.exe");
         fs::write(&exe, b"not really a program").unwrap();
-        let mac = dir.path().join("mac.zip");
+        let mac = dir.path().join("mac.dmg");
         fs::write(&mac, b"not really a Mac app").unwrap();
         let out = dir.path().join("out");
         let files = pack("0.6.0", &key, &out, &exe, Some(&mac)).unwrap();
@@ -202,11 +213,13 @@ mod tests {
             names,
             [
                 "ytfast-v0.6.0-x86_64-pc-windows-msvc.zip",
-                "YTFast-0.6.0-Mac.zip",
+                "YTFast.exe",
+                "YTFast.dmg",
                 "checksums.txt",
                 "checksums.txt.sig",
             ]
         );
+        assert_eq!(fs::read(&files[1]).unwrap(), b"not really a program");
 
         // The archive holds the program and the marker in the updater's
         // folder.
@@ -226,15 +239,15 @@ mod tests {
 
         // checksums.txt names each file once, in sha256sum form, and its
         // signature verifies with the public key alone.
-        let checksums = fs::read_to_string(&files[2]).unwrap();
+        let checksums = fs::read_to_string(&files[3]).unwrap();
         let lines: Vec<&str> = checksums.lines().collect();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         let digest = hex(&Sha256::digest(fs::read(&files[0]).unwrap()));
         assert_eq!(
             lines[0],
             format!("{digest}  ytfast-v0.6.0-x86_64-pc-windows-msvc.zip")
         );
-        let signature = fs::read(&files[3]).unwrap();
+        let signature = fs::read(&files[4]).unwrap();
         assert_eq!(signature.len(), 64);
         let public = unhex(&public).unwrap();
         assert!(
@@ -247,7 +260,16 @@ mod tests {
                 .verify(b"something else", &signature)
                 .is_err()
         );
+        // Packed again, the update archive is the same to the byte, so
+        // files can be added to a release without changing it.
+        let archive = fs::read(&files[0]).unwrap();
+        let again = dir.path().join("again");
+        let repacked = pack("0.6.0", &key, &again, &exe, None).unwrap();
+        assert_eq!(fs::read(&repacked[0]).unwrap(), archive);
+
         assert!(pack("0.6", &key, &out, &exe, None).is_ok());
         assert!(pack("v0.6.0", &key, &out, &exe, None).is_err());
+        // The Mac build is a disk image, not a zip.
+        assert!(pack("0.6.0", &key, &out, &exe, Some(&dir.path().join("mac.zip"))).is_err());
     }
 }
