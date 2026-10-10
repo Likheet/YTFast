@@ -3312,6 +3312,155 @@ mod tests {
         fn shows(&self, name: &str) -> bool {
             self.named.iter().any(|(n, _)| n == name)
         }
+
+        /// A frame with the wheel turned (points, as a touchpad's) at `at`.
+        fn wheel(&mut self, at: egui::Pos2, dy: f32) {
+            self.frame(vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, dy),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+        }
+    }
+
+    /// Home ten shelves long, shown in a test window, and its loading.
+    fn long_home(w: &mut Window) -> u64 {
+        w.h.act(Action::Navigate(Route::Home));
+        w.h.app.load(Route::Home);
+        let load =
+            w.h.requests()
+                .into_iter()
+                .filter_map(|r| match r {
+                    Request::Page {
+                        route: Route::Home,
+                        load,
+                        ..
+                    } => Some(load),
+                    _ => None,
+                })
+                .last()
+                .expect("Home is asked for");
+        let shelves = (0..10)
+            .map(|n| Section {
+                title: format!("Shelf {n}"),
+                items: (0..3)
+                    .map(|i| Item::Track(song(&format!("s{n}-{i}"))))
+                    .collect(),
+                ..Section::default()
+            })
+            .collect();
+        w.h.answer(Event::Page(
+            Route::Home,
+            load,
+            Ok(Page {
+                sections: shelves,
+                ..Page::default()
+            }),
+        ));
+        load
+    }
+
+    fn asked_for_more(w: &mut Window) -> usize {
+        w.h.requests()
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    Request::MoreResults {
+                        route: Route::Home,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// Home's next shelves are asked for a screen and a half before its
+    /// end comes into view, not at its top.
+    #[test]
+    fn home_asks_for_more_before_its_end_shows() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        long_home(&mut w);
+        w.settle();
+        assert_eq!(asked_for_more(&mut w), 0, "at the top");
+        // Scrolled on until the end is near, not yet in view.
+        let at = egui::pos2(700.0, 400.0);
+        let mut asked = 0;
+        for _ in 0..40 {
+            w.wheel(at, -60.0);
+            asked += asked_for_more(&mut w);
+            if asked > 0 {
+                break;
+            }
+        }
+        assert_eq!(asked, 1);
+        // The end was not yet near the view: well over a third of a
+        // screen of the page was still to come.
+        let asked_at = w.h.app.page_offset.get();
+        for _ in 0..40 {
+            w.wheel(at, -60.0);
+        }
+        assert!(
+            w.h.app.page_offset.get() - asked_at > 300.0,
+            "asked at {asked_at}, the end at {}",
+            w.h.app.page_offset.get()
+        );
+    }
+
+    /// A scroll that reaches Home's end stops there: shelves that arrive
+    /// meanwhile show below, and the page scrolls on into them only once
+    /// the scrolling has paused.
+    #[test]
+    fn a_scroll_stops_at_homes_end_until_it_pauses() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        let load = long_home(&mut w);
+        w.settle();
+        let at = egui::pos2(700.0, 400.0);
+        // Scrolled to the end, and on.
+        let mut last = -1.0;
+        for _ in 0..80 {
+            w.wheel(at, -120.0);
+            let now = w.h.app.page_offset.get();
+            if now == last {
+                break;
+            }
+            last = now;
+        }
+        let end = w.h.app.page_offset.get();
+        w.h.requests();
+        // More shelves arrive while the scroll goes on: it stays put.
+        w.h.answer(Event::MoreSections {
+            route: Route::Home,
+            load,
+            sections: (10..13)
+                .map(|n| Section {
+                    title: format!("Shelf {n}"),
+                    items: (0..3)
+                        .map(|i| Item::Track(song(&format!("s{n}-{i}"))))
+                        .collect(),
+                    ..Section::default()
+                })
+                .collect(),
+            done: true,
+        });
+        for _ in 0..5 {
+            w.wheel(at, -120.0);
+        }
+        assert!(
+            (w.h.app.page_offset.get() - end).abs() < 1.0,
+            "held at the end"
+        );
+        // A pause, then scrolling on: into the new shelves.
+        w.frame(Vec::new());
+        w.frame(Vec::new());
+        for _ in 0..3 {
+            w.wheel(at, -120.0);
+        }
+        assert!(w.h.app.page_offset.get() > end + 100.0, "scrolled on");
     }
 
     /// In every theme, a right-click on the player bar (not on its
