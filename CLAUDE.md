@@ -78,14 +78,16 @@ nothing then), so whatever keeps the music going belongs there, not in
   margins, colours). Do not round or "tidy" them; to change a screen,
   open the real one, measure it (the page's computed styles), then check
   the result in `--demo` beside it.
-- **Two themes.** `PALETTE` and the sizes that differ by theme
+- **Three themes.** `PALETTE` and the sizes that differ by theme
   (`top_bar_height()`, `player_bar_height()`, `guide_width()`,
   `page_foot()`, `Row::themed`) follow the theme chosen in Settings, so
   read them while drawing, never into a `const`. A screen that looks
   different in Premium keeps YouTube Music's code untouched and adds its
-  own behind `theme::premium()` (`docs/look/premium.md`). Tests that draw
-  or size things in Premium call `theme::set` themselves (it is per
-  thread).
+  own behind `theme::premium()` (`docs/look/premium.md`). Dynamic
+  Background does the same behind `theme::dynamic()`, with its own
+  screens in `views/dynamic.rs` (`docs/look/dynamic-background.md`).
+  Tests that draw or size things in Premium or Dynamic Background call
+  `theme::set` themselves (it is per thread).
 - **The pointer is YouTube Music's** (read from its stylesheet): a hand on
   whatever can be pressed (`theme::pointing`; round buttons, chips, pills,
   switches and menus already do it), and "not allowed" on the player's
