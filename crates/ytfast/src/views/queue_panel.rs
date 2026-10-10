@@ -115,7 +115,7 @@ fn carry(
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         return None;
     }
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
     // Between which rows it would land.
     let queue = Row::QUEUE.themed();
     let step = queue.height + queue.gap;

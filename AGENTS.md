@@ -252,6 +252,14 @@ Paolino), as `audio.rs` does.
   first. Opening one takes about 0.15 s, which made songs start later, so
   a spare is opened while a song plays and nothing waits
   (`Player::prepare_spare`): moving to it takes about 0.01 s.
+- The device is Windows' default output, opened as its virtual default
+  device (which follows the default by itself). When that will not open
+  (seen with Bluetooth headphones: "Failed to get audio client"), the
+  default output is opened by its name instead and YTFast follows the
+  default itself, every 2 s (`Player::follow_default_by_name`). A failure
+  inside the audio library leaves the sound thread running: it opens the
+  device again and the song carries on where it was (`audio_thread::run`).
+  Device moves and failures are written to the log as warnings.
 - A song is downloaded whole, into memory (a song over 40 MB, into a
   temporary file instead: `IN_MEMORY` in `stream.rs`), and plays from its
   first bytes while the rest arrives. Its link expires, but nothing more

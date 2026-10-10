@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use ytfast_core::audio::Player;
+use ytfast_core::audio::{Maintenance, Player};
 
 pub enum Command {
     /// Play a whole song from the start. `length` is in seconds.
@@ -254,7 +254,7 @@ impl Engine {
         }
     }
 
-    fn maintain(&mut self) -> Option<String> {
+    fn maintain(&mut self) -> Option<Maintenance> {
         match self {
             Self::Real(player) => player.maintain(),
             Self::Silent(_) => None,
@@ -316,140 +316,218 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
         s.problem = problem.clone();
     });
     wake();
+    // The song playing, to carry on with when the device has to be opened
+    // again, and where it was.
+    let mut current: Option<(std::sync::Arc<ytfast_core::stream::SongData>, f32)> = None;
+    let mut last_position = 0.0;
+    let mut last_paused = false;
+    // The audio library failed (it can while a device comes or goes, as
+    // Bluetooth headphones do): when the device was last tried again.
+    let mut recovering: Option<Instant> = None;
 
     loop {
-        let mut changed = false;
-        // A sounding song is followed closely (its position, its end);
-        // otherwise a look now and then is enough (a device that changed).
-        let sounding = entry.is_some() && !engine.paused();
-        let wait = Duration::from_millis(if sounding { 100 } else { 1000 });
-        match commands.recv_timeout(wait) {
-            Ok(command) => {
-                changed = true;
-                match command {
-                    Command::Play {
-                        entry: id,
-                        data,
-                        gain,
-                        length: song_length,
-                    } => {
-                        pending_jump = None;
-                        // Speakers or headphones may have been connected
-                        // since: look again rather than play to nobody.
-                        if no_device {
-                            match Player::open() {
-                                Ok(mut player) => {
-                                    if let Some(v) = volume {
-                                        player.set_volume(v);
-                                    }
-                                    engine = Engine::Real(Box::new(player));
-                                    no_device = false;
-                                }
-                                Err(e) => problem = Some(format!("No sound output: {e}")),
-                            }
-                        }
-                        let played = if no_device {
-                            Err(NO_DEVICE.to_string())
-                        } else {
-                            engine
-                                .play(data, gain, song_length)
-                                .map_err(|e| format!("This song could not be played: {e}"))
-                        };
-                        match played {
+        // Each turn is guarded: a failure in the audio library leaves this
+        // thread running, the device is opened again, and the song carries
+        // on from where it was, instead of every song after it being
+        // silent until YTFast is opened again.
+        let turn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> bool {
+            let mut changed = false;
+            if let Some(tried) = recovering
+                && tried.elapsed() >= RECOVER_EVERY
+            {
+                recovering = Some(Instant::now());
+                if let Ok(mut player) = Player::open() {
+                    if let Some(v) = volume {
+                        player.set_volume(v);
+                    }
+                    engine = Engine::Real(Box::new(player));
+                    recovering = None;
+                    no_device = false;
+                    problem = None;
+                    changed = true;
+                    log::warn!("the sound device works again: {}", engine.device());
+                    if let (Some((data, gain)), Some(_)) = (&current, entry) {
+                        match engine.play(std::sync::Arc::clone(data), *gain, length) {
                             Ok(()) => {
-                                entry = Some(id);
-                                length = song_length;
-                                ended_sent = false;
-                                problem = None;
+                                if last_position > 0.5 {
+                                    pending_jump = Some(last_position);
+                                }
+                                if last_paused {
+                                    engine.pause();
+                                }
                             }
-                            Err(message) => {
-                                // The song cannot be played: the window
-                                // decides whether to move on. Without a
-                                // device, the next song could not either.
-                                update(&mut |s| {
-                                    s.failed = Some(PlayFailure {
-                                        entry: id,
-                                        message: message.clone(),
-                                        song_only: !no_device,
-                                    });
-                                });
-                                entry = None;
-                                length = 0.0;
-                            }
+                            Err(e) => problem = Some(format!("This song could not be played: {e}")),
                         }
                     }
-                    Command::Pause => engine.pause(),
-                    Command::Resume => engine.resume(),
-                    Command::Seek(to) => {
-                        let to = to.clamp(0.0, (length - 0.5).max(0.0));
-                        if engine.can_jump(to) {
+                }
+            }
+            // A sounding song is followed closely (its position, its end);
+            // otherwise a look now and then is enough (a device that changed).
+            let sounding = entry.is_some() && !engine.paused();
+            let wait = Duration::from_millis(if sounding { 100 } else { 1000 });
+            match commands.recv_timeout(wait) {
+                Ok(command) => {
+                    changed = true;
+                    match command {
+                        Command::Play {
+                            entry: id,
+                            data,
+                            gain,
+                            length: song_length,
+                        } => {
                             pending_jump = None;
-                            jump(&mut engine, to, &mut ended_sent, &mut problem);
-                        } else {
-                            pending_jump = Some(to);
+                            // Speakers or headphones may have been connected
+                            // since: look again rather than play to nobody.
+                            if no_device {
+                                match Player::open() {
+                                    Ok(mut player) => {
+                                        if let Some(v) = volume {
+                                            player.set_volume(v);
+                                        }
+                                        engine = Engine::Real(Box::new(player));
+                                        no_device = false;
+                                    }
+                                    Err(e) => problem = Some(format!("No sound output: {e}")),
+                                }
+                            }
+                            let kept = std::sync::Arc::clone(&data);
+                            let played = if no_device {
+                                Err(NO_DEVICE.to_string())
+                            } else {
+                                engine
+                                    .play(data, gain, song_length)
+                                    .map_err(|e| format!("This song could not be played: {e}"))
+                            };
+                            match played {
+                                Ok(()) => {
+                                    current = Some((kept, gain));
+                                    entry = Some(id);
+                                    length = song_length;
+                                    ended_sent = false;
+                                    problem = None;
+                                }
+                                Err(message) => {
+                                    // The song cannot be played: the window
+                                    // decides whether to move on. Without a
+                                    // device, the next song could not either.
+                                    update(&mut |s| {
+                                        s.failed = Some(PlayFailure {
+                                            entry: id,
+                                            message: message.clone(),
+                                            song_only: !no_device,
+                                        });
+                                    });
+                                    entry = None;
+                                    length = 0.0;
+                                }
+                            }
+                        }
+                        Command::Pause => engine.pause(),
+                        Command::Resume => engine.resume(),
+                        Command::Seek(to) => {
+                            let to = to.clamp(0.0, (length - 0.5).max(0.0));
+                            if engine.can_jump(to) {
+                                pending_jump = None;
+                                jump(&mut engine, to, &mut ended_sent, &mut problem);
+                            } else {
+                                pending_jump = Some(to);
+                            }
+                        }
+                        Command::Stop => {
+                            engine.stop();
+                            entry = None;
+                            pending_jump = None;
+                            // Not the next song's length.
+                            length = 0.0;
+                        }
+                        Command::Volume(v) => {
+                            volume = Some(v);
+                            engine.set_volume(v);
                         }
                     }
-                    Command::Stop => {
-                        engine.stop();
-                        entry = None;
-                        pending_jump = None;
-                        // Not the next song's length.
-                        length = 0.0;
-                    }
-                    Command::Volume(v) => {
-                        volume = Some(v);
-                        engine.set_volume(v);
-                    }
                 }
+                // Nothing waits: time to open a spare stream, if one is due.
+                Err(RecvTimeoutError::Timeout) => engine.prepare_spare(),
+                Err(RecvTimeoutError::Disconnected) => return false,
             }
-            // Nothing waits: time to open a spare stream, if one is due.
-            Err(RecvTimeoutError::Timeout) => engine.prepare_spare(),
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        if let Some(to) = pending_jump
-            && engine.can_jump(to)
-        {
-            pending_jump = None;
-            jump(&mut engine, to, &mut ended_sent, &mut problem);
-            changed = true;
-        }
-        if let Some(note) = engine.maintain() {
-            // The window hears of a problem once, not at every try.
-            changed |= problem.as_ref() != Some(&note);
-            problem = Some(note);
-        }
-        // Say once that the song ended, or that it broke off before its end
-        // (its download failed or stalled): that is no reason to move on.
-        let just_ended = entry.is_some() && !ended_sent && engine.finished();
-        let broke_off = if just_ended { engine.broke_off() } else { None };
-        if just_ended {
-            ended_sent = true;
-            changed = true;
-        }
-        let paused = engine.paused();
-        update(&mut |s| {
-            s.entry = entry;
-            s.position = engine.position().min(length);
-            s.length = length;
-            s.paused = paused;
-            s.device = engine.device();
-            s.problem = problem.clone();
-            match (&broke_off, entry) {
-                (Some(why), Some(id)) => {
-                    s.failed = Some(PlayFailure {
-                        entry: id,
-                        message: format!(
-                            "The song stopped: its download broke off ({why}). Press Play to try again."
-                        ),
-                        song_only: false,
-                    });
+            if let Some(to) = pending_jump
+                && engine.can_jump(to)
+            {
+                pending_jump = None;
+                jump(&mut engine, to, &mut ended_sent, &mut problem);
+                changed = true;
+            }
+            match engine.maintain() {
+                // Playing on another device (headphones connected): a device
+                // problem shown before is over.
+                Some(Maintenance::Moved(_)) => {
+                    problem = None;
+                    changed = true;
                 }
-                _ if just_ended => s.ended = entry,
-                _ => {}
+                Some(Maintenance::Problem(note)) => {
+                    // The window hears of a problem once, not at every try.
+                    changed |= problem.as_ref() != Some(&note);
+                    problem = Some(note);
+                }
+                None => {}
             }
-        });
-        if changed {
-            wake();
+            // Say once that the song ended, or that it broke off before its end
+            // (its download failed or stalled): that is no reason to move on.
+            let just_ended = entry.is_some() && !ended_sent && engine.finished();
+            let broke_off = if just_ended { engine.broke_off() } else { None };
+            if just_ended {
+                ended_sent = true;
+                changed = true;
+            }
+            let paused = engine.paused();
+            last_position = engine.position().min(length);
+            last_paused = paused;
+            update(&mut |s| {
+                s.entry = entry;
+                s.position = engine.position().min(length);
+                s.length = length;
+                s.paused = paused;
+                s.device = engine.device();
+                s.problem = problem.clone();
+                match (&broke_off, entry) {
+                    (Some(why), Some(id)) => {
+                        s.failed = Some(PlayFailure {
+                            entry: id,
+                            message: format!(
+                                "The song stopped: its download broke off ({why}). Press Play to try again."
+                            ),
+                            song_only: false,
+                        });
+                    }
+                    _ if just_ended => s.ended = entry,
+                    _ => {}
+                }
+            });
+            if changed {
+                wake();
+            }
+            true
+        }));
+        match turn {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(_) => {
+                // The panic hook has written why in the log.
+                log::warn!("the sound device failed; opening it again");
+                let broken = std::mem::replace(&mut engine, Engine::Silent(Silent::default()));
+                // Letting it go can fail too: that is no reason to stop.
+                let _ =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(broken)));
+                no_device = true;
+                problem = Some("The sound device stopped. Trying it again...".into());
+                // At once, then every RECOVER_EVERY.
+                recovering = Some(Instant::now() - RECOVER_EVERY);
+                update(&mut |s| s.problem = problem.clone());
+                wake();
+            }
         }
     }
 }
+
+/// How often a device that failed is tried again.
+const RECOVER_EVERY: Duration = Duration::from_secs(2);

@@ -5946,6 +5946,7 @@ name = "ytfast-core"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "cpal",
  "directories",
  "fastframe-audio",
  "log",

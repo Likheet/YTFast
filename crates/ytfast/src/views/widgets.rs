@@ -573,6 +573,11 @@ pub fn track_row_in(
         pos2(rect.left() + style.pad, rect.center().y - style.art / 2.0),
         Vec2::splat(style.art),
     );
+    // Up next's rows move (above), but their cover plays: a hand there, as
+    // YouTube Music's play button.
+    if queued && playable && ui.rect_contains_pointer(art) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     // YouTube Music's small play button: a 24 icon (its 32 spot centred).
     // The playing song: bars while it sounds (still, so a playing list
     // costs nothing), pause under the pointer, play while paused.
