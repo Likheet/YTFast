@@ -19,10 +19,15 @@ the owner's word.
   cover kept at 16 by 16, drawn up to 48 by 48 and blurred, so its light
   and dark parts stay where they were, its colours made richer and kept
   dark enough for white words, darkened toward the foot and the corners.
-  The cover (at most 480, r 16) with the song's name and artist under it;
-  beside it one glass panel (black@0.27, a white@0.08 edge, r 20) holding
-  the tabs and what they show; the two share a middle line. Lyrics are
-  large and fade out over the last 56 at the panel's top and foot.
+  The cover (at most 480, r 16) with the song's name and artist centred
+  under it; beside it the tabs and what they show, straight on the song's
+  colours with no box round them, as YouTube Music sets a playlist's songs
+  beside its cover. The tabs are clear glass: a capsule barely filled with
+  no edge, the chosen tab a clear capsule with one thin rim. Up next's
+  covers are 48 (rows 64); the playing song keeps its cover, lightly
+  darkened, with a white disc and its mark on it (bars while it sounds).
+  Lyrics are large and fade out over the last 56 at the column's top and
+  foot.
 - Everything stays still, so an idle window costs nothing (measured: 0%
   of a core over 10 s, paused on the player page).
 - The accent is Apple Music's pink-red (`#fa2d48`), which sits well beside
@@ -49,7 +54,7 @@ the owner's word.
   playlist's title 48 (32 in less room).
 - Even margins (56 from a window 1364 wide, 40 from 1150, else 24), at
   most 1440 wide; covers about 200 wide, 20 apart; songs in up to three
-  columns. Settings is one column, at most 760, in the page's middle.
+  columns. Settings' column is at most 760.
 - Corners 8 to 16 everywhere, no hairlines between songs, and a thin
   accent line round whatever the keyboard is on.
 - The menu: "YOUR LIBRARY", each playlist a small cover and its name (who
@@ -61,10 +66,12 @@ the owner's word.
 - Dialogs share one frame (corners 16); the playlist form has boxed
   fields.
 
-## In both looks
+## In every look
 
 - The window's own buttons (Windows) are as tall as the top bar, their
   glyphs on its middle line with the bar's other buttons, in its white.
+- Settings is one column in the middle of the page (at most 640;
+  Premium's 760).
 - A mood button on Home (or a filter over Liked Music) keeps the page
   showing, dimmed, with the button lit at once, until the new page
   arrives (`page::stand_in`), instead of emptying it.

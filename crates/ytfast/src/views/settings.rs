@@ -6,24 +6,17 @@ use egui::{Align, Layout, Rect, UiBuilder, pos2, vec2};
 use crate::app::{Action, App, Auth, Setting};
 use crate::theme::{self, PALETTE, Theme};
 
-/// Premium's column: at most this wide, in the page's middle.
-const PREMIUM_COLUMN: f32 = 760.0;
-
 pub fn show(app: &App, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical()
         .id_salt("settings")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if !theme::premium() {
-                ui.set_max_width(640.0);
-                contents(app, ui);
-                return;
-            }
-            // Premium: one column in the middle of the page, as much room
-            // either side of it.
+            // One column in the middle of the page, as much room either
+            // side of it: at most 640 wide (Premium's cards 760).
+            let most = if theme::premium() { 760.0 } else { 640.0 };
             let full = ui.max_rect();
             // At least 24 clear of the menu and the window's edge.
-            let width = (full.width() - 48.0).clamp(0.0, PREMIUM_COLUMN);
+            let width = (full.width() - 48.0).clamp(0.0, most);
             let column = Rect::from_min_size(
                 pos2(full.center().x - width / 2.0, ui.cursor().top()),
                 vec2(width, full.height()),
