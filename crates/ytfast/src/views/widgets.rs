@@ -147,14 +147,18 @@ pub enum Under {
 }
 
 impl Row {
-    /// The same rows in the Premium theme: corners 8; an album's and a
-    /// playlist's songs closer together and lit under the pointer; a
-    /// shelf's songs taller and apart, without hairlines.
+    /// The same rows in the Premium theme: corners 8 and no hairlines
+    /// between them; an album's and a playlist's songs closer together and
+    /// lit under the pointer; a shelf's songs taller and apart.
     pub fn themed(self) -> Self {
         if !theme::premium() {
             return self;
         }
-        let mut row = Self { corner: 8, ..self };
+        let mut row = Self {
+            corner: 8,
+            line: false,
+            ..self
+        };
         if self == Self::LIST || self == Self::PLAYLIST {
             row.text_gap = 4.0;
             row.hover = ROW_HOVER;
@@ -369,6 +373,7 @@ pub fn rows(
     count: usize,
     mut row: impl FnMut(&mut egui::Ui, usize),
 ) {
+    let style = style.themed();
     let step = style.height + style.gap + ui.spacing().item_spacing.y;
     let top = ui.cursor().top();
     let clip = ui.clip_rect();
@@ -1533,8 +1538,19 @@ pub fn chip(app: &App, ui: &mut egui::Ui, card: &Card) {
 
 /// [`chip`], `height` high (32: the chips over Liked Music's songs).
 pub fn chip_sized(app: &App, ui: &mut egui::Ui, card: &Card, height: f32) {
-    if theme::chip(ui, &card.title, card.look.chosen, height).clicked() {
-        if card.look.chosen {
+    // On a page standing in while another loads, the button for the page
+    // wanted is the one lit.
+    let chosen = if app.standing_in.get() {
+        matches!(
+            &card.open,
+            Some(Target::Browse { id, params, .. })
+                if crate::backend::Route::browse(id.clone(), params.clone()) == app.route
+        )
+    } else {
+        card.look.chosen
+    };
+    if theme::chip(ui, &card.title, chosen, height).clicked() {
+        if chosen {
             app.act(Action::Navigate(crate::backend::Route::Home));
         } else if let Some(target) = card.open.clone() {
             app.act(Action::Open(target, None));

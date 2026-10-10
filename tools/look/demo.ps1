@@ -2,7 +2,15 @@
 # buttons by their screen-reader names, and saves pictures of it, without
 # moving the mouse or taking the keyboard. Windows only.
 #
+# The window opens out of sight (minimised, then placed far off the screen
+# without being brought forward), so whoever uses the computer meanwhile
+# keeps their screen; only its taskbar button shows. Pictures are still
+# taken. Pass -Visible to watch it on the screen instead. Off the screen,
+# use press, key, shot, list, size and cost; search and tour give the
+# window the keyboard, which brings it forward.
+#
 #   .\tools\look\demo.ps1 start                 # target\release (else debug) ytfast.exe --demo
+#   .\tools\look\demo.ps1 start -Visible        # on the screen
 #   .\tools\look\demo.ps1 start -Exe C:\path\YTFast.exe
 #   .\tools\look\demo.ps1 press -Names "Explore"          # ";" between several; "Name#2" = the second
 #   .\tools\look\demo.ps1 search -Text "mara"             # types in the search box and searches
@@ -34,7 +42,8 @@ param(
     [int]$Seconds = 10,
     [double]$X,
     [double]$Y,
-    [switch]$NoEnter
+    [switch]$NoEnter,
+    [switch]$Visible
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,11 +51,11 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $shots = Join-Path $root 'target\look\app'
 
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
-if (-not ('LookWin2' -as [type])) {
+if (-not ('LookWin3' -as [type])) {
     Add-Type -ReferencedAssemblies System.Drawing @'
 using System;
 using System.Runtime.InteropServices;
-public static class LookWin2 {
+public static class LookWin3 {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
@@ -58,12 +67,19 @@ public static class LookWin2 {
     [DllImport("user32.dll")] public static extern short VkKeyScan(char c);
     [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr h, ref PLACEMENT p);
+    [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr h, ref PLACEMENT p);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] public struct PLACEMENT {
+        public int Length, Flags, ShowCmd; public POINT Min, Max; public RECT Normal;
+    }
 }
 '@
 }
-[void][LookWin2]::SetProcessDPIAware()
+[void][LookWin3]::SetProcessDPIAware()
 
 # The demo this tool started: its process number is kept in
 # target\look\demo.pid, so the tool never acts on another demo (another
@@ -79,27 +95,45 @@ function Get-Demo {
     $process
 }
 
-function Get-Scale([IntPtr]$hwnd) { [LookWin2]::GetDpiForWindow($hwnd) / 96.0 }
+function Get-Scale([IntPtr]$hwnd) { [LookWin3]::GetDpiForWindow($hwnd) / 96.0 }
+
+# Shows the window in its normal state without bringing it forward (when
+# minimised or maximised), and when `$away`, far left of every screen.
+function Set-Placement([IntPtr]$hwnd, [bool]$away) {
+    $place = New-Object LookWin3+PLACEMENT
+    $place.Length = [System.Runtime.InteropServices.Marshal]::SizeOf($place)
+    [void][LookWin3]::GetWindowPlacement($hwnd, [ref]$place)
+    if ($away) {
+        $normal = $place.Normal
+        $w = $normal.R - $normal.L; $h = $normal.B - $normal.T
+        $normal.L = -12000; $normal.T = 0; $normal.R = -12000 + $w; $normal.B = $h
+        $place.Normal = $normal
+    }
+    $place.ShowCmd = 4 # SW_SHOWNOACTIVATE
+    [void][LookWin3]::SetWindowPlacement($hwnd, [ref]$place)
+}
 
 function Set-Size([System.Diagnostics.Process]$demo, [double]$w, [double]$h) {
     $hwnd = $demo.MainWindowHandle
     $scale = Get-Scale $hwnd
-    [void][LookWin2]::ShowWindow($hwnd, 9) # restore, if maximised or minimised
-    Start-Sleep -Milliseconds 300
-    $outer = New-Object LookWin2+RECT; $inner = New-Object LookWin2+RECT
-    [void][LookWin2]::GetWindowRect($hwnd, [ref]$outer); [void][LookWin2]::GetClientRect($hwnd, [ref]$inner)
+    if ([LookWin3]::IsIconic($hwnd) -or [LookWin3]::IsZoomed($hwnd)) {
+        Set-Placement $hwnd $false
+        Start-Sleep -Milliseconds 300
+    }
+    $outer = New-Object LookWin3+RECT; $inner = New-Object LookWin3+RECT
+    [void][LookWin3]::GetWindowRect($hwnd, [ref]$outer); [void][LookWin3]::GetClientRect($hwnd, [ref]$inner)
     $frameW = ($outer.R - $outer.L) - ($inner.R - $inner.L)
     $frameH = ($outer.B - $outer.T) - ($inner.B - $inner.T)
     $flags = 0x0002 -bor 0x0004 -bor 0x0010 # keep its place and order, do not activate
     # Twice: the first change can change the frame (after a maximised window).
     for ($i = 0; $i -lt 2; $i++) {
-        [void][LookWin2]::GetWindowRect($hwnd, [ref]$outer); [void][LookWin2]::GetClientRect($hwnd, [ref]$inner)
+        [void][LookWin3]::GetWindowRect($hwnd, [ref]$outer); [void][LookWin3]::GetClientRect($hwnd, [ref]$inner)
         $frameW = ($outer.R - $outer.L) - ($inner.R - $inner.L)
         $frameH = ($outer.B - $outer.T) - ($inner.B - $inner.T)
-        [void][LookWin2]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, [int][math]::Round($w * $scale) + $frameW, [int][math]::Round($h * $scale) + $frameH, $flags)
+        [void][LookWin3]::SetWindowPos($hwnd, [IntPtr]::Zero, 0, 0, [int][math]::Round($w * $scale) + $frameW, [int][math]::Round($h * $scale) + $frameH, $flags)
         Start-Sleep -Milliseconds 400
     }
-    [void][LookWin2]::GetClientRect($hwnd, [ref]$inner)
+    [void][LookWin3]::GetClientRect($hwnd, [ref]$inner)
     "inside: {0}x{1} points ({2}x{3} pixels at {4:P0})" -f (($inner.R - $inner.L) / $scale), (($inner.B - $inner.T) / $scale), ($inner.R - $inner.L), ($inner.B - $inner.T), $scale
 }
 
@@ -128,12 +162,12 @@ function Invoke-Named([System.Diagnostics.Process]$demo, [string]$steps) {
 # keyboard).
 function Send-Key([System.Diagnostics.Process]$demo, [uint32]$vk) {
     $hwnd = $demo.MainWindowHandle
-    $scan = [LookWin2]::MapVirtualKey($vk, 0)
+    $scan = [LookWin3]::MapVirtualKey($vk, 0)
     $down = 1 -bor ($scan -shl 16)
     $up = [int64]$down -bor 0xC0000000
-    [void][LookWin2]::PostMessage($hwnd, 0x0100, [IntPtr]$vk, [IntPtr]$down)
+    [void][LookWin3]::PostMessage($hwnd, 0x0100, [IntPtr]$vk, [IntPtr]$down)
     Start-Sleep -Milliseconds 30
-    [void][LookWin2]::PostMessage($hwnd, 0x0101, [IntPtr]$vk, [IntPtr]$up)
+    [void][LookWin3]::PostMessage($hwnd, 0x0101, [IntPtr]$vk, [IntPtr]$up)
     Start-Sleep -Milliseconds 30
 }
 
@@ -143,14 +177,14 @@ function Save-Shot([System.Diagnostics.Process]$demo, [string]$name) {
     New-Item -ItemType Directory -Force $shots | Out-Null
     Start-Sleep -Milliseconds $PauseMs
     $hwnd = $demo.MainWindowHandle
-    $inner = New-Object LookWin2+RECT
-    [void][LookWin2]::GetClientRect($hwnd, [ref]$inner)
+    $inner = New-Object LookWin3+RECT
+    [void][LookWin3]::GetClientRect($hwnd, [ref]$inner)
     $w = $inner.R - $inner.L; $h = $inner.B - $inner.T
     if ($w -le 0 -or $h -le 0) { throw 'the window has no size (minimised?)' }
     $bitmap = New-Object System.Drawing.Bitmap $w, $h
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $hdc = $graphics.GetHdc()
-    [void][LookWin2]::PrintWindow($hwnd, $hdc, 3) # the inside only, drawn by the window itself
+    [void][LookWin3]::PrintWindow($hwnd, $hdc, 3) # the inside only, drawn by the window itself
     $graphics.ReleaseHdc($hdc); $graphics.Dispose()
     $out = Join-Path $shots "$name.png"
     $bitmap.Save($out, [System.Drawing.Imaging.ImageFormat]::Png); $bitmap.Dispose()
@@ -163,7 +197,7 @@ function Search-For([System.Diagnostics.Process]$demo, [string]$words) {
     $box.SetFocus(); Start-Sleep -Milliseconds 300
     # The app ignores a screen reader's "set the value", so the words are
     # typed: each letter a key posted to the window.
-    foreach ($c in $words.ToCharArray()) { Send-Key $demo ([uint32]([LookWin2]::VkKeyScan($c) -band 0xFF)) }
+    foreach ($c in $words.ToCharArray()) { Send-Key $demo ([uint32]([LookWin3]::VkKeyScan($c) -band 0xFF)) }
     Start-Sleep -Milliseconds $PauseMs
     if ($NoEnter) { return "typed: $words" }
     Send-Key $demo $keys.Return
@@ -176,12 +210,15 @@ switch ($Action) {
             $Exe = @('target\release\ytfast.exe', 'target\debug\ytfast.exe') | ForEach-Object { Join-Path $root $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
             if (-not $Exe) { throw 'no ytfast.exe built in target\ (build it, or pass -Exe)' }
         }
-        $process = Start-Process -FilePath $Exe -ArgumentList '--demo' -PassThru
+        $style = if ($Visible) { 'Normal' } else { 'Minimized' }
+        $process = Start-Process -FilePath $Exe -ArgumentList '--demo' -PassThru -WindowStyle $style
         New-Item -ItemType Directory -Force (Split-Path $pidFile) | Out-Null
         Set-Content -Path $pidFile -Value $process.Id
         for ($i = 0; $i -lt 50 -and $process.MainWindowHandle -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $process.Refresh() }
+        if (-not $Visible) { Set-Placement $process.MainWindowHandle $true }
         Start-Sleep -Milliseconds 1200
-        "started the demo (process $($process.Id)) from $Exe"
+        $where = if ($Visible) { 'on the screen' } else { 'off the screen' }
+        "started the demo (process $($process.Id)) from $Exe, $where"
         Set-Size $process $Width $Height
     }
     'size' { Set-Size (Get-Demo) $Width $Height }
@@ -191,7 +228,7 @@ switch ($Action) {
     # Letters to whatever has the keyboard (shortcuts), without Shift.
     'type' {
         $demo = Get-Demo
-        foreach ($c in $Text.ToCharArray()) { Send-Key $demo ([uint32]([LookWin2]::VkKeyScan($c) -band 0xFF)) }
+        foreach ($c in $Text.ToCharArray()) { Send-Key $demo ([uint32]([LookWin3]::VkKeyScan($c) -band 0xFF)) }
         "typed: $Text"
     }
     'rclick' {
@@ -201,16 +238,16 @@ switch ($Action) {
         $hwnd = $demo.MainWindowHandle
         $scale = Get-Scale $hwnd
         $at = [IntPtr]((([int]($Y * $scale)) -shl 16) -bor (([int]($X * $scale)) -band 0xFFFF))
-        [void][LookWin2]::PostMessage($hwnd, 0x0200, [IntPtr]0, $at)
-        [void][LookWin2]::PostMessage($hwnd, 0x0204, [IntPtr]2, $at)
-        [void][LookWin2]::PostMessage($hwnd, 0x0205, [IntPtr]0, $at)
+        [void][LookWin3]::PostMessage($hwnd, 0x0200, [IntPtr]0, $at)
+        [void][LookWin3]::PostMessage($hwnd, 0x0204, [IntPtr]2, $at)
+        [void][LookWin3]::PostMessage($hwnd, 0x0205, [IntPtr]0, $at)
         "right-clicked at $X,$Y"
     }
     'shot' { Save-Shot (Get-Demo) $Name }
     'list' {
         $demo = Get-Demo
         $scale = Get-Scale $demo.MainWindowHandle
-        $origin = New-Object LookWin2+POINT; [void][LookWin2]::ClientToScreen($demo.MainWindowHandle, [ref]$origin)
+        $origin = New-Object LookWin3+POINT; [void][LookWin3]::ClientToScreen($demo.MainWindowHandle, [ref]$origin)
         foreach ($e in Get-Named $demo) {
             $c = $e.Current; $r = $c.BoundingRectangle
             if ($r.IsEmpty -or -not $c.Name) { continue }

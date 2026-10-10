@@ -29,14 +29,16 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     let mini = app.settings.mini_guide;
     // The open menu is solid `#030303` (an album's background stays behind
     // it); the strip is see-through until the page scrolls.
-    let solid = app.page_scrolled.get() || app.now_playing;
+    // Premium: the player page's colours show through it.
+    let solid = app.page_scrolled.get() || (app.now_playing && !theme::premium());
     let shown = ui
         .ctx()
         .animate_bool_with_time(egui::Id::new("guide-solid"), solid, 0.2);
     let fill = if mini {
         PALETTE.window.gamma_multiply(shown)
     } else if theme::premium() {
-        PALETTE.panel
+        // Premium: see-through, one background behind the menu and page.
+        egui::Color32::TRANSPARENT
     } else {
         PALETTE.window
     };
@@ -331,9 +333,16 @@ fn playlist_item(
             pos2(rect.left() + 12.0, rect.center().y - 17.0),
             Vec2::splat(34.0),
         );
-        widgets::cover_with(app, ui, art, thumbnail, CornerRadius::same(7));
         if route == Route::Liked {
+            // Liked Music has no cover: a glass tile with its thumb.
+            ui.painter().rect_filled(
+                art,
+                CornerRadius::same(7),
+                egui::Color32::from_white_alpha(20),
+            );
             theme::paint_icon(ui, Icon::ThumbsUpFilled, art, 18.0, PALETTE.accent);
+        } else {
+            widgets::cover_with(app, ui, art, thumbnail, CornerRadius::same(7));
         }
         let left = art.right() + 12.0;
         let width = (rect.right() - left - if hovered { 50.0 } else { 12.0 }).max(0.0);

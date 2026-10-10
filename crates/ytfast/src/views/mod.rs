@@ -26,8 +26,9 @@ use crate::theme::{self, PALETTE};
 pub const SEARCH_BOX: &str = "ytfast-search-box";
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
-    app.backdrop_slot
-        .set(Some(backdrop::paint(ui, ui.max_rect())));
+    let (album_slot, wash_slot) = backdrop::paint(ui, ui.max_rect());
+    app.backdrop_slot.set(Some(album_slot));
+    app.page_backdrop.set(false);
     // Over everything: the edges that resize YTFast's own window frame.
     window_frame::edges(ui.ctx());
     if !matches!(app.auth, Auth::SignedIn { .. }) {
@@ -74,14 +75,40 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             if open < 1.0 {
                 page::show(app, ui);
             }
+            // Premium: the playing song's colours, softly across the top
+            // of a page without a background of its own, and all over
+            // behind the player page; both under the menu and the bars.
+            let premium = theme::premium();
+            let wash = premium.then(|| app.listening_wash(ui.ctx())).flatten();
+            let screen = ui.ctx().content_rect();
+            let mut behind = Vec::new();
+            if premium && open < 1.0 && !app.page_backdrop.get() {
+                behind.push(backdrop::ambient(screen, wash, 1.0 - open));
+            }
             if open > 0.0 {
                 let area = ui.max_rect();
                 let down = area.height() * (1.0 - theme::bezier(0.2, 0.0, 0.6, 1.0, open));
                 let rect = area.translate(egui::vec2(0.0, down));
                 let mut player = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 player.set_clip_rect(area);
-                player.painter().rect_filled(rect, 0.0, PALETTE.window);
+                // Premium: the playing song's colours behind the whole
+                // window (the menu and the bars let them through), and
+                // rising with the page over what it covers.
+                if let Some(texture) = wash {
+                    behind.push(backdrop::listening(screen, texture, open));
+                    let rising = screen.translate(egui::vec2(0.0, down));
+                    player
+                        .painter()
+                        .add(backdrop::listening(rising, texture, 1.0));
+                } else {
+                    player.painter().rect_filled(rect, 0.0, PALETTE.window);
+                }
                 now_playing::show(app, &mut player);
+            }
+            if !behind.is_empty() {
+                ui.ctx()
+                    .layer_painter(egui::LayerId::background())
+                    .set(wash_slot, egui::Shape::Vec(behind));
             }
         });
     notice(app, ui);

@@ -1,7 +1,8 @@
 //! YTFast's own window frame on Windows, in place of Windows' title bar:
 //! the top bar moves the window (drag it) and maximizes it (double-click),
-//! Windows 11's three buttons stand at its top right, and the window's
-//! edges resize it. Windows still draws the shadow and rounds the corners.
+//! Windows 11's three buttons stand at its right end, as tall as the bar
+//! so their glyphs sit on its middle line with the bar's other buttons,
+//! and the window's edges resize it. Windows still draws the shadow and rounds the corners.
 //! The Mac keeps its own title bar.
 
 use egui::{
@@ -14,8 +15,9 @@ use crate::theme::PALETTE;
 /// YTFast draws its own frame (on Windows).
 pub const OWN_FRAME: bool = cfg!(windows);
 
-/// One of the buttons: Windows 11's caption buttons are 46 by 32.
-const BUTTON: Vec2 = vec2(46.0, 32.0);
+/// One of the buttons: Windows 11's caption buttons are 46 wide (32 high
+/// there; here as high as the bar they stand in).
+const BUTTON_WIDTH: f32 = 46.0;
 
 /// How far in from the window's edge a press resizes it.
 const EDGE: f32 = 5.0;
@@ -24,7 +26,7 @@ const CORNER: f32 = 16.0;
 
 /// The width the buttons take at the window's top right (none on the Mac).
 pub fn buttons_width() -> f32 {
-    if OWN_FRAME { 3.0 * BUTTON.x } else { 0.0 }
+    if OWN_FRAME { 3.0 * BUTTON_WIDTH } else { 0.0 }
 }
 
 /// Lets `bar` move the window, as a title bar does: drag to move (Windows
@@ -53,9 +55,10 @@ enum Caption {
 }
 
 /// Windows 11's minimize, maximize (restore when maximized) and close, at
-/// the top right of `bar`: 46 by 32 each, glyphs 10 across in white
-/// (white@0.36 while the window is in the background); under the pointer
-/// white@0.06 (white@0.04 pressed), and close `#c42b1c` with a white glyph.
+/// the right end of `bar`: 46 wide and as high as the bar, glyphs 10
+/// across on its middle line, in the bar's own white (its quieter grey
+/// while the window is in the background); under the pointer white@0.06
+/// (white@0.04 pressed), and close `#c42b1c` with a white glyph.
 pub fn buttons(ui: &egui::Ui, bar: Rect) {
     if !OWN_FRAME {
         return;
@@ -69,8 +72,11 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
     });
     let mut right = bar.right();
     for caption in [Caption::Close, Caption::Maximize, Caption::Minimize] {
-        let rect = Rect::from_min_size(pos2(right - BUTTON.x, bar.top()), BUTTON);
-        right -= BUTTON.x;
+        let rect = Rect::from_min_size(
+            pos2(right - BUTTON_WIDTH, bar.top()),
+            vec2(BUTTON_WIDTH, bar.height()),
+        );
+        right -= BUTTON_WIDTH;
         let name = match caption {
             Caption::Minimize => "Minimize window",
             Caption::Maximize if maximized => "Restore window",
@@ -102,7 +108,7 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
         let color = if close && lit {
             PALETTE.text
         } else if !focused {
-            Color32::from_white_alpha(92)
+            PALETTE.secondary
         } else if pressed {
             Color32::from_white_alpha(200)
         } else {
@@ -222,7 +228,7 @@ pub fn edges(ctx: &egui::Context) {
         (
             ResizeDirection::East,
             Rect::from_min_max(
-                pos2(w.right() - EDGE, w.top() + BUTTON.y),
+                pos2(w.right() - EDGE, w.top() + crate::theme::top_bar_height()),
                 pos2(w.right(), w.bottom() - CORNER),
             ),
         ),
