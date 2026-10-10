@@ -84,6 +84,16 @@ installs off.
      on your Mac should keep the permission from one build to the next;
      that is not yet confirmed.)
 
+From version 0.6.4, YTFast updates itself on a Mac too, as long as it is
+in **Applications**: once a day it looks for a new version and downloads
+it in the background. An **Update** button then shows at the top; click
+it, then **Restart to update**. YTFast closes, the new version takes its
+place, and it opens again, saying it was updated. If your Mac has the
+signature that a copy built on it uses ("YTFast Local Signing"), the new
+version is signed with it, so your Mac should keep Full Disk Access.
+Otherwise you may need to turn Full Disk Access on again after an update.
+**Settings**, **Updates** turns automatic downloads off.
+
 ## The first time
 
 The first time you sign in, YTFast downloads two helper programs, yt-dlp

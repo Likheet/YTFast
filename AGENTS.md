@@ -53,6 +53,7 @@ crates/ytfast/        the app: an egui window on fastframe
   src/main.rs         starts the window (`--demo`, `--verbose`); the
                       updater's helper and `--version` first
   src/update.rs       updates from the GitHub releases (fastframe-update)
+  src/update_mac.rs   the Mac's updates, done by YTFast itself
   src/app.rs          the app's state, and what every action does
   src/backend.rs      network and yt-dlp work, on a thread of its own
   src/audio_thread.rs the player, on a thread of its own
@@ -213,11 +214,22 @@ Paolino), as `audio.rs` does.
   "Restart to update"). `YTFAST_DEMO_UPDATE=downloading` (or `ready`)
   shows them in the demo. fastframe-update's helper swaps the program
   while YTFast is closed and puts the old one back if the new one does
-  not start. Windows only: a Mac copy is told a version is out, and its
-  update window opens the release's page (a Mac installs only updates
-  signed with a paid Apple developer certificate). Every release carries
-  both builds, `YTFast.exe` and `YTFast.dmg`, even when only Windows was
-  tried. Making a release: docs/releasing.md (the private signing key
+  not start. On a Mac fastframe-update installs only apps signed with a
+  paid Apple developer certificate, so YTFast does it itself there
+  (`update_mac.rs`, from 0.6.4): it downloads the release's `YTFast.dmg`,
+  checks `checksums.txt`'s signature and the image's checksum as
+  fastframe-update does, copies the app out into the cache, signs it with
+  the Mac's own "YTFast Local Signing" when there is one (so the Mac keeps
+  Full Disk Access), asks it its `--version`; "Restart to update" starts a
+  helper (`--finish-mac-update`) that waits for YTFast to close, moves the
+  old app aside and the new one in (the old one back if that fails), and
+  opens it; the next start says how it went. Only a copy in a folder it
+  may write in (Applications) does this; any other is told a version is
+  out, and its update window opens the release's page. Downloaded by
+  YTFast rather than a browser, the new app is not marked as from the
+  internet, so the Mac does not ask about it again. Every release carries
+  both builds, `YTFast.exe` and `YTFast.dmg` (named so: Mac copies look
+  for it), even when only Windows was tried. Making a release: docs/releasing.md (the private signing key
   stays on the owner's laptop).
 - Problems go to `ytfast.log` in the cache folder, made new each run
   (warnings; everything with `--verbose`). Every line passes through
