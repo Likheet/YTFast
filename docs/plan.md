@@ -76,7 +76,11 @@ song's cover, was replaced: it did not look like YouTube Music.) From
 Better Lyrics' Even Better Lyrics Plus theme, recreated natively, the
 player page keeps the soft blur of the cover behind it and lyrics that
 light up as they are sung. Better Lyrics' code is GPL and its lyrics
-server is private, so neither is used directly.
+server is private, so neither is used directly. Since October 2026 the
+lyrics light word by word: Musixmatch's own word times where it has them,
+estimated from the line's elsewhere. Translate shows each line in English
+and in Latin letters (Musixmatch's translations by people, else Google
+Translate's).
 
 Still different from YouTube Music: the font (Inter, not Roboto and
 YouTube Sans), the icons (Lucide's), and no like counts, play counts,

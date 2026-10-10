@@ -42,6 +42,13 @@ pub fn show(app: &App, ui: &egui::Ui) {
             ))
             .corner_radius(egui::CornerRadius::same(2))
             .shadow(SHADOW),
+        // YTFast's own question before closing: rounder, as it is no
+        // YouTube Music dialog.
+        Dialog::ConfirmClose { .. } => egui::Frame::new()
+            .fill(PALETTE.panel)
+            .stroke(egui::Stroke::new(1.0, PALETTE.outline))
+            .corner_radius(egui::CornerRadius::same(12))
+            .shadow(SHADOW),
         // `ytmusic-dialog` around a form: `#212121`, a white@0.10 border,
         // r 3; its parts set their own padding.
         _ => egui::Frame::new()
@@ -123,6 +130,16 @@ pub fn show(app: &App, ui: &egui::Ui) {
                         None => {}
                     }
                 }
+                Dialog::ConfirmClose { dont_ask } => match close_question(app, ui, dont_ask) {
+                    Some(true) => {
+                        app.act(Action::ConfirmClose {
+                            dont_ask: *dont_ask,
+                        });
+                        close = true;
+                    }
+                    Some(false) => close = true,
+                    None => {}
+                },
                 Dialog::Shortcuts => close = shortcuts(ui, window),
                 Dialog::Update => close = update_window(app, ui),
                 // The whole description (its look is not measured yet).
@@ -169,7 +186,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
 /// The keyboard's shortcuts, as YouTube Music lists them ("?"), and
 /// YTFast's own. True when closed.
 fn shortcuts(ui: &mut egui::Ui, window: f32) -> bool {
-    const KEYS: [(&str, &str); 19] = [
+    const KEYS: [(&str, &str); 20] = [
         ("Play or pause", "Space or ;"),
         ("Next song", "j or Shift+N"),
         ("Previous song", "k or Shift+P"),
@@ -182,6 +199,7 @@ fn shortcuts(ui: &mut egui::Ui, window: f32) -> bool {
         ("Volume up or down", "= or ↑ / - or ↓"),
         ("Mute", "m"),
         ("Open or close the player page", "q (Esc closes)"),
+        ("Full screen on or off", "f (Esc leaves)"),
         ("Like or dislike the song playing", "+ / _"),
         ("Home", "g then h"),
         ("Explore", "g then e"),
@@ -794,6 +812,127 @@ fn confirm(ui: &mut egui::Ui, question: &str, text: &str, main: &str) -> Option<
         done = Some(true);
     }
     done
+}
+
+/// "Do you really want to close? There's a song playing.": the playing
+/// song's cover (64, r 8) beside the question (18, bold) and what plays
+/// (14), then "Do not ask again" (ticked as it opens) and No and Yes at
+/// the right, 24 in all round, 440 wide. Enter is Yes, Escape No.
+/// `Some(true)` for Yes.
+fn close_question(app: &App, ui: &mut egui::Ui, dont_ask: &mut bool) -> Option<bool> {
+    let mut answer = None;
+    ui.set_width(440.0);
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(24))
+        .show(ui, |ui| {
+            ui.set_width(392.0);
+            ui.horizontal_top(|ui| {
+                let (cover, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(64.0), egui::Sense::hover());
+                if let Some(entry) = &app.playback.entry {
+                    super::widgets::cover_with(
+                        app,
+                        ui,
+                        cover,
+                        entry.track.thumbnail.as_ref(),
+                        egui::CornerRadius::same(8),
+                    );
+                }
+                ui.add_space(16.0);
+                ui.vertical(|ui| {
+                    ui.set_width(312.0);
+                    ui.label(
+                        egui::RichText::new("Do you really want to close?")
+                            .font(theme::bold(18.0))
+                            .color(PALETTE.text),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("There's a song playing.")
+                            .font(theme::regular(14.0))
+                            .color(PALETTE.secondary),
+                    );
+                    if let Some(entry) = &app.playback.entry {
+                        ui.add_space(2.0);
+                        let playing = if entry.track.artists.is_empty() {
+                            entry.track.title.clone()
+                        } else {
+                            format!("{} \u{2022} {}", entry.track.title, entry.track.artists)
+                        };
+                        theme::label(ui, &playing, theme::medium(14.0), PALETTE.text);
+                    }
+                });
+            });
+            ui.add_space(20.0);
+            ui.horizontal(|ui| {
+                if not_again(ui, *dont_ask).clicked() {
+                    *dont_ask = !*dont_ask;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::pill(ui, None, "Yes", theme::Pill::Filled).clicked() {
+                        answer = Some(true);
+                    }
+                    if theme::pill(ui, None, "No", theme::Pill::Tonal).clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        });
+    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        answer = Some(true);
+    }
+    answer
+}
+
+/// The close question's "Do not ask again": a tick box (18, as a song
+/// row's) and its words, pressed as one.
+fn not_again(ui: &mut egui::Ui, ticked: bool) -> egui::Response {
+    let words = "Do not ask again";
+    let galley = ui
+        .painter()
+        .layout_no_wrap(words.to_string(), theme::regular(14.0), PALETTE.text);
+    let size = egui::vec2(18.0 + 10.0 + galley.size().x, 36.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, ticked, words)
+    });
+    theme::pointing(ui, &response);
+    let square = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), rect.center().y - 9.0),
+        egui::Vec2::splat(18.0),
+    );
+    if theme::dynamic() {
+        super::dynamic::tick_box_look(ui, square, ticked);
+    } else if ticked {
+        ui.painter()
+            .rect_filled(square, egui::CornerRadius::same(3), PALETTE.text);
+        theme::paint_icon(ui, Icon::Check, square, 16.0, PALETTE.window);
+    } else {
+        ui.painter().rect_stroke(
+            square,
+            egui::CornerRadius::same(3),
+            egui::Stroke::new(2.0, PALETTE.dim),
+            egui::StrokeKind::Inside,
+        );
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            square.expand(3.0),
+            egui::CornerRadius::same(5),
+            egui::Stroke::new(1.0, PALETTE.accent),
+            egui::StrokeKind::Outside,
+        );
+    }
+    ui.painter().galley(
+        egui::pos2(
+            square.right() + 10.0,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        PALETTE.text,
+    );
+    response
 }
 
 /// "Save to playlist", as YouTube Music's (`ytmusic-add-to-playlist-renderer`):
