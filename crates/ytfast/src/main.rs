@@ -17,6 +17,7 @@ mod lyrics;
 mod queue;
 mod theme;
 mod update;
+mod update_mac;
 mod views;
 
 /// Problems go to `ytfast.log` in YtFast's cache folder (made new each
@@ -83,14 +84,25 @@ fn main() -> eframe::Result<()> {
     if args.iter().any(|a| a == "--update-dry-run") {
         std::process::exit(update::dry_run());
     }
+    // On a Mac, the helper that puts a new version in place once YTFast
+    // has closed (`update_mac`).
+    if args.first().map(String::as_str) == Some("--finish-mac-update") {
+        std::process::exit(update_mac::finish(&args[1..]));
+    }
     let demo = args.iter().any(|a| a == "--demo");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     start_log(verbose, demo);
     if let Some(error) = &launch.error {
         log::warn!("updates: {error}");
     }
+    // A Mac update just installed (or not): said once.
+    let mac_update = if demo {
+        None
+    } else {
+        update_mac::take_result()
+    };
     let startup = app::Startup {
-        update_error: launch.error,
+        update_error: launch.error.or(mac_update),
         receipt: launch.receipt,
     };
 

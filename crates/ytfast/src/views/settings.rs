@@ -226,7 +226,7 @@ fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
 fn updates(app: &App, ui: &mut egui::Ui) {
     use crate::update::State;
     let about = if cfg!(target_os = "macos") {
-        "YTFast looks for a new version once a day and says when one is out. On a Mac, the Update button at the top opens its download page."
+        "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it. Keep YTFast in Applications for this."
     } else {
         "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it."
     };
