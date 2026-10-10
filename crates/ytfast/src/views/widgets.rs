@@ -700,6 +700,8 @@ pub fn track_row_in(
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More actions")
             });
+            // A hand over it, in place of the row's move arrows.
+            theme::pointing(ui, &response);
             if response.hovered() {
                 ui.painter()
                     .circle_filled(more.center(), 18.0, PALETTE.surface);
@@ -740,6 +742,7 @@ pub fn track_row_in(
         menu_response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More actions")
         });
+        theme::pointing(ui, &menu_response);
         if menu_response.hovered() {
             ui.painter()
                 .circle_filled(menu.center(), 16.0, PALETTE.surface);
@@ -945,6 +948,7 @@ fn row_actions(
     };
     let button = |ui: &mut egui::Ui, at: Rect, icon: Icon, name: &str| {
         let response = ui.interact(at, id.with(name), Sense::click());
+        theme::pointing(ui, &response);
         if response.hovered() {
             ui.painter()
                 .circle_filled(at.center(), 18.0, PALETTE.surface_hover);

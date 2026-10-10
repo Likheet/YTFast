@@ -691,6 +691,14 @@ was found ahead cannot start much sooner. Tested: the unit tests (among
 them work under way shared between two askers, and a song found after
 0.2 s of rest, which fails at 0.35 s).
 
+Then, at the owner's word (10 October 2026, not yet released): a
+right-click on the player bar (not on its buttons) opens the playing
+song's menu where the pointer is, as its ⋮ does and as a song's row
+already did; and a song row's ⋮, like and dislike show the hand, in Up
+next too, where the rest of the row keeps the move arrows. Tested: the
+unit tests (a right-click on the player bar, and the pointer over an Up
+next row and its ⋮, in each theme; both fail on the code before).
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
