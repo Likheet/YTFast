@@ -207,6 +207,7 @@ fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
             Sense::hover()
         };
         let response = ui.interact(rect, ui.id().with(("tab", name)), sense);
+        theme::pointing_or_not(ui, &response, enabled);
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, chosen, name)
         });
@@ -333,6 +334,7 @@ fn tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
             Sense::hover()
         };
         let response = ui.interact(rect, ui.id().with(("tab", name)), sense);
+        theme::pointing_or_not(ui, &response, enabled);
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, chosen, name)
         });

@@ -375,6 +375,12 @@ fn play_loop(player: &mut Player, length: f64) -> Leave {
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     loop {
         if let Some(note) = player.maintain() {
+            let note = match note {
+                ytfast_core::audio::Maintenance::Moved(device) => {
+                    format!("Sound is now playing on {device}")
+                }
+                ytfast_core::audio::Maintenance::Problem(problem) => problem,
+            };
             status_line(&note);
             print!("\r\n");
         }

@@ -172,6 +172,7 @@ fn nav_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route) 
     });
     let response = ui.interact(rect, ui.id().with(("nav", text)), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+    theme::pointing(ui, &response);
     let lit = showing(app, &route);
     entry_fill(ui, rect, lit, lit_by(&response));
     let icon_rect = Rect::from_min_size(
@@ -211,6 +212,7 @@ fn mini_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route)
     let rect = slot.shrink2(vec2(8.0, 0.0));
     let response = ui.interact(rect, ui.id().with(("mini", text)), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+    theme::pointing(ui, &response);
     entry_fill(ui, rect, showing(app, &route), lit_by(&response));
     let icon_rect = Rect::from_min_size(
         pos2(rect.center().x - 12.0, rect.top() + 12.0),
@@ -236,6 +238,7 @@ fn new_playlist(app: &App, ui: &mut egui::Ui) {
     let response = ui.interact(rect, ui.id().with("new-playlist"), Sense::click());
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New playlist"));
+    theme::pointing(ui, &response);
     let fill = if response.hovered() {
         PALETTE.surface_hover
     } else {
@@ -289,6 +292,7 @@ fn playlist_item(
     let rect = slot.shrink2(vec2(8.0, 0.0));
     let response = ui.interact(rect, ui.id().with(("playlist", &route)), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    theme::pointing(ui, &response);
     let hovered = ui.rect_contains_pointer(rect);
     entry_fill(
         ui,
