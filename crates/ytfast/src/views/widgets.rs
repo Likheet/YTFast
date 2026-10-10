@@ -373,8 +373,10 @@ fn font_line(font: &egui::FontId) -> f32 {
     font.size * 1.2
 }
 
-/// How long the pointer rests on a song before it is found ahead of time.
-const WARM_AFTER: f32 = 0.35;
+/// How long the pointer rests on a song before it is found ahead of time:
+/// enough to tell a stop from a pass (resting counts only while the
+/// pointer is still), short enough that a quick click finds it under way.
+const WARM_AFTER: f32 = 0.15;
 
 /// A song the pointer rests on (its row, its tile, or the Play button that
 /// starts it) is found ahead of time, and its server gets it ready, so a
