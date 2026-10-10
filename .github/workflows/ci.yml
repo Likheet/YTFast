@@ -93,12 +93,25 @@ jobs:
           mkdir -p "$stage"
           ditto "$app" "$stage/YTFast.app"
           ln -s /Applications "$stage/Applications"
-          # hdiutil now and then finds the folder busy on CI's Macs: try again.
+          # On CI's Macs hdiutil now and then finds the folder busy, or its
+          # image is not yet whole when checked straight after (once, for
+          # 0.6.6: "unable to recognize ... (corrupt image)"): written out,
+          # checked, and made again when it does not check out.
+          made=false
           for try in 1 2 3; do
-            hdiutil create -volname YTFast -srcfolder "$stage" -fs HFS+ -format UDZO -ov dist/app/YTFast.dmg && break
+            rm -f dist/app/YTFast.dmg
+            if hdiutil create -volname YTFast -srcfolder "$stage" -fs HFS+ -format UDZO -ov dist/app/YTFast.dmg; then
+              sync
+              sleep 2
+              if hdiutil verify dist/app/YTFast.dmg; then
+                made=true
+                break
+              fi
+            fi
+            echo "The disk image did not come out whole; making it again."
             sleep 5
           done
-          hdiutil verify dist/app/YTFast.dmg
+          $made
           # The app in the disk image is still whole and signed.
           mount="$RUNNER_TEMP/disk-image-mounted"
           hdiutil attach -nobrowse -readonly -mountpoint "$mount" dist/app/YTFast.dmg
