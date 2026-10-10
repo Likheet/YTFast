@@ -352,11 +352,19 @@ Paolino), as `audio.rs` does.
   first. Opening one takes about 0.15 s, which made songs start later, so
   a spare is opened while a song plays and nothing waits
   (`Player::prepare_spare`): moving to it takes about 0.01 s.
-- The device is Windows' default output, opened as its virtual default
-  device (which follows the default by itself). When that will not open
-  (seen with Bluetooth headphones: "Failed to get audio client"), the
-  default output is opened by its name instead and YTFast follows the
-  default itself, every 2 s (`Player::follow_default_by_name`). A failure
+- The device is Windows' default output, opened by its name, the way
+  most programs open a device, and YTFast follows the default itself,
+  every 2 s (`Player::follow_default_by_name`). Windows' virtual default
+  device (which would follow the default by itself) is only the second
+  way (`audio::ways_to_open`): on some computers it refuses to open, and
+  goes on refusing (seen with Bluetooth headphones, and after a user moved
+  to a laptop's own speakers: "Failed to get audio client: Cannot change
+  thread mode after it is set"), and the audio library opens a new stream
+  when the default changes all the same. The audio library opens a
+  failed stream again by itself, but only the same way (a device opened
+  by name that has gone, as the virtual default); when that fails, YTFast
+  opens the output itself and the song carries on (`Player::open_again`).
+  On the Mac the default is opened as the default first. A failure
   inside the audio library leaves the sound thread running: it opens the
   device again and the song carries on where it was (`audio_thread::run`).
   Device moves and failures are written to the log as warnings.
@@ -840,6 +848,24 @@ on that laptop, not committed) decoded in time: 249 pictures in 10 s at
 right; and the demo in each look. Not yet tested: a real video in YTFast
 with the owner's account (its picture found the fast way and
 downloaded), and the Mac.
+
+Then (11 October 2026), from a user's report on 1.0.0: after moving the
+sound to a laptop's own speakers, the player bar said "No sound output:
+Cannot open the audio output: Failed to get audio client: Cannot change
+thread mode after it is set", and the music stayed silent. The audio
+library opened its stream again only as Windows' virtual default device,
+which refused every time; the way by the device's name was tried only
+when YTFast started. Now on Windows the output is opened by its name
+first (the virtual default second), and a stream the audio library
+cannot open again is opened by YTFast itself, the song carrying on from
+the same second. Tested on the owner's Windows laptop, which has one
+output (its Realtek speakers): the unit tests (the order of the ways),
+and at volume 0 the output opened by its name and as the default, a
+song carrying on when YTFast opens the output again, and opening by name
+as quick as before (0.13 to 0.16 s each way). Why Windows refuses is not
+known: a guess (cpal leaving one of Windows' threads in the wrong COM
+mode) did not reproduce on that laptop. Not yet tested: a real move
+between two outputs (only the user's computer has the problem).
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

@@ -499,32 +499,45 @@ struct OpenedOutput {
 }
 
 /// Opens the default output, paused (the device rests until there is a
-/// song to play).
-///
-/// Windows' virtual default device, which follows the default by itself,
-/// can refuse to open (seen with Bluetooth headphones: "Failed to get audio
-/// client"). Then the default output is opened by its name, the way most
-/// programs open a device.
+/// song to play), the ways [`ways_to_open`] lists, until one works.
 fn open_output() -> Result<OpenedOutput, AudioError> {
-    match open_output_on(Device::Default) {
-        Ok(opened) => Ok(opened),
-        Err(error) => {
-            let Some(name) = default_output_name() else {
-                log::warn!("audio output: {error}");
-                return Err(error);
-            };
-            log::warn!("audio output: {error}; opening {name} by its name instead");
-            match open_output_on(Device::Named(name.clone())) {
-                Ok(opened) => Ok(OpenedOutput {
-                    by_name: true,
-                    ..opened
-                }),
-                Err(again) => {
-                    log::warn!("audio output: {name} would not open either: {again}");
-                    Err(error)
+    let mut first_error = None;
+    for device in ways_to_open(default_output_name()) {
+        let by_name = matches!(device, Device::Named(_));
+        match open_output_on(device.clone()) {
+            Ok(opened) => {
+                if first_error.is_some() {
+                    log::warn!("audio output: opened as {device:?}");
                 }
+                return Ok(OpenedOutput { by_name, ..opened });
+            }
+            Err(error) => {
+                log::warn!("audio output: {device:?} would not open: {error}");
+                first_error.get_or_insert(error);
             }
         }
+    }
+    Err(first_error
+        .unwrap_or_else(|| AudioError::Device("There is no audio output device.".into())))
+}
+
+/// The ways to open the default output, in the order they are tried.
+///
+/// On Windows, by its name first, the way most programs open a device
+/// ([`Player::maintain`] then follows the default itself). Windows' virtual
+/// default device, which would follow the default by itself, comes second:
+/// it refuses to open on some computers, and goes on refusing (seen with
+/// Bluetooth headphones, and after moving to a laptop's own speakers:
+/// "Failed to get audio client: Cannot change thread mode after it is
+/// set"), and the audio library opens a new stream when the default
+/// changes all the same. Elsewhere the default output is opened as the
+/// default, and by its name only when that fails.
+fn ways_to_open(default_name: Option<String>) -> Vec<Device> {
+    let named = default_name.map(Device::Named);
+    if cfg!(windows) {
+        named.into_iter().chain([Device::Default]).collect()
+    } else {
+        std::iter::once(Device::Default).chain(named).collect()
     }
 }
 
@@ -628,6 +641,9 @@ pub struct Player {
     /// [`DEFAULT_CHECK`].
     by_name: bool,
     default_checked: Instant,
+    /// When [`Player::open_again`] last failed: it waits [`DEFAULT_CHECK`]
+    /// before it tries again.
+    open_again_failed: Option<Instant>,
 }
 
 impl Player {
@@ -642,6 +658,7 @@ impl Player {
         Ok(Self {
             by_name,
             default_checked: Instant::now(),
+            open_again_failed: None,
             output,
             made,
             mixer,
@@ -895,7 +912,7 @@ impl Player {
             }
             Maintained::Failed(error) => {
                 log::warn!("audio output: {error}");
-                note = Some(Maintenance::Problem(format!("No sound output: {error}")));
+                note = Some(self.open_again(&error));
             }
             Maintained::Released | Maintained::Unchanged => {}
         }
@@ -924,31 +941,68 @@ impl Player {
             "audio output: the default output is now {default} (was {})",
             self.output.device_name()
         );
-        let at = self.position();
-        let opened = match open_output() {
-            Ok(opened) => opened,
-            Err(error) => {
-                return Some(Maintenance::Problem(format!(
-                    "Could not move the sound to {default}: {error}"
-                )));
+        match open_output() {
+            Ok(opened) => Some(self.carry_on_with(opened)),
+            Err(error) => Some(Maintenance::Problem(format!(
+                "Could not move the sound to {default}: {error}"
+            ))),
+        }
+    }
+
+    /// The audio library could not open its stream again (the stream
+    /// failed, or the default output changed), and it tries again only the
+    /// same way: the same device, or Windows' virtual default device when
+    /// a device opened by name has gone (headphones unplugged), which can go
+    /// on refusing ([`ways_to_open`]). So the output is opened as
+    /// [`open_output`] does, on what is now the default, and the song
+    /// carries on there. After a failure this waits [`DEFAULT_CHECK`]
+    /// before it tries again.
+    fn open_again(&mut self, error: &fastframe_audio::OpenError) -> Maintenance {
+        let problem = || Maintenance::Problem(format!("No sound output: {error}"));
+        if self
+            .open_again_failed
+            .is_some_and(|at| at.elapsed() < DEFAULT_CHECK)
+        {
+            return problem();
+        }
+        match open_output() {
+            Ok(opened) => {
+                self.open_again_failed = None;
+                log::warn!(
+                    "audio output: opened {} again by YTFast itself",
+                    opened.output.device_name()
+                );
+                self.carry_on_with(opened)
             }
-        };
+            Err(again) => {
+                self.open_again_failed = Some(Instant::now());
+                // Opened on the device that failed: no use for the next song.
+                self.spare = None;
+                log::warn!("audio output: could not open it again either: {again}");
+                problem()
+            }
+        }
+    }
+
+    /// Makes `opened` the device's stream (in place of one on another
+    /// device, or one that failed), and the song carries on from where it
+    /// was.
+    fn carry_on_with(&mut self, opened: OpenedOutput) -> Maintenance {
+        let at = self.position();
         self.install(opened);
         self.spare = None;
         self.fed = false;
         let device = self.output.device_name().to_string();
         if self.song.is_some() {
             if let Err(error) = self.restart_at(at) {
-                return Some(Maintenance::Problem(format!(
-                    "Could not continue on {device}: {error}"
-                )));
+                return Maintenance::Problem(format!("Could not continue on {device}: {error}"));
             }
             if !self.paused {
                 self.output.resume();
                 self.fed = true;
             }
         }
-        Some(Maintenance::Moved(device))
+        Maintenance::Moved(device)
     }
 }
 
@@ -962,9 +1016,44 @@ mod tests {
         let name = default_output_name().expect("a default output");
         let opened = open_output_on(Device::Named(name.clone())).expect("it opens by name");
         assert_eq!(opened.output.device_name(), name);
-        // And the usual way, as Windows' default.
+        // As Windows' default too, the other way.
+        let opened = open_output_on(Device::Default).expect("it opens as the default");
+        assert_eq!(opened.output.device_name(), name);
+        // And the usual way: by its name on Windows.
         let opened = open_output().expect("it opens");
-        assert!(!opened.by_name, "{}", opened.output.device_name());
+        assert_eq!(opened.by_name, cfg!(windows));
+        assert_eq!(opened.output.device_name(), name);
+    }
+
+    #[test]
+    fn windows_opens_the_output_by_its_name_first() {
+        let name = || Some("Speakers (Realtek(R) Audio)".to_string());
+        let named = Device::Named("Speakers (Realtek(R) Audio)".into());
+        if cfg!(windows) {
+            assert_eq!(ways_to_open(name()), [named, Device::Default]);
+        } else {
+            assert_eq!(ways_to_open(name()), [Device::Default, named]);
+        }
+        // Without a name, only as the default.
+        assert_eq!(ways_to_open(None), [Device::Default]);
+    }
+
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn a_song_carries_on_when_ytfast_opens_the_output_again() {
+        let mut player = Player::open().expect("a sound device");
+        player.set_volume(0.0);
+        player.play_song(SongData::complete(tone()), 1.0).unwrap();
+        std::thread::sleep(Duration::from_millis(700));
+        let before = player.position();
+        // As after the audio library could not open its stream again.
+        let moved = player.open_again(&fastframe_audio::OpenError::NoDevice);
+        assert!(matches!(moved, Maintenance::Moved(_)), "{moved:?}");
+        assert!(player.position() >= before, "{:?}", player.position());
+        std::thread::sleep(Duration::from_millis(700));
+        assert!(player.position() > before, "it plays on");
+        assert!(!player.finished());
+        player.stop();
     }
 
     fn tone() -> Vec<u8> {
