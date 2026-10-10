@@ -929,7 +929,7 @@ async fn try_sign_in(
     let jar: CookieJar = yt_dlp
         .read_browser_sign_in(browser, None, &shared.folders.session)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| sign_in_problem(&e, browser, ytfast_core::cookies::full_disk_access()))?;
     if !jar.looks_signed_in() {
         return Err(format!(
             "{} has YouTube data but is not signed in. Open music.youtube.com there, sign in, then try again.",
@@ -979,6 +979,28 @@ async fn try_sign_in(
         direct,
     });
     Ok(account)
+}
+
+/// Why a browser's sign-in could not be read, in words for the sign-in
+/// screen. On a Mac without Full Disk Access (`full_disk_access`,
+/// [`ytfast_core::cookies::full_disk_access`]) the system hides other apps'
+/// data, which yt-dlp takes for missing: whichever the browser, that is
+/// then what is said, and the screen shows the button that opens the
+/// permission's switch (`views::signin`).
+fn sign_in_problem(
+    error: &ytfast_core::ytdlp::YtDlpError,
+    browser: Browser,
+    full_disk_access: Option<bool>,
+) -> String {
+    if error.browser_data_unreadable() && full_disk_access == Some(false) {
+        return format!(
+            "Full Disk Access is not given, so YTFast cannot read {}'s sign-in. In System \
+             Settings, Privacy & Security, Full Disk Access, turn on YTFast (if it is not \
+             in the list, click + and choose it in Applications), then let your Mac reopen it.",
+            browser.label()
+        );
+    }
+    error.to_string()
 }
 
 /// What a session needs to read the sign-in again (see [`renewer`]).
@@ -1739,4 +1761,47 @@ fn decode_picture(bytes: &[u8], side: u32) -> Option<egui::ColorImage> {
         size,
         rgba.as_raw(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ytfast_core::ytdlp::YtDlpError;
+
+    fn failed(details: &str) -> YtDlpError {
+        YtDlpError::Failed {
+            summary: "That browser's sign-in data was not found.".into(),
+            details: details.into(),
+        }
+    }
+
+    /// On a Mac without Full Disk Access, a browser's data that cannot be
+    /// found or read is put down to that, whichever the browser, in words
+    /// that bring up the sign-in screen's Open Full Disk Access button.
+    #[test]
+    fn missing_full_disk_access_is_named_for_every_browser() {
+        let missing = failed("ERROR: could not find chrome cookies database in \"/x\"");
+        for browser in Browser::ALL {
+            let said = sign_in_problem(&missing, browser, Some(false));
+            assert!(said.contains("Full Disk Access is not given"), "{said}");
+            assert!(said.contains(browser.label()), "{said}");
+        }
+        // With it, or where it cannot be told (Windows), yt-dlp's own words.
+        for access in [Some(true), None] {
+            assert_eq!(
+                sign_in_problem(&missing, Browser::Chrome, access),
+                "That browser's sign-in data was not found."
+            );
+        }
+        // Another problem is never put down to it.
+        let other = failed("ERROR: Sign in to confirm you're not a bot");
+        assert!(!sign_in_problem(&other, Browser::Chrome, Some(false)).contains("Full Disk"));
+    }
+
+    #[test]
+    fn full_disk_access_is_only_asked_on_a_mac() {
+        if !cfg!(target_os = "macos") {
+            assert_eq!(ytfast_core::cookies::full_disk_access(), None);
+        }
+    }
 }

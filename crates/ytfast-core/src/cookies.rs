@@ -260,6 +260,38 @@ impl CookieJar {
     }
 }
 
+/// Whether this app may read other apps' data (a Mac's Full Disk Access),
+/// as far as can be told: `Some(false)` when the Mac refuses a file only
+/// that permission opens, `Some(true)` when it allows one, `None` when it
+/// cannot be told, and on Windows. Without it, a Mac hides Safari's cookies
+/// and may hide another browser's data from yt-dlp, which then reads as
+/// missing. Asking costs nothing and asks the listener nothing: there is no
+/// question an app can put for this permission.
+pub fn full_disk_access() -> Option<bool> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    let mut told = None;
+    for protected in [
+        "Library/Application Support/com.apple.TCC/TCC.db",
+        "Library/Safari",
+    ] {
+        let path = home.join(protected);
+        let opened = if path.is_dir() {
+            std::fs::read_dir(&path).map(|_| ())
+        } else {
+            std::fs::File::open(&path).map(|_| ())
+        };
+        match opened {
+            Ok(()) => told = Some(true),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Some(false),
+            Err(_) => {}
+        }
+    }
+    told
+}
+
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
