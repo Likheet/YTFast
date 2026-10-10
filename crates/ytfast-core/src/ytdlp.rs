@@ -105,6 +105,22 @@ impl YtDlpError {
     pub fn song_unavailable(&self) -> bool {
         matches!(self, Self::Failed { details, .. } if says_song_unavailable(&details.to_ascii_lowercase()))
     }
+
+    /// yt-dlp could not find a browser's sign-in data, or was not allowed
+    /// to read it. On a Mac without Full Disk Access the system hides other
+    /// apps' data, which reads as missing too
+    /// ([`crate::cookies::full_disk_access`]).
+    pub fn browser_data_unreadable(&self) -> bool {
+        matches!(self, Self::Failed { details, .. } if says_browser_data_unreadable(&details.to_ascii_lowercase()))
+    }
+}
+
+/// yt-dlp's words (in lower case) for a browser's data it could not find or
+/// was not allowed to read.
+fn says_browser_data_unreadable(lower: &str) -> bool {
+    (lower.contains("could not find") && lower.contains("cookies database"))
+        || lower.contains("operation not permitted")
+        || lower.contains("permission denied")
 }
 
 /// yt-dlp's words (in lower case) for cookies YouTube stopped accepting.
@@ -512,7 +528,7 @@ fn failure(default: &str, stderr: &[u8]) -> YtDlpError {
     } else if lower.contains("could not find") && lower.contains("cookies database") {
         "That browser's sign-in data was not found. Is it installed, and have you opened music.youtube.com in it?"
     } else if lower.contains("operation not permitted") || lower.contains("permission denied") {
-        "This computer did not allow reading that browser's data. On a Mac, reading Safari's needs Full Disk Access: in System Settings, Privacy & Security, Full Disk Access, turn on YtFast (or Terminal, for the check). Or choose another browser"
+        "This computer did not allow reading that browser's data. On a Mac, YTFast needs Full Disk Access: in System Settings, Privacy & Security, Full Disk Access, turn on YTFast (or Terminal, for the check). Or choose another browser"
     } else if lower.contains("keyring") || lower.contains("keychain") || lower.contains("decrypt") {
         "The browser's sign-in data could not be unlocked. On a Mac, click Always Allow when asked about the browser's Safe Storage: YTFast reads the sign-in again by itself from time to time, and would otherwise ask each time"
     } else if lower.contains("javascript runtime") {
@@ -618,6 +634,14 @@ mod tests {
         );
         assert!(err.to_string().contains("not found"));
         assert!(!err.sign_in_expired());
+        assert!(err.browser_data_unreadable());
+        let err = failure(
+            "default",
+            b"ERROR: [Errno 1] Operation not permitted: '/Users/x/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies'",
+        );
+        assert!(err.browser_data_unreadable());
+        assert!(err.to_string().contains("Full Disk Access"));
+        assert!(!failure("default", b"something else").browser_data_unreadable());
         let err = failure(
             "default",
             b"ERROR: [youtube] x: The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser as a security measure.",

@@ -350,7 +350,12 @@ fn update_window(app: &App, ui: &mut egui::Ui) -> bool {
                 }
                 State::Available {
                     note: Some(note), ..
-                } => wrapped(ui, &note),
+                } => {
+                    wrapped(ui, &note);
+                    // A copy that cannot install it (every Mac copy): its
+                    // page is a click away.
+                    action = Some(("Open download page", Action::OpenDownloadPage));
+                }
                 State::Available { note: None, .. } => {
                     action = Some(("Download update", Action::InstallUpdate));
                 }

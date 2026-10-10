@@ -211,9 +211,12 @@ Paolino), as `audio.rs` does.
   "Restart to update"). `YTFAST_DEMO_UPDATE=downloading` (or `ready`)
   shows them in the demo. fastframe-update's helper swaps the program
   while YTFast is closed and puts the old one back if the new one does
-  not start. Windows only: a Mac copy is told a version is out. Making a
-  release: docs/releasing.md (the private signing key stays on the
-  owner's laptop).
+  not start. Windows only: a Mac copy is told a version is out, and its
+  update window opens the release's page (a Mac installs only updates
+  signed with a paid Apple developer certificate). Every release carries
+  both builds, `YTFast.exe` and `YTFast.dmg`, even when only Windows was
+  tried. Making a release: docs/releasing.md (the private signing key
+  stays on the owner's laptop).
 - Problems go to `ytfast.log` in the cache folder, made new each run
   (warnings; everything with `--verbose`). Every line passes through
   `redact::urls`. Ask the owner for this file when something fails on
@@ -381,8 +384,10 @@ and `YTFAST_TEST_EJS` a folder with yt-dlp's `core.min.js` and
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and
 Linux, and uploads the app (`YTFast-for-Mac`: YTFast.app, signed ad hoc, in
-a zip; `YTFast-for-Windows`: YTFast.exe) and `ytfast-check` for both as
-artifacts, each with its HOW-TO-RUN guide.
+a disk image, `YTFast.dmg`, beside a shortcut to Applications;
+`YTFast-for-Windows`: YTFast.exe) and `ytfast-check` for both as
+artifacts, each with its HOW-TO-RUN guide. A release offers the same two,
+`YTFast.exe` and `YTFast.dmg`, as its downloads (docs/releasing.md).
 
 Version numbers live in `Cargo.toml`, `packaging/macos/Info.plist` and
 `packaging/windows/ytfast.rc`: change them together.
@@ -653,8 +658,24 @@ buttons sit 4 from the edge and answer the pointer up to the corner.
 Tested: the unit tests (among them that a song is found ahead from its
 row, a tile and the Play button in each theme, and that a press in the
 window's very corner closes it in each theme), the timings above, and
-the demo off the screen. Not yet tested: with Bluetooth headphones,
-which add a delay of their own before anything is heard, and the Mac.
+the demo off the screen. Not yet tested: the Mac. (Bluetooth is left to
+the owner's brother, who uses it and will say if something is wrong.)
+
+Version 0.6.2 (10 October 2026), at the owner's word. Releases offer
+`YTFast.exe` and `YTFast.dmg` (the app beside a shortcut to Applications,
+made by CI) instead of zips; the updater's zip and the signed checksums
+stay beside them for the copies already out there. On a Mac, when a
+browser's sign-in cannot be found or read and YTFast has no Full Disk
+Access (`cookies::full_disk_access`: a file only that permission opens),
+it says so for any browser, not only Safari, with the button that opens
+the permission's switch (`backend::sign_in_problem`); without that
+permission a Mac hides other apps' data, which yt-dlp reads as missing.
+The update window of a copy that cannot install updates (every Mac copy)
+opens the release's page. Tested: the unit tests (among them the words
+for every browser with and without the permission, and the release
+tool's files, packed again to the same bytes), compiled on Windows; the
+Mac's own code and the disk image only in CI's Mac build. Not yet tested:
+any of it on the owner's Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

@@ -68,8 +68,9 @@ jobs:
 
       # The app as YTFast.app, with its icon, signed "ad hoc" (there is no
       # Apple developer account), so macOS runs it once it is allowed in
-      # Privacy & Security. ditto and tar keep the "this is a program"
-      # permission that a plain zip loses.
+      # Privacy & Security; in a disk image (YTFast.dmg) beside a shortcut
+      # to Applications, to drag it into. The disk image and tar keep the
+      # "this is a program" permission that a plain zip loses.
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -88,7 +89,21 @@ jobs:
           iconutil -c icns "$iconset" -o "$app/Contents/Resources/YTFast.icns"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
-          ditto -c -k --keepParent "$app" dist/app/YTFast-mac.zip
+          stage="$RUNNER_TEMP/disk-image"
+          mkdir -p "$stage"
+          ditto "$app" "$stage/YTFast.app"
+          ln -s /Applications "$stage/Applications"
+          # hdiutil now and then finds the folder busy on CI's Macs: try again.
+          for try in 1 2 3; do
+            hdiutil create -volname YTFast -srcfolder "$stage" -fs HFS+ -format UDZO -ov dist/app/YTFast.dmg && break
+            sleep 5
+          done
+          hdiutil verify dist/app/YTFast.dmg
+          # The app in the disk image is still whole and signed.
+          mount="$RUNNER_TEMP/disk-image-mounted"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" dist/app/YTFast.dmg
+          codesign --verify --deep --strict "$mount/YTFast.app"
+          hdiutil detach "$mount"
           cp docs/run-the-app.md dist/app/HOW-TO-RUN.md
           cp THIRD-PARTY-NOTICES.txt dist/app/
           tar -C target/release -czf dist/check/ytfast-check-macos.tar.gz ytfast-check
