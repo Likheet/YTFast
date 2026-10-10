@@ -214,6 +214,7 @@ once a song plays.
 | S | Shuffle on or off |
 | R | Repeat |
 | Q | Open or close the player page (Esc closes it) |
+| F | Full screen on or off, with the player page (Esc leaves it) |
 | + / _ | Like or dislike the song playing |
 | G then H, E, L or , | Home, Explore, Library or Settings |
 | / or Ctrl+F (Cmd+F on a Mac) | Search |
@@ -225,9 +226,20 @@ These are YouTube Music's own keys (L no longer likes a song: use +).
 The song playing also shows in your computer's own media controls (the
 Windows volume pop-up, or the Mac's Control Center).
 
+**Full screen** (F): the player page fills the screen, with the cover
+or the video as large as it fits and Up next, Lyrics and Related beside
+it. F or Esc leaves it, and so does closing the player page.
+
 **Settings** (in your account's menu, at the top right): start songs the
-fast way, keep playing when the queue ends, even out loudness, sign out,
-and where problems are noted.
+fast way, keep playing when the queue ends, even out loudness, skip songs
+you dislike (on: disliking the song playing moves on to the next, as
+YouTube Music does), ask before closing while a song plays, sign out, and
+where problems are noted.
+
+**Closing while a song plays** asks first: "Do you really want to close?
+There's a song playing.", with **Do not ask again** ticked. Yes closes
+YTFast (and, ticked, it never asks again; Settings can turn the question
+back on); No keeps it playing.
 
 Lyrics come from YouTube Music, or from LRCLIB (lrclib.net, a free lyrics
 site) when YouTube Music has none that follow the song. LRCLIB is only

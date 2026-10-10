@@ -57,6 +57,12 @@ pub struct Settings {
     /// Download new versions in the background and install them on a
     /// restart (`update`).
     pub auto_update: bool,
+    /// Disliking the song playing moves on to the next, as YouTube Music
+    /// does.
+    pub skip_disliked: bool,
+    /// Closing the window while a song plays asks first
+    /// ([`Dialog::ConfirmClose`]).
+    pub confirm_close: bool,
 }
 
 impl Settings {
@@ -92,6 +98,8 @@ impl Default for Settings {
             moving_background: true,
             dynamic_background: false,
             auto_update: true,
+            skip_disliked: true,
+            confirm_close: true,
         }
     }
 }
@@ -241,6 +249,8 @@ pub enum Setting {
     EvenLoudness,
     MovingBackground,
     AutoUpdate,
+    SkipDisliked,
+    ConfirmClose,
 }
 
 /// A small window asking one thing.
@@ -281,6 +291,11 @@ pub enum Dialog {
     /// The update window: the new version, its download, and Restart to
     /// update (as Spotifast's).
     Update,
+    /// "Do you really want to close? There's a song playing.", with "Do
+    /// not ask again" (ticked as it opens).
+    ConfirmClose {
+        dont_ask: bool,
+    },
 }
 
 /// The player page's tabs.
@@ -380,6 +395,11 @@ pub enum Action {
     RestartToUpdate,
     /// Open the update window (the top bar's update badge).
     ShowUpdate,
+    /// Close the window after all (the close question's Yes); with
+    /// `dont_ask`, never ask again (Settings can ask again).
+    ConfirmClose {
+        dont_ask: bool,
+    },
     OpenDialog(Dialog),
     RenamePlaylist {
         playlist_id: String,
@@ -419,6 +439,9 @@ pub enum Action {
     ToggleGuide,
     /// Open or close the player page.
     ToggleNowPlaying,
+    /// The window to the whole screen with the player page, larger (F),
+    /// or back.
+    ToggleFullscreen,
     CloseNowPlaying,
     NowPlayingTab(NpTab),
     /// Like, dislike, or neither.
@@ -498,6 +521,10 @@ pub struct App {
     receipt: Option<fastframe_update::Receipt>,
     /// The window was asked to close for an update.
     restarting: bool,
+    /// The close question was answered Yes: the window closes (once
+    /// `close_now` has asked it to), without asking again.
+    closing: bool,
+    close_now: bool,
     pub settings: Settings,
     pub auth: Auth,
     pub route: Route,
@@ -539,6 +566,13 @@ pub struct App {
     /// The player page drew the video this frame; otherwise its decoding
     /// rests.
     pub video_drawn: std::cell::Cell<bool>,
+    /// The window fills the screen with the player page (F): no top bar or
+    /// menu, the cover or video larger. Leaving the player page leaves it.
+    pub fullscreen: bool,
+    /// Full screen to ask the window for, and when it last was (egui's
+    /// clock): the window's own word on it is believed only a while after.
+    fullscreen_wanted: Option<bool>,
+    fullscreen_asked: f64,
     /// Lyrics and related pages, by song.
     pub lyrics: HashMap<String, crate::lyrics::State>,
     pub related: HashMap<String, Loadable>,
@@ -749,6 +783,8 @@ impl App {
             update_manual: false,
             receipt: None,
             restarting: false,
+            closing: false,
+            close_now: false,
             settings,
             auth,
             route: Route::Home,
@@ -772,6 +808,9 @@ impl App {
             video: None,
             song_videos: HashMap::new(),
             video_drawn: std::cell::Cell::new(false),
+            fullscreen: false,
+            fullscreen_wanted: None,
+            fullscreen_asked: f64::NEG_INFINITY,
             lyrics: HashMap::new(),
             related: HashMap::new(),
             likes: HashMap::new(),
@@ -840,6 +879,39 @@ impl App {
         let actions = std::mem::take(self.actions.get_mut());
         for action in actions {
             self.apply(action);
+        }
+        // Full screen is the player page's: leaving it leaves full screen.
+        if self.fullscreen && !self.now_playing {
+            self.set_fullscreen(false);
+        }
+    }
+
+    /// Full screen on (the player page with it) or off.
+    fn set_fullscreen(&mut self, on: bool) {
+        if on == self.fullscreen {
+            return;
+        }
+        self.fullscreen = on;
+        self.fullscreen_wanted = Some(on);
+        if on {
+            self.now_playing = true;
+            self.notify("Full screen: press F or Esc to leave");
+        }
+    }
+
+    /// Asks the window for full screen when it was chosen; and when the
+    /// window left it by itself (a Mac's own Esc or green button), the
+    /// page is laid out as before.
+    fn sync_fullscreen(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if let Some(on) = self.fullscreen_wanted.take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+            self.fullscreen_asked = now;
+            return;
+        }
+        let actual = ctx.input(|i| i.viewport().fullscreen);
+        if self.fullscreen && actual == Some(false) && now - self.fullscreen_asked > 1.5 {
+            self.fullscreen = false;
         }
     }
 
@@ -2521,6 +2593,7 @@ impl App {
                     self.start(entry);
                 }
             }
+            Action::ToggleFullscreen => self.set_fullscreen(!self.fullscreen),
             Action::VideoMode(on) => self.set_video_mode(on),
             Action::PlayNext(track) | Action::AddToQueue(track) if !track.playable => {
                 self.notify(UNAVAILABLE);
@@ -2608,9 +2681,21 @@ impl App {
                     self.like_before.insert(video_id.clone(), before);
                 }
                 self.likes.insert(video_id.clone(), like);
+                // The song playing, disliked: the next one, as YouTube
+                // Music does (Settings can keep it playing).
+                let skip = like == LikeState::Disliked
+                    && self.settings.skip_disliked
+                    && self
+                        .playback
+                        .entry
+                        .as_ref()
+                        .is_some_and(|e| e.track.video_id == video_id);
                 self.send_edit(Edit::Rate { video_id, like });
                 if like == LikeState::Liked {
                     self.notify("Added to Liked Music");
+                }
+                if skip {
+                    self.next();
                 }
             }
             Action::AddToPlaylist {
@@ -2677,6 +2762,8 @@ impl App {
                     Setting::Autoplay => s.autoplay = !s.autoplay,
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
                     Setting::MovingBackground => s.moving_background = !s.moving_background,
+                    Setting::SkipDisliked => s.skip_disliked = !s.skip_disliked,
+                    Setting::ConfirmClose => s.confirm_close = !s.confirm_close,
                     Setting::AutoUpdate => {
                         s.auto_update = !s.auto_update;
                         if let Some(updates) = &self.updates {
@@ -2709,6 +2796,13 @@ impl App {
             Action::OpenDialog(dialog) => {
                 *self.dialog.get_mut() = Some(dialog);
                 self.dialog_fresh.set(true);
+            }
+            Action::ConfirmClose { dont_ask } => {
+                if dont_ask {
+                    self.settings.confirm_close = false;
+                }
+                self.closing = true;
+                self.close_now = true;
             }
             Action::RenamePlaylist {
                 playlist_id,
@@ -2865,7 +2959,15 @@ impl App {
         // are its own. (egui's `egui_wants_keyboard_input` is true for any
         // widget with the focus, a button too.)
         let typing = ctx.text_edit_focused();
-        // Escape closes a dialog (or leaves the search box) first.
+        // Escape closes a dialog (or leaves the search box) first, then
+        // full screen, then the player page.
+        if self.fullscreen
+            && !typing
+            && self.dialog.get_mut().is_none()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.act(Action::ToggleFullscreen);
+        }
         if self.now_playing
             && !typing
             && self.dialog.get_mut().is_none()
@@ -2974,6 +3076,10 @@ impl App {
             self.go_to = Some(now);
             return;
         }
+        // YTFast's own: full screen, with the player page.
+        if pressed(Key::F, Modifiers::NONE) {
+            self.act(Action::ToggleFullscreen);
+        }
 
         let seek = |by: f64| Action::Seek((position + by).max(0.0));
         // One second: Shift+L / Shift+H, Ctrl+Shift+→ / ←.
@@ -3047,6 +3153,29 @@ impl App {
                 wanted
             };
             self.act(Action::Rate(id, next));
+        }
+    }
+
+    /// The window asked to close (its ×, Alt+F4, the taskbar, a Mac's
+    /// red button) while a song plays: it stays, and asks first
+    /// ([`Dialog::ConfirmClose`]), unless Settings says not to, an update
+    /// is closing YTFast, or the question was answered Yes.
+    fn ask_before_closing(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.close_now) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        let sounding = self.playback.state == PlayState::Playing && !self.audio_status.paused;
+        let ask = self.settings.confirm_close && sounding && !self.closing && !self.restarting;
+        if !ask || !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        // Closed from the taskbar while minimised: the question shows.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        if !matches!(*self.dialog.get_mut(), Some(Dialog::ConfirmClose { .. })) {
+            self.apply(Action::OpenDialog(Dialog::ConfirmClose { dont_ask: true }));
         }
     }
 
@@ -3248,6 +3377,7 @@ impl eframe::App for App {
         self.media_controls();
         // A media key pressed while the window is hidden acts at once.
         self.apply_actions();
+        self.ask_before_closing(ctx);
         // Keep the progress bar moving, and hear when the song ends, while
         // a song plays.
         if self.playback.state == PlayState::Playing && !self.audio_status.paused {
@@ -3294,6 +3424,8 @@ impl eframe::App for App {
         }
 
         views::show(self, ui);
+        self.apply_actions();
+        self.sync_fullscreen(&ctx);
         // The player page is closed, or shows no video: its decoding rests.
         if !self.video_drawn.replace(false)
             && let Some(VideoShow {
@@ -3304,7 +3436,6 @@ impl eframe::App for App {
             video.rest();
         }
 
-        self.apply_actions();
         // A notice shows for a few seconds.
         if let Some((_, at)) = &self.notice {
             let left = NOTICE_TIME.saturating_sub(at.elapsed());
@@ -3668,6 +3799,86 @@ mod tests {
                 })
                 .unwrap_or_default();
             self.h.app.apply_actions();
+        }
+
+        /// A frame in which the window is asked to close (its ×, Alt+F4),
+        /// as `App::logic` takes it: what the app told the window.
+        fn close_request(&mut self) -> Vec<egui::ViewportCommand> {
+            self.time += 0.1;
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 820.0),
+                )),
+                time: Some(self.time),
+                ..Default::default()
+            };
+            input.viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    events: vec![egui::ViewportEvent::Close],
+                    ..Default::default()
+                },
+            );
+            let app = &mut self.h.app;
+            let mut output = self
+                .h
+                .ctx
+                .run_ui(input, |ui| app.ask_before_closing(ui.ctx()));
+            output.textures_delta.clear();
+            output
+                .viewport_output
+                .values()
+                .flat_map(|viewport| viewport.commands.iter().cloned())
+                .collect()
+        }
+
+        /// `key` pressed, in a frame run as the window runs one: the
+        /// shortcuts, the views, the actions, full screen. What the app
+        /// told the window.
+        fn press(&mut self, key: egui::Key) -> Vec<egui::ViewportCommand> {
+            self.time += 0.1;
+            let down = |pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 820.0),
+                )),
+                time: Some(self.time),
+                events: vec![down(true), down(false)],
+                ..Default::default()
+            };
+            let app = &mut self.h.app;
+            let mut output = self.h.ctx.run_ui(input, |ui| {
+                app.shortcuts(ui.ctx());
+                crate::theme::set(app.settings.theme);
+                views::show(app, ui);
+                app.apply_actions();
+                app.sync_fullscreen(ui.ctx());
+            });
+            output.textures_delta.clear();
+            output
+                .viewport_output
+                .values()
+                .flat_map(|viewport| viewport.commands.iter().cloned())
+                .collect()
+        }
+
+        /// The largest control named `name` (the cover, beside the
+        /// player bar's button of the same name).
+        fn largest(&self, name: &str) -> egui::Rect {
+            self.named
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, rect)| *rect)
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
+                .unwrap_or_else(|| panic!("no {name}"))
         }
 
         /// Frames enough for anything sliding or fading to settle.
@@ -5106,6 +5317,165 @@ mod tests {
         w.settle();
         assert_eq!(w.h.entry().1, "l");
         assert!(w.h.app.video_mode, "still on");
+    }
+
+    /// Disliking the song playing moves on to the next, as YouTube Music
+    /// does; another song's dislike, or with the setting off, does not.
+    #[test]
+    fn disliking_the_song_playing_skips_it() {
+        let mut h = Harness::new();
+        h.play(&["a", "b", "c"]);
+        h.act(Action::Rate("b".into(), LikeState::Disliked));
+        assert_eq!(h.entry().1, "a");
+        h.act(Action::Rate("a".into(), LikeState::Disliked));
+        assert_eq!(h.entry().1, "b");
+        assert_eq!(h.app.likes.get("a"), Some(&LikeState::Disliked));
+        h.ready();
+        h.app.settings.skip_disliked = false;
+        h.act(Action::Rate("b".into(), LikeState::Disliked));
+        assert_eq!(h.entry().1, "b");
+        // Liking or taking the dislike back never skips.
+        h.app.settings.skip_disliked = true;
+        h.act(Action::Rate("b".into(), LikeState::Neutral));
+        h.act(Action::Rate("b".into(), LikeState::Liked));
+        assert_eq!(h.entry().1, "b");
+    }
+
+    /// The window asked to close while a song plays: it stays and asks.
+    /// Yes closes it (and, with "Do not ask again" ticked, it never asks
+    /// again); No keeps it. Paused, or for an update, it closes at once.
+    #[test]
+    fn closing_while_a_song_plays_asks_first() {
+        let cancels = |commands: &[egui::ViewportCommand]| {
+            commands.contains(&egui::ViewportCommand::CancelClose)
+        };
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        // Nothing playing: it closes.
+        assert!(!cancels(&w.close_request()));
+        w.h.play(&["a", "b"]);
+        // Paused: it closes.
+        w.h.app.audio.set_status(|s| s.paused = true);
+        w.h.frame();
+        assert!(!cancels(&w.close_request()));
+        w.h.app.audio.set_status(|s| s.paused = false);
+        w.h.frame();
+        // Playing: it stays, and asks, "Do not ask again" ticked.
+        assert!(cancels(&w.close_request()));
+        assert!(matches!(
+            *w.h.app.dialog.borrow(),
+            Some(Dialog::ConfirmClose { dont_ask: true })
+        ));
+        w.settle();
+        assert!(w.shows("Do not ask again"));
+        // No: it stays, and asks next time.
+        let no = w.find("No", 0);
+        w.click(no.center());
+        w.settle();
+        assert!(w.h.app.dialog.borrow().is_none());
+        assert!(w.h.app.settings.confirm_close);
+        assert!(cancels(&w.close_request()));
+        w.settle();
+        // Unticked, then Yes: it closes, and asks again another time.
+        let tick = w.find("Do not ask again", 0);
+        w.click(tick.center());
+        w.settle();
+        let yes = w.find("Yes", 0);
+        w.click(yes.center());
+        w.settle();
+        assert!(w.h.app.settings.confirm_close);
+        assert!(w.close_request().contains(&egui::ViewportCommand::Close));
+        assert!(!cancels(&w.close_request()));
+
+        // Ticked (as it opens), Yes: never asks again.
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["a"]);
+        assert!(cancels(&w.close_request()));
+        w.settle();
+        let yes = w.find("Yes", 0);
+        w.click(yes.center());
+        w.settle();
+        assert!(!w.h.app.settings.confirm_close);
+        assert!(w.close_request().contains(&egui::ViewportCommand::Close));
+        assert!(!cancels(&w.close_request()));
+
+        // An update closing YTFast never asks.
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["a"]);
+        w.h.app.restarting = true;
+        assert!(!cancels(&w.close_request()));
+    }
+
+    /// The close question in each look: drawn, and answered.
+    #[test]
+    fn the_close_question_in_each_look() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a"]);
+            w.close_request();
+            w.settle();
+            for name in ["Yes", "No", "Do not ask again"] {
+                assert!(w.shows(name), "{theme:?}: {name}");
+            }
+            let yes = w.find("Yes", 0);
+            w.click(yes.center());
+            w.settle();
+            assert!(!w.h.app.settings.confirm_close, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// F: the window to the whole screen with the player page, its top
+    /// bar and menu gone and the cover larger, in each look; Esc leaves
+    /// full screen (the player page stays), and so does leaving the
+    /// player page.
+    #[test]
+    fn f_puts_the_player_page_in_full_screen() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a"]);
+            w.h.app.now_playing = true;
+            w.settle();
+            let windowed = w.largest("Pause");
+            assert!(w.shows("Home"), "{theme:?}");
+            let told = w.press(egui::Key::F);
+            assert!(w.h.app.fullscreen && w.h.app.now_playing, "{theme:?}");
+            assert!(
+                told.contains(&egui::ViewportCommand::Fullscreen(true)),
+                "{theme:?} {told:?}"
+            );
+            w.settle();
+            assert!(!w.shows("Home"), "{theme:?}: the menu is gone");
+            let full = w.largest("Pause");
+            assert!(
+                full.width() > windowed.width() * 1.05,
+                "{theme:?}: {windowed:?} then {full:?}"
+            );
+            for name in ["UP NEXT", "Song", "Video"] {
+                assert!(w.shows(name), "{theme:?}: {name}");
+            }
+            // Esc: out of full screen, still on the player page.
+            let told = w.press(egui::Key::Escape);
+            assert!(!w.h.app.fullscreen && w.h.app.now_playing, "{theme:?}");
+            assert!(told.contains(&egui::ViewportCommand::Fullscreen(false)));
+            w.settle();
+            assert!(w.shows("Home"), "{theme:?}");
+            // Leaving the player page leaves full screen.
+            w.press(egui::Key::F);
+            assert!(w.h.app.fullscreen);
+            w.press(egui::Key::Q);
+            assert!(!w.h.app.fullscreen && !w.h.app.now_playing, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
     }
 
     #[test]

@@ -222,7 +222,22 @@ Paolino), as `audio.rs` does.
   colours) needs `unsafe` code, which the workspace forbids.
 - Changes to the account (`backend::Edit`) show at once and go to YouTube
   one at a time, in order; a refusal from YouTube (`Event::EditFailed`)
-  undoes them (back to what was shown before) and says so.
+  undoes them (back to what was shown before) and says so. Disliking the
+  song playing moves on to the next, as YouTube Music does (Settings,
+  "Skip songs you dislike", on by default).
+- Closing the window while a song plays (its ×, Alt+F4, the taskbar, a
+  Mac's red button: one close request, `App::ask_before_closing`) keeps
+  it open and asks first ("Do you really want to close? There's a song
+  playing.", `Dialog::ConfirmClose`), with "Do not ask again" ticked: Yes
+  with it ticked turns the question off (Settings, "Ask before closing
+  while a song plays", turns it back on). Paused, or an update closing
+  YTFast, never asks.
+- F (and the shortcut list) puts the player page in full screen: the
+  window fills the screen (`ViewportCommand::Fullscreen`), the top bar and
+  menu go, and in every look the cover or video takes the room left of a
+  panel 30% wide (400 to 720; `now_playing::fullscreen_places`). F or
+  Esc leaves it, and so does leaving the player page; a Mac's own
+  leaving is followed (`App::sync_fullscreen`).
 - Two looks, chosen in Settings (Theme): YouTube Music's own, the
   default, and Premium (charcoal, rounder, a warm accent;
   `docs/look/premium.md`). Each frame draws in the chosen one
@@ -851,9 +866,11 @@ account's menu; the playing song's bars do not move (moving ones would keep the 
 drawing). The signed-in screens (the account's menu, Library, the playlist
 form, an own playlist's buttons) were measured on 8 October 2026 with the
 owner's account; nothing of theirs is in the notes. What it does
-differently: disliking the playing song does not skip it; clicking a song
-in History queues the rest of that list; the playlist form has no
-Collaborate switch; Up next shows the Autoplay switch for radios too.
+differently: clicking a song in History queues the rest of that list;
+the playlist form has no Collaborate switch; Up next shows the Autoplay
+switch for radios too; F puts the player page in full screen (YouTube
+Music's own full screen is the video's); Up next's rows show the open
+hand.
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp

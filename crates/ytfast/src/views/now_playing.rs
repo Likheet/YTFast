@@ -69,6 +69,10 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 
 /// YouTube Music's cover, large on the left. Returns where the panel goes.
 fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> Rect {
+    if app.fullscreen {
+        let (main, panel) = fullscreen_places(area);
+        return youtube_music_picture(app, ui, main, entry, f32::INFINITY, panel);
+    }
     // YouTube Music's spacing, by the window's width: above, at the sides,
     // between the cover and the panel, and the panel's share of the rest
     // (at most 800).
@@ -97,6 +101,19 @@ fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> R
     // corners (YouTube Music's `#player` keeps its 800 and its r 8 for the
     // cover: `:not([video-mode])`).
     let main = Rect::from_min_max(inner.min, pos2(panel.left() - gap, inner.bottom() - top));
+    youtube_music_picture(app, ui, main, entry, 800.0, panel)
+}
+
+/// YouTube Music's cover (square, at most `largest`) or video in `main`,
+/// with the Song and Video switch over it. Returns `panel`.
+fn youtube_music_picture(
+    app: &App,
+    ui: &egui::Ui,
+    main: Rect,
+    entry: &Entry,
+    largest: f32,
+    panel: Rect,
+) -> Rect {
     let corners = CornerRadius::same(8);
     if video::shown(app) {
         let size = video::size_in(main, f32::INFINITY, f32::INFINITY);
@@ -109,7 +126,7 @@ fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> R
     let length = main
         .width()
         .min(main.height() - video::SWITCH_ROOM)
-        .clamp(0.0, 800.0);
+        .clamp(0.0, largest);
     let (row, art) = video::stack(main, Vec2::splat(length));
     video::switch(app, ui, row);
     ui.painter().rect_filled(art, corners, PALETTE.thumb);
@@ -129,7 +146,11 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
         art,
         video: place,
         panel,
-    } = listening_layout(area);
+    } = if app.fullscreen {
+        fullscreen_listening(area)
+    } else {
+        listening_layout(area)
+    };
     let grow = ((art.width() - 480.0) / 420.0).clamp(0.0, 1.0);
     let corners = CornerRadius::same(16);
     let shown = if video::shown(app) {
@@ -165,6 +186,59 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
         PALETTE.secondary,
     );
     panel
+}
+
+/// The player page's places in full screen, in every look: margins of 4%
+/// of the screen (48 to 120 at the sides, 32 to 80 above and below), the
+/// panel (Up next, Lyrics, Related) 30% of what is inside (400 to 720), 4%
+/// between them, and the rest for the cover or the video, as large as it
+/// fits there. Returns that room and the panel.
+pub(super) fn fullscreen_places(area: Rect) -> (Rect, Rect) {
+    let side = (area.width() * 0.04).clamp(48.0, 120.0);
+    let top = (area.height() * 0.05).clamp(32.0, 80.0);
+    let inner = Rect::from_min_max(
+        pos2(area.left() + side, area.top() + top),
+        pos2(area.right() - side, area.bottom() - top),
+    );
+    let gap = side;
+    let panel_width = (inner.width() * 0.30)
+        .clamp(400.0, 720.0)
+        .min((inner.width() - gap) / 2.0)
+        .max(0.0);
+    let panel = Rect::from_min_max(
+        pos2(inner.right() - panel_width, inner.top()),
+        pos2(inner.right(), area.bottom()),
+    );
+    let main = Rect::from_min_max(
+        inner.min,
+        pos2((panel.left() - gap).max(inner.left()), inner.bottom()),
+    );
+    (main, panel)
+}
+
+/// Premium in full screen: [`fullscreen_places`], the cover or video as
+/// large as the room allows with the switch over it and the song's words
+/// under it.
+fn fullscreen_listening(area: Rect) -> Listening {
+    let (main, panel) = fullscreen_places(area);
+    // Above, the switch; below, 88 of words (and 16 to spare).
+    let room = (main.height() - 104.0 - video::SWITCH_ROOM).max(0.0);
+    let side = main.width().min(room);
+    let wide = main.width().min(room * 16.0 / 9.0);
+    let centred = |size: Vec2| {
+        Rect::from_min_size(
+            pos2(
+                main.center().x - size.x / 2.0,
+                main.center().y - (size.y + 88.0 + video::SWITCH_ROOM) / 2.0 + video::SWITCH_ROOM,
+            ),
+            size,
+        )
+    };
+    Listening {
+        art: centred(Vec2::splat(side)),
+        video: centred(vec2(wide, wide * 9.0 / 16.0)),
+        panel,
+    }
 }
 
 /// Premium's places on the player page.
@@ -651,6 +725,36 @@ mod tests {
             }
             assert!(video.right() + 24.0 <= panel.left());
             assert!((video.width() / video.height().max(0.01) - 16.0 / 9.0).abs() < 0.01);
+        }
+    }
+
+    /// In full screen, at a laptop's and larger screens' sizes: the cover
+    /// takes most of the height (more than 0.8 of it; Premium's, with its
+    /// words under it, 0.65), the panel keeps 400 to 720, both inside,
+    /// apart.
+    #[test]
+    fn full_screen_gives_the_cover_the_room_and_keeps_the_panel() {
+        for (width, height) in [
+            (1280.0, 748.0),
+            (1707.0, 995.0),
+            (1920.0, 1008.0),
+            (2560.0, 1368.0),
+            (3440.0, 1368.0),
+        ] {
+            let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, height));
+            let (main, panel) = fullscreen_places(area);
+            assert!(area.contains_rect(main) && area.contains_rect(panel));
+            assert!(main.right() + 48.0 <= panel.left(), "{width}");
+            assert!((400.0..=720.0).contains(&panel.width()), "{width}");
+            let side = main.width().min(main.height() - video::SWITCH_ROOM);
+            assert!(side > 0.8 * height, "{width} by {height}: {side}");
+            // Premium's, with its words under the cover, inside too.
+            let Listening { art, video, panel } = fullscreen_listening(area);
+            assert!(art.top() - video::SWITCH_ROOM >= area.top());
+            assert!(art.bottom() + 80.0 <= area.bottom());
+            assert!(video.right() <= panel.left() - 48.0);
+            // (Its words under it take some of the height.)
+            assert!(art.width() > 0.65 * height, "{width} by {height}");
         }
     }
 

@@ -70,6 +70,22 @@ fn contents(app: &App, ui: &mut egui::Ui) {
         app.settings.even_loudness,
         Setting::EvenLoudness,
     );
+    switch(
+        app,
+        ui,
+        "Skip songs you dislike",
+        "Disliking the song or video playing moves on to the next one, as YouTube Music does.",
+        app.settings.skip_disliked,
+        Setting::SkipDisliked,
+    );
+    switch(
+        app,
+        ui,
+        "Ask before closing while a song plays",
+        "Closing YTFast while a song plays asks first. Turn this off to let it close at once.",
+        app.settings.confirm_close,
+        Setting::ConfirmClose,
+    );
 
     ui.add_space(18.0);
     heading(ui, "Theme");

@@ -31,8 +31,11 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     let (album_slot, wash_slot) = backdrop::paint(ui, ui.max_rect());
     app.backdrop_slot.set(Some(album_slot));
     app.page_backdrop.set(false);
-    // Over everything: the edges that resize YTFast's own window frame.
-    window_frame::edges(ui.ctx());
+    // Over everything: the edges that resize YTFast's own window frame
+    // (none in full screen).
+    if !app.fullscreen {
+        window_frame::edges(ui.ctx());
+    }
     if !matches!(app.auth, Auth::SignedIn { .. }) {
         // Without the top bar, a strip of its own moves the window and
         // holds its buttons.
@@ -62,8 +65,12 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     if app.playback.entry.is_some() {
         player_bar::show(app, ui);
     }
-    topbar::show(app, ui);
-    sidebar::show(app, ui);
+    // Full screen is the player page's, over the whole window but the
+    // player bar.
+    if !app.fullscreen {
+        topbar::show(app, ui);
+        sidebar::show(app, ui);
+    }
     egui::CentralPanel::default()
         .frame(Frame::new())
         .show(ui, |ui| {

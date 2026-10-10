@@ -330,18 +330,24 @@ pub fn player_page(app: &App, ui: &mut egui::Ui) {
             .animate_bool_with_time(egui::Id::new("player-page-open"), app.now_playing, 0.3);
     ui.set_opacity(open.max(0.0));
 
-    let (main, panel) = layout(ui.ctx().content_rect().width(), area);
+    // Full screen: the shared places, and no limit but the room's.
+    let (main, panel) = if app.fullscreen {
+        super::now_playing::fullscreen_places(area)
+    } else {
+        layout(ui.ctx().content_rect().width(), area)
+    };
+    let largest = if app.fullscreen { f32::INFINITY } else { 400.0 };
     let corners = CornerRadius::same(dynamic::RADIUS_ART_LG);
     // The Song and Video switch over the cover, or in the video mode over
     // the video in its place (16:9, at most 400 high).
     if video::shown(app) {
-        let (row, place) = video::stack(main, video::size_in(main, f32::INFINITY, 400.0));
+        let (row, place) = video::stack(main, video::size_in(main, f32::INFINITY, largest));
         video::switch(app, ui, row);
         ui.painter().add(SHADOW.as_shape(place, corners));
         video::paint(app, ui, place, corners);
         cover_click(app, ui, place);
     } else {
-        let (row, art) = cover_in(main);
+        let (row, art) = cover_in(main, largest);
         video::switch(app, ui, row);
         ui.painter().add(SHADOW.as_shape(art, corners));
         ui.painter().rect_filled(art, corners, PALETTE.thumb);
@@ -394,12 +400,13 @@ fn layout(window: f32, area: Rect) -> (Rect, Rect) {
 }
 
 /// The Song and Video switch's row and the cover under it, square and at
-/// most 400 (`--album-art-size`), together centred in `main`.
-fn cover_in(main: Rect) -> (Rect, Rect) {
+/// most `largest` (400, `--album-art-size`; any in full screen), together
+/// centred in `main`.
+fn cover_in(main: Rect, largest: f32) -> (Rect, Rect) {
     let length = main
         .width()
         .min(main.height() - video::SWITCH_ROOM)
-        .clamp(0.0, 400.0);
+        .clamp(0.0, largest);
     video::stack(main, Vec2::splat(length))
 }
 
@@ -779,7 +786,7 @@ mod tests {
         ] {
             let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(width, height));
             let (main, panel) = layout(window, area);
-            let (row, art) = cover_in(main);
+            let (row, art) = cover_in(main, 400.0);
             assert!(area.contains_rect(art) && area.contains_rect(panel));
             assert!(area.contains_rect(row));
             assert!(art.right() + 24.0 <= panel.left());
