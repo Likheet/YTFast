@@ -1,13 +1,13 @@
 //! YTFast's own window frame on Windows, in place of Windows' title bar:
 //! the top bar moves the window (drag it) and maximizes it (double-click),
-//! Windows 11's three buttons stand at its right end, as tall as the bar
-//! so their glyphs sit on its middle line with the bar's other buttons,
-//! and the window's edges resize it. Windows still draws the shadow and rounds the corners.
+//! minimize, maximize and close stand at its right end on its middle line,
+//! round as the bar's other small buttons, and the window's edges resize
+//! it. Windows still draws the shadow and rounds the corners.
 //! The Mac keeps its own title bar.
 
 use egui::{
     Color32, CornerRadius, CursorIcon, Id, PointerButton, Rect, ResizeDirection, Sense, Stroke,
-    Vec2, ViewportCommand, pos2, vec2,
+    Vec2, ViewportCommand, pos2,
 };
 
 use crate::theme::PALETTE;
@@ -15,9 +15,11 @@ use crate::theme::PALETTE;
 /// YTFast draws its own frame (on Windows).
 pub const OWN_FRAME: bool = cfg!(windows);
 
-/// One of the buttons: Windows 11's caption buttons are 46 wide (32 high
-/// there; here as high as the bar they stand in).
-const BUTTON_WIDTH: f32 = 46.0;
+/// The window's buttons: round, 36 across (as the bar's other small
+/// buttons), 4 apart, the last 12 from the window's right edge.
+const BUTTON: f32 = 36.0;
+const BUTTON_GAP: f32 = 4.0;
+const BUTTONS_MARGIN: f32 = 12.0;
 
 /// How far in from the window's edge a press resizes it.
 const EDGE: f32 = 5.0;
@@ -26,7 +28,11 @@ const CORNER: f32 = 16.0;
 
 /// The width the buttons take at the window's top right (none on the Mac).
 pub fn buttons_width() -> f32 {
-    if OWN_FRAME { 3.0 * BUTTON_WIDTH } else { 0.0 }
+    if OWN_FRAME {
+        3.0 * BUTTON + 2.0 * BUTTON_GAP + BUTTONS_MARGIN
+    } else {
+        0.0
+    }
 }
 
 /// Lets `bar` move the window, as a title bar does: drag to move (Windows
@@ -54,11 +60,13 @@ enum Caption {
     Close,
 }
 
-/// Windows 11's minimize, maximize (restore when maximized) and close, at
-/// the right end of `bar`: 46 wide and as high as the bar, glyphs 10
-/// across on its middle line, in the bar's own white (its quieter grey
-/// while the window is in the background); under the pointer white@0.06
-/// (white@0.04 pressed), and close `#c42b1c` with a white glyph.
+/// Minimize, maximize (restore when maximized) and close, at the right end
+/// of `bar`, on its middle line, drawn as YTFast's other small buttons
+/// are: round, 36 across, a soft white@0.12 disc under the pointer (close's
+/// red, `#e5484d`, with its glyph white), and glyphs 12 across in lines
+/// 1.5 thick with round ends, in the bar's white (its quieter grey while
+/// the window is in the background). A hand under the pointer, as every
+/// button.
 pub fn buttons(ui: &egui::Ui, bar: Rect) {
     if !OWN_FRAME {
         return;
@@ -70,13 +78,14 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
             viewport.focused.unwrap_or(true),
         )
     });
-    let mut right = bar.right();
+    let y = bar.center().y;
+    let mut right = bar.right() - BUTTONS_MARGIN;
     for caption in [Caption::Close, Caption::Maximize, Caption::Minimize] {
-        let rect = Rect::from_min_size(
-            pos2(right - BUTTON_WIDTH, bar.top()),
-            vec2(BUTTON_WIDTH, bar.height()),
+        let rect = Rect::from_min_max(
+            pos2(right - BUTTON, y - BUTTON / 2.0),
+            pos2(right, y + BUTTON / 2.0),
         );
-        right -= BUTTON_WIDTH;
+        right -= BUTTON + BUTTON_GAP;
         let name = match caption {
             Caption::Minimize => "Minimize window",
             Caption::Maximize if maximized => "Restore window",
@@ -85,32 +94,24 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
         };
         let response = ui.interact(rect, Id::new("window-button").with(name), Sense::click());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+        crate::theme::pointing(ui, &response);
         let pressed = response.is_pointer_button_down_on();
         let lit = response.hovered() || pressed;
         let close = caption == Caption::Close;
-        let fill = match (close, lit, pressed) {
-            (true, true, false) => Color32::from_rgb(0xc4, 0x2b, 0x1c),
-            (true, true, true) => Color32::from_rgba_unmultiplied(0xc4, 0x2b, 0x1c, 0xe6),
-            (false, true, false) => Color32::from_white_alpha(15),
-            (false, true, true) => Color32::from_white_alpha(10),
-            _ => Color32::TRANSPARENT,
-        };
-        // The top right corner keeps the window's rounding.
-        let rounding = if close && !maximized {
-            CornerRadius {
-                ne: 8,
-                ..CornerRadius::ZERO
-            }
-        } else {
-            CornerRadius::ZERO
-        };
-        ui.painter().rect_filled(rect, rounding, fill);
+        if lit {
+            let fill = match (close, pressed) {
+                (true, false) => Color32::from_rgb(0xe5, 0x48, 0x4d),
+                (true, true) => Color32::from_rgb(0xc9, 0x3a, 0x3f),
+                (false, false) => Color32::from_white_alpha(31),
+                (false, true) => Color32::from_white_alpha(20),
+            };
+            ui.painter()
+                .circle_filled(rect.center(), BUTTON / 2.0, fill);
+        }
         let color = if close && lit {
-            PALETTE.text
+            Color32::WHITE
         } else if !focused {
             PALETTE.secondary
-        } else if pressed {
-            Color32::from_white_alpha(200)
         } else {
             PALETTE.text
         };
@@ -126,60 +127,66 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
     }
 }
 
-/// A caption button's glyph, 10 across, centred on `center`, in lines one
-/// point thick, as Segoe Fluent Icons draws them.
+/// A caption button's glyph, 12 across, centred on `center`: lines 1.5
+/// thick with round ends (a dot at each end), squares with corners 2.5.
 fn glyph(ui: &egui::Ui, caption: Caption, maximized: bool, center: egui::Pos2, color: Color32) {
+    const WIDTH: f32 = 1.5;
     let painter = ui.painter();
-    let stroke = Stroke::new(1.0, color);
-    let c = pos2(
-        painter.round_to_pixel_center(center.x),
-        painter.round_to_pixel_center(center.y),
-    );
+    let stroke = Stroke::new(WIDTH, color);
+    let c = center;
+    // A line with round ends.
+    let line = |from: egui::Pos2, to: egui::Pos2| {
+        painter.line_segment([from, to], stroke);
+        painter.circle_filled(from, WIDTH / 2.0, color);
+        painter.circle_filled(to, WIDTH / 2.0, color);
+    };
     match caption {
-        Caption::Minimize => {
-            painter.line_segment([pos2(c.x - 5.0, c.y), pos2(c.x + 5.0, c.y)], stroke);
-        }
+        Caption::Minimize => line(pos2(c.x - 6.0, c.y), pos2(c.x + 6.0, c.y)),
         Caption::Maximize if maximized => {
-            // Restore: a square 8 across, and the corner of another behind
-            // it, 2 up and right.
-            let front = Rect::from_min_size(pos2(c.x - 5.0, c.y - 3.0), Vec2::splat(8.0));
+            // Restore: a square 9 across, and behind it, 3 up and right,
+            // the top and right of another.
+            let front = Rect::from_min_size(pos2(c.x - 6.0, c.y - 3.0), Vec2::splat(9.0));
             painter.rect_stroke(
                 front,
-                CornerRadius::same(1),
+                CornerRadius::same(2),
                 stroke,
                 egui::StrokeKind::Middle,
             );
-            painter.line_segment(
-                [pos2(c.x - 3.0, c.y - 5.0), pos2(c.x + 4.0, c.y - 5.0)],
-                stroke,
+            let (left, top, right, bottom) = (
+                front.left() + 3.0,
+                front.top() - 3.0,
+                front.right() + 3.0,
+                front.bottom() - 3.0,
             );
-            painter.line_segment(
-                [pos2(c.x + 5.0, c.y - 4.0), pos2(c.x + 5.0, c.y + 3.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [pos2(c.x + 4.0, c.y - 5.0), pos2(c.x + 5.0, c.y - 4.0)],
-                stroke,
-            );
+            let r = 2.0;
+            // From the front square's top, up the back's left side, round
+            // its corners, down its right side to the front square's
+            // right.
+            let corner = |cx: f32, cy: f32, from: f32| {
+                (0..=4).map(move |i| {
+                    let angle = from + std::f32::consts::FRAC_PI_2 * (i as f32 / 4.0);
+                    pos2(cx + r * angle.cos(), cy + r * angle.sin())
+                })
+            };
+            let mut points = vec![pos2(left, front.top())];
+            points.extend(corner(left + r, top + r, std::f32::consts::PI));
+            points.extend(corner(right - r, top + r, -std::f32::consts::FRAC_PI_2));
+            points.push(pos2(right, bottom));
+            points.push(pos2(front.right(), bottom));
+            painter.add(egui::Shape::line(points, stroke));
         }
         Caption::Maximize => {
-            let square = Rect::from_center_size(c, Vec2::splat(10.0));
+            let square = Rect::from_center_size(c, Vec2::splat(11.0));
             painter.rect_stroke(
                 square,
-                CornerRadius::same(1),
+                CornerRadius::same(3),
                 stroke,
                 egui::StrokeKind::Middle,
             );
         }
         Caption::Close => {
-            painter.line_segment(
-                [pos2(c.x - 5.0, c.y - 5.0), pos2(c.x + 5.0, c.y + 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [pos2(c.x + 5.0, c.y - 5.0), pos2(c.x - 5.0, c.y + 5.0)],
-                stroke,
-            );
+            line(pos2(c.x - 5.0, c.y - 5.0), pos2(c.x + 5.0, c.y + 5.0));
+            line(pos2(c.x + 5.0, c.y - 5.0), pos2(c.x - 5.0, c.y + 5.0));
         }
     }
 }

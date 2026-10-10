@@ -154,8 +154,9 @@ Paolino), as `audio.rs` does.
   Music's look: when changing a screen, open the real one and measure.
 - On Windows the window has no Windows title bar: the top bar moves it
   (drag) and maximizes it (double-click), YTFast draws Windows 11's
-  minimize, maximize and close at its right end (as tall as the bar, their
-  glyphs on its middle line with its other buttons), and the edges resize it
+  minimize, maximize and close at its right end, round and on its middle
+  line as the bar's other small buttons (close turns red under the
+  pointer), and the edges resize it
   (`views/window_frame.rs`; the sign-in screen has a strip of its own for
   them). Windows still rounds the corners and draws the shadow. The Mac
   keeps its own title bar, and its Dock keeps YTFast.app's icon (eframe is
@@ -197,8 +198,11 @@ Paolino), as `audio.rs` does.
   after starting and once a day YTFast looks, downloads a newer version in
   the background (Settings, "Install updates automatically", on by
   default), checks the release's `checksums.txt` signature against the
-  publisher key built in, and installs it when the listener restarts (a
-  banner offers Restart). fastframe-update's helper swaps the program
+  publisher key built in, and installs it when the listener restarts. As
+  in Spotifast: a toast says a version is out, an Update badge stays in the
+  top bar, and it opens the update window (the download's progress, then
+  "Restart to update"). `YTFAST_DEMO_UPDATE=downloading` (or `ready`)
+  shows them in the demo. fastframe-update's helper swaps the program
   while YTFast is closed and puts the old one back if the new one does
   not start. Windows only: a Mac copy is told a version is out. Making a
   release: docs/releasing.md (the private signing key stays on the
