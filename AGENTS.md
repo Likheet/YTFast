@@ -50,7 +50,9 @@ crates/ytfast-core/   the engine (no user interface)
   src/redact.rs       keeping secrets out of messages
   tests/fixtures/     saved YouTube replies (see its README)
 crates/ytfast/        the app: an egui window on fastframe
-  src/main.rs         starts the window (`--demo`, `--verbose`)
+  src/main.rs         starts the window (`--demo`, `--verbose`); the
+                      updater's helper and `--version` first
+  src/update.rs       updates from the GitHub releases (fastframe-update)
   src/app.rs          the app's state, and what every action does
   src/backend.rs      network and yt-dlp work, on a thread of its own
   src/audio_thread.rs the player, on a thread of its own
@@ -71,6 +73,9 @@ crates/ytfast/        the app: an egui window on fastframe
                       Roboto font (OFL) and the app's own mark
   build.rs            the icon and name in the Windows program
 crates/ytfast-check/  step 0: the guided check program
+crates/ytfast-release/ making a release: the signing key, the update
+                      archive, checksums.txt and its signature
+                      (docs/releasing.md)
 packaging/            app icon files, the Mac Info.plist and its
                       build-and-install script, the Windows resource file
 docs/                 plan, how to run the app and the check
@@ -188,6 +193,16 @@ Paolino), as `audio.rs` does.
   own (`ytfast-demo.log`), leaves the sign-in folders alone, saves no
   settings, and keeps its window's size in a file of its own
   (`demo-window.ron` in the cache folder).
+- Updates come from the repository's GitHub releases (public): a minute
+  after starting and once a day YTFast looks, downloads a newer version in
+  the background (Settings, "Install updates automatically", on by
+  default), checks the release's `checksums.txt` signature against the
+  publisher key built in, and installs it when the listener restarts (a
+  banner offers Restart). fastframe-update's helper swaps the program
+  while YTFast is closed and puts the old one back if the new one does
+  not start. Windows only: a Mac copy is told a version is out. Making a
+  release: docs/releasing.md (the private signing key stays on the
+  owner's laptop).
 - Problems go to `ytfast.log` in the cache folder, made new each run
   (warnings; everything with `--verbose`). Every line passes through
   `redact::urls`. Ask the owner for this file when something fails on

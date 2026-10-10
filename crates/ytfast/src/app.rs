@@ -52,6 +52,9 @@ pub struct Settings {
     /// still reads these settings (it skips what it does not know) instead
     /// of forgetting them all. Set when saved; read by [`Settings::loaded`].
     pub dynamic_background: bool,
+    /// Download new versions in the background and install them on a
+    /// restart (`update`).
+    pub auto_update: bool,
 }
 
 impl Settings {
@@ -86,8 +89,16 @@ impl Default for Settings {
             theme: crate::theme::Theme::default(),
             moving_background: true,
             dynamic_background: false,
+            auto_update: true,
         }
     }
+}
+
+/// What the updater left for this run: why an update was undone, and the
+/// receipt a freshly installed version gives back once its window is up.
+pub struct Startup {
+    pub update_error: Option<String>,
+    pub receipt: Option<fastframe_update::Receipt>,
 }
 
 pub enum Auth {
@@ -190,6 +201,7 @@ pub enum Setting {
     Autoplay,
     EvenLoudness,
     MovingBackground,
+    AutoUpdate,
 }
 
 /// A small window asking one thing.
@@ -317,6 +329,15 @@ pub enum Action {
     Toggle(Setting),
     /// Wear another look (Settings, Theme).
     SetTheme(crate::theme::Theme),
+    /// Look for a new version now (Settings).
+    CheckForUpdates,
+    /// Download the new version found (when installs are not automatic).
+    InstallUpdate,
+    /// Install the downloaded version: the window closes and the new
+    /// version opens.
+    RestartToUpdate,
+    /// Hide the "ready" banner for this run.
+    DismissUpdate,
     OpenDialog(Dialog),
     RenamePlaylist {
         playlist_id: String,
@@ -415,6 +436,15 @@ pub struct App {
     pub scrolling: fastframe_scroll::Scrolling,
     pub controls: Option<now_playing::NowPlaying>,
     pub demo: bool,
+    /// The updater (none in the demo).
+    pub updates: Option<crate::update::Updates>,
+    /// The "ready to install" banner was put away for this run.
+    pub update_dismissed: bool,
+    /// A freshly installed version's receipt, given back after the first
+    /// frame (else the helper puts the old version back).
+    receipt: Option<fastframe_update::Receipt>,
+    /// The window was asked to close for an update.
+    restarting: bool,
     pub settings: Settings,
     pub auth: Auth,
     pub route: Route,
@@ -543,7 +573,7 @@ fn default_browser() -> Browser {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, demo: bool) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, demo: bool, startup: Startup) -> Self {
         let script_fonts = crate::theme::install(&cc.egui_ctx);
         let settings: Settings = cc
             .storage
@@ -559,7 +589,17 @@ impl App {
         let mut info = now_playing::App::new("ytfast", "YTFast");
         info.can_raise = true;
         let controls = Some(now_playing::NowPlaying::start(info, wake));
-        Self::with(backend, audio, controls, script_fonts, settings, demo)
+        let updates = (!demo).then(|| {
+            let ctx = cc.egui_ctx.clone();
+            crate::update::Updates::start(settings.auto_update, move || ctx.request_repaint())
+        });
+        let mut app = Self::with(backend, audio, controls, script_fonts, settings, demo);
+        app.updates = updates;
+        app.receipt = startup.receipt;
+        if let Some(error) = startup.update_error {
+            app.notify(error);
+        }
+        app
     }
 
     /// The app around a backend and a player already started (stand-ins,
@@ -608,6 +648,10 @@ impl App {
             scrolling: fastframe_scroll::Scrolling::default(),
             controls,
             demo,
+            updates: None,
+            update_dismissed: false,
+            receipt: None,
+            restarting: false,
             settings,
             auth,
             route: Route::Home,
@@ -2129,8 +2173,30 @@ impl App {
                     Setting::Autoplay => s.autoplay = !s.autoplay,
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
                     Setting::MovingBackground => s.moving_background = !s.moving_background,
+                    Setting::AutoUpdate => {
+                        s.auto_update = !s.auto_update;
+                        if let Some(updates) = &self.updates {
+                            updates.set_automatic(s.auto_update);
+                        }
+                    }
                 }
             }
+            Action::CheckForUpdates => {
+                if let Some(updates) = &self.updates {
+                    updates.check();
+                }
+            }
+            Action::InstallUpdate => {
+                if let Some(updates) = &self.updates {
+                    updates.install();
+                }
+            }
+            Action::RestartToUpdate => {
+                if let Some(updates) = &self.updates {
+                    updates.restart();
+                }
+            }
+            Action::DismissUpdate => self.update_dismissed = true,
             Action::SetTheme(theme) => self.settings.theme = theme,
             Action::OpenDialog(dialog) => {
                 *self.dialog.get_mut() = Some(dialog);
@@ -2674,6 +2740,23 @@ impl eframe::App for App {
             self.styled = Some(self.settings.theme);
             // Dynamic Background sets everything in Inter.
             self.script_fonts.set_inter_first(crate::theme::dynamic());
+        }
+        // A freshly installed version is up: its receipt tells the helper
+        // to keep it.
+        if let Some(receipt) = self.receipt.take() {
+            std::thread::spawn(move || {
+                if let Err(e) = receipt.acknowledge() {
+                    log::warn!("updates: could not confirm the new version: {e:#}");
+                }
+            });
+        }
+        // The helper waits for this window to close to install the update.
+        if !self.restarting
+            && self.updates.as_ref().map(crate::update::Updates::state)
+                == Some(crate::update::State::Restarting)
+        {
+            self.restarting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.scrolling.apply(&ctx);
         self.mend_window_size(&ctx);
