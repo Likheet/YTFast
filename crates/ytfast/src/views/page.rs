@@ -478,13 +478,17 @@ fn search_chips(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, query:
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "All results")
                     });
-                    let fill = if response.hovered() {
-                        egui::Color32::from_rgb(0xd9, 0xd9, 0xd9)
+                    if theme::dynamic() {
+                        super::dynamic::close_square(ui, rect, response.hovered());
                     } else {
-                        PALETTE.text
-                    };
-                    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
-                    theme::paint_icon(ui, Icon::Close, rect, 24.0, PALETTE.window);
+                        let fill = if response.hovered() {
+                            egui::Color32::from_rgb(0xd9, 0xd9, 0xd9)
+                        } else {
+                            PALETTE.text
+                        };
+                        ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+                        theme::paint_icon(ui, Icon::Close, rect, 24.0, PALETTE.window);
+                    }
                     if response.clicked() {
                         app.act(Action::Navigate(all.clone()));
                     }
@@ -560,14 +564,18 @@ fn library_header(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
             cleared.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "All of the library")
             });
-            let fill = if cleared.hovered() {
-                egui::Color32::from_rgb(0xd9, 0xd9, 0xd9)
+            if theme::dynamic() {
+                super::dynamic::close_square(ui, square, cleared.hovered());
             } else {
-                PALETTE.text
-            };
-            ui.painter()
-                .rect_filled(square, CornerRadius::same(8), fill);
-            theme::paint_icon(ui, Icon::Close, square, 24.0, PALETTE.window);
+                let fill = if cleared.hovered() {
+                    egui::Color32::from_rgb(0xd9, 0xd9, 0xd9)
+                } else {
+                    PALETTE.text
+                };
+                ui.painter()
+                    .rect_filled(square, CornerRadius::same(8), fill);
+                theme::paint_icon(ui, Icon::Close, square, 24.0, PALETTE.window);
+            }
             if cleared.clicked() {
                 app.act(Action::Navigate(Route::LibraryRecent));
             }
@@ -692,11 +700,17 @@ fn sort_button(
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    // Dynamic Background: white@0.10 glass, corners 16, no ring.
+    let (corners, ring) = if theme::dynamic() {
+        (16, egui::Color32::TRANSPARENT)
+    } else {
+        (20, PALETTE.outline)
+    };
     ui.painter().rect(
         rect,
-        CornerRadius::same(20),
+        CornerRadius::same(corners),
         PALETTE.surface,
-        egui::Stroke::new(1.0, PALETTE.outline),
+        egui::Stroke::new(1.0, ring),
         egui::StrokeKind::Inside,
     );
     let at = pos2(rect.left() + 16.7, rect.center().y - words.size().y / 2.0);
@@ -707,16 +721,23 @@ fn sort_button(
     ui.painter().galley(at, words, PALETTE.text);
     theme::paint_icon(ui, Icon::ExpandMore, chevron, 18.0, PALETTE.text);
 
-    let frame = egui::Frame::new()
-        .fill(PALETTE.panel)
-        .stroke(egui::Stroke::new(1.0, theme::menu_edge()))
-        .corner_radius(CornerRadius::same(2));
+    let frame = if theme::dynamic() {
+        crate::dynamic::dialog_frame()
+    } else {
+        egui::Frame::new()
+            .fill(PALETTE.panel)
+            .stroke(egui::Stroke::new(1.0, theme::menu_edge()))
+            .corner_radius(CornerRadius::same(2))
+    };
     egui::Popup::menu(&response)
         .frame(frame)
         .width(305.0)
         .align(egui::RectAlign::BOTTOM_END)
         .gap(8.0)
         .show(|ui| {
+            if theme::dynamic() {
+                crate::dynamic::glass_behind(ui, crate::dynamic::RADIUS_PANEL_LG);
+            }
             ui.set_width(305.0);
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             let (title, _) = ui.allocate_exact_size(vec2(305.0, 62.6), Sense::hover());
@@ -996,12 +1017,14 @@ fn header_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page, heade
     };
     let side = side.min(width - 16.0).max(0.0);
     let (art, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    // Dynamic Background: corners 20 (`--radius-art-lg`).
+    let corners = if theme::dynamic() { 20 } else { 12 };
     widgets::cover_with(
         app,
         ui,
         art,
         header.thumbnail.as_ref(),
-        CornerRadius::same(12),
+        CornerRadius::same(corners),
     );
     ui.add_space(16.0);
     // `--lhs-title-font-size`: 28 from 1150, else display-1 (24).
@@ -1599,6 +1622,9 @@ fn artist_header(
         "More actions",
     );
     theme::menu_popup(&more).show(|ui| {
+        if theme::dynamic() {
+            crate::dynamic::glass_behind(ui, crate::dynamic::RADIUS_PANEL_LG);
+        }
         if can_shuffle && theme::menu_item(ui, Icon::Shuffle, "Shuffle play").clicked() {
             play_shuffle(app);
             ui.close();
@@ -2078,8 +2104,14 @@ fn top_result(app: &App, ui: &mut egui::Ui, route: &Route, section: &Section, to
         ne: inner,
         se: inner,
     };
-    ui.painter().rect_filled(half, corners, PALETTE.surface);
-    if !songs.is_empty() {
+    if theme::dynamic() {
+        let songs_pane = (!songs.is_empty())
+            .then(|| Rect::from_min_max(pos2(half.right(), rect.top()), rect.max));
+        super::dynamic::top_result_panes(ui, half, songs_pane);
+    } else {
+        ui.painter().rect_filled(half, corners, PALETTE.surface);
+    }
+    if !songs.is_empty() && !theme::dynamic() {
         let right = Rect::from_min_max(pos2(half.right(), rect.top()), rect.max);
         let corners = CornerRadius {
             nw: 0,
@@ -2111,7 +2143,13 @@ fn top_result(app: &App, ui: &mut egui::Ui, route: &Route, section: &Section, to
     if round {
         widgets::cover(app, ui, art, thumbnail, true);
     } else {
-        widgets::cover_with(app, ui, art, thumbnail, CornerRadius::same(2));
+        // Dynamic Background: corners 16 (`--radius-art-md`).
+        let corners = if theme::dynamic() {
+            crate::dynamic::RADIUS_ART_MD
+        } else {
+            2
+        };
+        widgets::cover_with(app, ui, art, thumbnail, CornerRadius::same(corners));
     }
 
     // The words and buttons, 16 after the picture, up to the small arrow
@@ -2300,24 +2338,28 @@ fn arrows(ui: &mut egui::Ui, id: egui::Id) {
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
             let lit = response.hovered() && enabled;
-            if lit {
-                ui.painter()
-                    .circle_filled(rect.center(), 18.0, PALETTE.surface);
-            }
-            // A ring of white@0.20; one that cannot turn is dimmed whole,
-            // its icon `#717171`.
-            let dim = if enabled { 1.0 } else { 0.4 };
-            ui.painter().circle_stroke(
-                rect.center(),
-                17.5,
-                egui::Stroke::new(1.0, PALETTE.surface_hover.gamma_multiply(dim)),
-            );
-            let tint = if enabled {
-                PALETTE.text
+            if theme::dynamic() {
+                super::dynamic::shelf_arrow(ui, rect, icon, lit, enabled);
             } else {
-                PALETTE.disabled.gamma_multiply(dim)
-            };
-            theme::paint_icon(ui, icon, rect, 18.7, tint);
+                if lit {
+                    ui.painter()
+                        .circle_filled(rect.center(), 18.0, PALETTE.surface);
+                }
+                // A ring of white@0.20; one that cannot turn is dimmed
+                // whole, its icon `#717171`.
+                let dim = if enabled { 1.0 } else { 0.4 };
+                ui.painter().circle_stroke(
+                    rect.center(),
+                    17.5,
+                    egui::Stroke::new(1.0, PALETTE.surface_hover.gamma_multiply(dim)),
+                );
+                let tint = if enabled {
+                    PALETTE.text
+                } else {
+                    PALETTE.disabled.gamma_multiply(dim)
+                };
+                theme::paint_icon(ui, icon, rect, 18.7, tint);
+            }
             if response.clicked() {
                 shelf.glide = Some((now, shelf.offset, to));
             }

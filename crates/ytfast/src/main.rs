@@ -11,6 +11,7 @@ mod audio_thread;
 mod backend;
 mod colors;
 mod demo;
+mod dynamic;
 mod images;
 mod lyrics;
 mod queue;

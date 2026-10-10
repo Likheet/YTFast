@@ -183,12 +183,17 @@ pub enum Request {
 pub struct Picture {
     pub image: egui::ColorImage,
     pub summary: colors::Summary,
+    /// The cover at 24 × 24 (about 2 KB), from which the Dynamic Background
+    /// theme makes the background behind the whole window
+    /// (`dynamic::wash`).
+    pub soft: egui::ColorImage,
 }
 
 impl Picture {
     fn new(image: egui::ColorImage) -> Self {
         Self {
             summary: colors::summarize(&image),
+            soft: colors::shrink(&image, crate::dynamic::SOFT),
             image,
         }
     }
