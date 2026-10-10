@@ -63,6 +63,9 @@ pub struct Settings {
     /// Closing the window while a song plays asks first
     /// ([`Dialog::ConfirmClose`]).
     pub confirm_close: bool,
+    /// Lyrics show each line in English too, and in Latin letters when
+    /// written in another script (the Lyrics tab's Translate).
+    pub translate_lyrics: bool,
 }
 
 impl Settings {
@@ -100,6 +103,7 @@ impl Default for Settings {
             auto_update: true,
             skip_disliked: true,
             confirm_close: true,
+            translate_lyrics: false,
         }
     }
 }
@@ -251,6 +255,7 @@ pub enum Setting {
     AutoUpdate,
     SkipDisliked,
     ConfirmClose,
+    TranslateLyrics,
 }
 
 /// A small window asking one thing.
@@ -575,6 +580,8 @@ pub struct App {
     fullscreen_asked: f64,
     /// Lyrics and related pages, by song.
     pub lyrics: HashMap<String, crate::lyrics::State>,
+    /// Lyrics translated, by song.
+    pub translations: HashMap<String, crate::lyrics::Translation>,
     pub related: HashMap<String, Loadable>,
     /// What the account thinks of songs, as known.
     pub likes: HashMap<String, LikeState>,
@@ -812,6 +819,7 @@ impl App {
             fullscreen_wanted: None,
             fullscreen_asked: f64::NEG_INFINITY,
             lyrics: HashMap::new(),
+            translations: HashMap::new(),
             related: HashMap::new(),
             likes: HashMap::new(),
             saved: HashMap::new(),
@@ -995,7 +1003,10 @@ impl App {
     }
 
     /// Asks for what the player page shows of the playing song (lyrics,
-    /// related), once per song, when the page is open.
+    /// related), once per song, when the page is open. Its lyrics are
+    /// asked for whichever tab shows, so Lyrics opens at once. While
+    /// Lyrics shows, the next song's lyrics are asked for too, so they
+    /// show as it starts, and with Translate on, both are translated.
     fn want_song_extras(&mut self) {
         if !self.now_playing {
             return;
@@ -1004,49 +1015,80 @@ impl App {
             return;
         };
         let track = &entry.track;
-        match self.np_tab {
-            NpTab::Lyrics if !self.lyrics.contains_key(&track.video_id) => {
-                // The player's length is this song's only once it plays it
-                // (until then it is the last song's), as itself (not its
-                // video, in the video mode).
-                let playing_it = self.audio_status.entry == Some(entry.id)
-                    && self.playback.version.as_deref() == Some(track.video_id.as_str());
-                let duration = if playing_it && self.audio_status.length > 0.0 {
-                    Some(self.audio_status.length)
-                } else {
-                    track.duration_seconds.map(f64::from)
-                };
-                // LRCLIB matches on the length: without one from YouTube,
-                // wait for the song to start.
-                let starting = matches!(
-                    self.playback.state,
-                    PlayState::Preparing | PlayState::Playing
-                );
-                if duration.is_none() && !playing_it && starting {
-                    return;
-                }
-                if self.lyrics.len() > 30 {
-                    self.lyrics.clear();
-                }
-                self.lyrics
-                    .insert(track.video_id.clone(), crate::lyrics::State::Loading);
-                self.backend.send(Request::Lyrics {
-                    video_id: track.video_id.clone(),
-                    title: track.title.clone(),
-                    artist: track.artists.clone(),
-                    album: track.album.clone(),
-                    duration,
-                });
+        let next = self.queue.peek_next().map(|next| &next.track);
+        let lyrics_shown = self.np_tab == NpTab::Lyrics;
+        let mut wanted = Vec::new();
+        if !self.lyrics.contains_key(&track.video_id) {
+            // The player's length is this song's only once it plays it
+            // (until then it is the last song's), as itself (not its
+            // video, in the video mode).
+            let playing_it = self.audio_status.entry == Some(entry.id)
+                && self.playback.version.as_deref() == Some(track.video_id.as_str());
+            let duration = if playing_it && self.audio_status.length > 0.0 {
+                Some(self.audio_status.length)
+            } else {
+                track.duration_seconds.map(f64::from)
+            };
+            // LRCLIB and Musixmatch match on the length: without one from
+            // YouTube, wait for the song to start.
+            let starting = matches!(
+                self.playback.state,
+                PlayState::Preparing | PlayState::Playing
+            );
+            if duration.is_some() || playing_it || !starting {
+                wanted.push(lyrics_request(track, duration));
             }
-            NpTab::Related if !self.related.contains_key(&track.video_id) => {
-                if self.related.len() > 10 {
-                    self.related.clear();
+        } else if lyrics_shown
+            && !matches!(
+                self.lyrics.get(&track.video_id),
+                Some(crate::lyrics::State::Loading)
+            )
+            && let Some(next) = next
+            && !self.lyrics.contains_key(&next.video_id)
+            && let Some(seconds) = next.duration_seconds
+        {
+            wanted.push(lyrics_request(next, Some(f64::from(seconds))));
+        }
+        if lyrics_shown && self.settings.translate_lyrics {
+            let songs = std::iter::once(&track.video_id).chain(next.map(|n| &n.video_id));
+            for video_id in songs {
+                if let Some(crate::lyrics::State::Ready(lyrics)) = self.lyrics.get(video_id)
+                    && !self.translations.contains_key(video_id)
+                {
+                    wanted.push(Request::Translate {
+                        video_id: video_id.clone(),
+                        lines: lyrics.texts(),
+                        musixmatch: lyrics.musixmatch.clone(),
+                    });
                 }
-                self.related
-                    .insert(track.video_id.clone(), Loadable::Loading);
-                self.backend.send(Request::Related(track.video_id.clone()));
             }
-            _ => {}
+        }
+        if self.np_tab == NpTab::Related && !self.related.contains_key(&track.video_id) {
+            wanted.push(Request::Related(track.video_id.clone()));
+        }
+        // What the page shows stays when a store is full.
+        let keep: Vec<String> = std::iter::once(track.video_id.clone())
+            .chain(next.map(|n| n.video_id.clone()))
+            .collect();
+        for request in wanted {
+            match &request {
+                Request::Lyrics { video_id, .. } => {
+                    keep_only(&mut self.lyrics, MAX_LYRICS, &keep);
+                    self.lyrics
+                        .insert(video_id.clone(), crate::lyrics::State::Loading);
+                }
+                Request::Translate { video_id, .. } => {
+                    keep_only(&mut self.translations, MAX_LYRICS, &keep);
+                    self.translations
+                        .insert(video_id.clone(), crate::lyrics::Translation::Loading);
+                }
+                Request::Related(video_id) => {
+                    keep_only(&mut self.related, MAX_RELATED, &keep);
+                    self.related.insert(video_id.clone(), Loadable::Loading);
+                }
+                _ => {}
+            }
+            self.backend.send(request);
         }
     }
 
@@ -1342,6 +1384,13 @@ impl App {
                     };
                     self.lyrics.insert(video_id, state);
                 }
+                Event::Translated(video_id, result) => {
+                    let state = match result {
+                        Ok(translated) => crate::lyrics::Translation::Ready(translated),
+                        Err(_) => crate::lyrics::Translation::Missing,
+                    };
+                    self.translations.insert(video_id, state);
+                }
                 Event::Related(video_id, result) => {
                     let loaded = match result {
                         Ok(page) => Loadable::Ready(page),
@@ -1630,6 +1679,12 @@ impl App {
                 }
                 if matches!(self.related.get(video_id), Some(Loadable::Failed(_))) {
                     self.related.remove(video_id);
+                }
+                if matches!(
+                    self.translations.get(video_id),
+                    Some(crate::lyrics::Translation::Missing)
+                ) {
+                    self.translations.remove(video_id);
                 }
                 let report = PlayReport::new(&ready.info);
                 if let Some(url) = report.started(self.playback.start_at) {
@@ -1963,7 +2018,9 @@ impl App {
     /// (by YouTube's map); `None` while the video shows what the song does
     /// not have (its own intro, a scene between).
     pub fn lyrics_clock(&self) -> Option<f64> {
-        let position = self.audio_status.position;
+        // Carried on between the player's reports (ten a second), so words
+        // light smoothly.
+        let position = self.clock();
         match self.playing_video_map() {
             Some(map) => ytfast_core::read::video_to_song(&map, position),
             None => Some(position),
@@ -2764,6 +2821,7 @@ impl App {
                     Setting::MovingBackground => s.moving_background = !s.moving_background,
                     Setting::SkipDisliked => s.skip_disliked = !s.skip_disliked,
                     Setting::ConfirmClose => s.confirm_close = !s.confirm_close,
+                    Setting::TranslateLyrics => s.translate_lyrics = !s.translate_lyrics,
                     Setting::AutoUpdate => {
                         s.auto_update = !s.auto_update;
                         if let Some(updates) = &self.updates {
@@ -3283,6 +3341,16 @@ fn words(event: &Event) -> Vec<&str> {
         Event::Lyrics(_, Some(lyrics)) => {
             words.extend(lyrics.lines.iter().map(|line| line.text.as_str()));
         }
+        Event::Translated(_, Ok(translated)) => {
+            words.extend(
+                translated
+                    .lines
+                    .iter()
+                    .chain(&translated.latin)
+                    .flatten()
+                    .map(String::as_str),
+            );
+        }
         Event::MoreResults { items, .. } => {
             for item in items {
                 match item {
@@ -3333,6 +3401,31 @@ fn add_rows(page: &mut Page, tracks: Vec<Track>) {
 /// The most pages kept in memory; one shown again after being let go
 /// loads again.
 const MAX_PAGES: usize = 24;
+
+/// The most songs whose lyrics (and their translations) are kept.
+const MAX_LYRICS: usize = 30;
+/// The most songs whose related pages are kept.
+const MAX_RELATED: usize = 10;
+
+/// A song's lyrics, asked for: its length, as the player or YouTube says,
+/// tells it from other versions.
+fn lyrics_request(track: &Track, duration: Option<f64>) -> Request {
+    Request::Lyrics {
+        video_id: track.video_id.clone(),
+        title: track.title.clone(),
+        artist: track.artists.clone(),
+        album: track.album.clone(),
+        duration,
+    }
+}
+
+/// Makes room in a store of songs' things that holds `most`: when full,
+/// it keeps only those of `keep` (what the page shows).
+fn keep_only<V>(store: &mut HashMap<String, V>, most: usize, keep: &[String]) {
+    if store.len() >= most {
+        store.retain(|video_id, _| keep.contains(video_id));
+    }
+}
 
 /// The most songs whose videos are remembered (see [`App::video_of`]).
 const MAX_SONG_VIDEOS: usize = 500;
@@ -3728,6 +3821,9 @@ mod tests {
         h: Harness,
         time: f64,
         named: Vec<(String, egui::Rect)>,
+        /// Words on screen (egui's labels, which screen readers get as a
+        /// value, not a name).
+        texts: Vec<String>,
         /// What the frames asked of the window (close it, move it...).
         commands: Vec<egui::ViewportCommand>,
         /// The pointer's look after the last frame.
@@ -3748,6 +3844,7 @@ mod tests {
                 h,
                 time: 0.0,
                 named: Vec::new(),
+                texts: Vec::new(),
                 commands: Vec::new(),
                 cursor: egui::CursorIcon::Default,
             }
@@ -3780,9 +3877,13 @@ mod tests {
                     .values()
                     .flat_map(|viewport| viewport.commands.iter().cloned()),
             );
-            self.named = output
-                .platform_output
-                .accesskit_update
+            let update = output.platform_output.accesskit_update;
+            self.texts = update
+                .iter()
+                .flat_map(|update| &update.nodes)
+                .filter_map(|(_, node)| node.value().map(str::to_string))
+                .collect();
+            self.named = update
                 .map(|update| {
                     update
                         .nodes
@@ -3939,6 +4040,11 @@ mod tests {
 
         fn shows(&self, name: &str) -> bool {
             self.named.iter().any(|(n, _)| n == name)
+        }
+
+        /// Whether these words show (as words, not a control's name).
+        fn says(&self, words: &str) -> bool {
+            self.texts.iter().any(|t| t == words)
         }
 
         /// A frame with the wheel turned (points, as a touchpad's) at `at`.
@@ -5474,6 +5580,187 @@ mod tests {
             assert!(w.h.app.fullscreen);
             w.press(egui::Key::Q);
             assert!(!w.h.app.fullscreen && !w.h.app.now_playing, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// Made-up lyrics timed by the line, as a source sends them: their
+    /// words' times estimated.
+    fn timed_lyrics(lines: &[(u64, &str)]) -> crate::lyrics::Lyrics {
+        use ytfast_core::lyrics as core;
+        let mut found: Vec<core::LyricLine> = lines
+            .iter()
+            .map(|&(start_ms, text)| core::LyricLine {
+                start_ms: Some(start_ms),
+                text: text.into(),
+                ..Default::default()
+            })
+            .collect();
+        for i in 1..found.len() {
+            found[i - 1].end_ms = found[i].start_ms;
+        }
+        crate::lyrics::Lyrics::from(core::Lyrics {
+            lines: found,
+            synced: true,
+            source: "Test".into(),
+            ..Default::default()
+        })
+    }
+
+    /// The player page asks for the playing song's lyrics whatever its tab,
+    /// once. On Lyrics it asks for the next song's too, once the playing
+    /// one's are in, by its length; with Translate on, both are
+    /// translated. A translation that did not come is asked for again when
+    /// the song plays again.
+    #[test]
+    fn lyrics_are_asked_for_ahead_and_translated_when_wanted() {
+        use crate::lyrics::Translation;
+        let lyrics_asked = |requests: &[Request]| -> Vec<String> {
+            requests
+                .iter()
+                .filter_map(|r| match r {
+                    Request::Lyrics { video_id, .. } => Some(video_id.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let translations_asked = |requests: &[Request]| -> Vec<String> {
+            requests
+                .iter()
+                .filter_map(|r| match r {
+                    Request::Translate {
+                        video_id, lines, ..
+                    } => {
+                        assert_eq!(lines.len(), 2);
+                        Some(video_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut h = Harness::new();
+        h.play(&["a", "b", "c"]);
+        h.requests();
+        // The player page closed: nothing.
+        h.app.want_song_extras();
+        assert!(lyrics_asked(&h.requests()).is_empty());
+        // Open on Up next: the playing song's lyrics, once.
+        h.app.now_playing = true;
+        h.app.np_tab = NpTab::UpNext;
+        h.app.want_song_extras();
+        assert_eq!(lyrics_asked(&h.requests()), ["a"]);
+        h.app.want_song_extras();
+        assert!(h.requests().is_empty());
+        // On Lyrics: the next song's once the playing one's are in.
+        h.app.np_tab = NpTab::Lyrics;
+        h.app.want_song_extras();
+        assert!(h.requests().is_empty());
+        let made_up = || timed_lyrics(&[(1_000, "one two"), (3_000, "three")]);
+        h.answer(Event::Lyrics("a".into(), Some(made_up())));
+        h.app.want_song_extras();
+        let asked = h.requests();
+        assert_eq!(lyrics_asked(&asked), ["b"]);
+        assert!(asked.iter().any(
+            |r| matches!(r, Request::Lyrics { video_id, duration: Some(d), .. } if video_id == "b" && *d == 200.0)
+        ));
+        assert!(translations_asked(&asked).is_empty());
+        // Translate on: the playing song's, then the next song's once in.
+        h.act(Action::Toggle(Setting::TranslateLyrics));
+        h.app.want_song_extras();
+        assert_eq!(translations_asked(&h.requests()), ["a"]);
+        h.answer(Event::Lyrics("b".into(), Some(made_up())));
+        h.app.want_song_extras();
+        assert_eq!(translations_asked(&h.requests()), ["b"]);
+        h.app.want_song_extras();
+        assert!(h.requests().is_empty());
+        // Not translated: asked again only when the song plays again.
+        h.answer(Event::Translated("a".into(), Err("no".into())));
+        assert!(matches!(
+            h.app.translations.get("a"),
+            Some(Translation::Missing)
+        ));
+        h.app.want_song_extras();
+        assert!(translations_asked(&h.requests()).is_empty());
+        h.play(&["a", "b"]);
+        assert!(!h.app.translations.contains_key("a"));
+        h.app.want_song_extras();
+        assert_eq!(translations_asked(&h.requests()), ["a"]);
+    }
+
+    /// A full store makes room by keeping only what the page shows.
+    #[test]
+    fn a_full_store_keeps_what_shows() {
+        let mut store: HashMap<String, u8> =
+            (0..MAX_LYRICS).map(|i| (format!("s{i}"), 0)).collect();
+        keep_only(
+            &mut store,
+            MAX_LYRICS,
+            &["s3".to_string(), "new".to_string()],
+        );
+        assert_eq!(store.keys().collect::<Vec<_>>(), ["s3"]);
+        let mut small: HashMap<String, u8> = HashMap::from([("x".to_string(), 0)]);
+        keep_only(&mut small, MAX_LYRICS, &[]);
+        assert_eq!(small.len(), 1);
+    }
+
+    /// In each look: the line being sung lights word by word (drawn without
+    /// fail, partway through a word), the Translate chip turns Translate on,
+    /// and each line then shows its translation under it (the line grows).
+    #[test]
+    fn lyrics_light_word_by_word_and_show_their_translation_in_each_look() {
+        use crate::lyrics::{State, Translation};
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a", "b"]);
+            w.h.app.now_playing = true;
+            w.h.app.np_tab = NpTab::Lyrics;
+            let lyrics = timed_lyrics(&[(1_000, "Paper planes tonight"), (5_000, "Over the town")]);
+            let words = lyrics.lines[0].words.clone();
+            w.h.app.lyrics.insert("a".into(), State::Ready(lyrics));
+            // Partway through the line's second word.
+            w.h.app.audio_status.entry = Some(w.h.entry().0);
+            w.h.app.audio_status.position = (words[1].start + words[1].end) / 2.0;
+            assert_eq!(w.h.app.lyrics_clock(), Some(w.h.app.audio_status.position));
+            w.settle();
+            assert!(w.shows("Paper planes tonight"), "{theme:?}");
+            let before = w.largest("Paper planes tonight");
+            assert!(!w.h.app.settings.translate_lyrics);
+            let chip = w.find("Translate", 0);
+            w.click(chip.center());
+            w.settle();
+            assert!(w.h.app.settings.translate_lyrics, "{theme:?}");
+            w.h.app.translations.insert(
+                "a".into(),
+                Translation::Ready(ytfast_core::translate::Translated {
+                    language: Some("es".into()),
+                    lines: vec![Some("Aviones de papel esta noche".into()), None],
+                    latin: vec![None, None],
+                    source: "Test".into(),
+                }),
+            );
+            w.settle();
+            let after = w.largest("Paper planes tonight");
+            assert!(
+                after.height() > before.height() + 10.0,
+                "{theme:?}: {before:?} then {after:?}"
+            );
+            // An English song: nothing to add, and it says so.
+            w.h.app.translations.insert(
+                "a".into(),
+                Translation::Ready(ytfast_core::translate::Translated {
+                    language: Some("en".into()),
+                    lines: vec![None, None],
+                    latin: vec![None, None],
+                    source: "Test".into(),
+                }),
+            );
+            w.settle();
+            assert!(w.says("Already in English"), "{theme:?}");
         }
         crate::theme::set(Theme::YouTubeMusic);
     }

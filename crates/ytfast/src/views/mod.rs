@@ -6,6 +6,7 @@
 mod backdrop;
 mod dialogs;
 mod dynamic;
+mod lyric_lines;
 mod now_playing;
 mod page;
 mod player_bar;

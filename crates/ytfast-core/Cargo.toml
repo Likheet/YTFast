@@ -16,7 +16,17 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # rustls with the operating system's certificates, as Spotifast does, so no
 # OpenSSL is needed on any platform.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "gzip", "http2"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "fs", "io-util", "sync", "signal"] }
+# Word-by-word lyrics and people's translations from Musixmatch
+# (`musixmatch.rs`), through ThetaDev's client of Musixmatch's Android app
+# (MIT). Its author means it for private use, and Musixmatch may refuse it:
+# the lyrics then come from the other sources. Without an encryption engine
+# of its own: it uses YTFast's (ring, below), as a second one in the
+# program would leave rustls unable to choose.
+musixmatch-inofficial = { version = "0.5.0", default-features = false, features = ["rustls-no-provider"] }
+# The encryption engine YTFast's connections use (ring), made the program's
+# own for the Musixmatch client's newer reqwest.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio ={ version = "1", features = ["rt-multi-thread", "macros", "process", "time", "fs", "io-util", "sync", "signal"] }
 # SAPISIDHASH, the request signature YouTube expects from a signed-in web
 # client, is SHA-1. Downloads are checked with SHA-256.
 sha1 = "0.10"

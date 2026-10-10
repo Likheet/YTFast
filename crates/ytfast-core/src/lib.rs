@@ -10,6 +10,8 @@
 //! - [`read`]: reading YouTube's replies (the only place that does), and
 //!   the page model the app draws.
 //! - [`lyrics`]: lyrics, and LRCLIB for songs YouTube has none for.
+//! - [`musixmatch`]: lyrics timed word by word, and people's translations.
+//! - [`translate`]: lyrics in another language and in Latin letters.
 //! - [`playreport`]: telling YouTube what was played (History, mixes).
 //! - [`direct`] and [`solver`]: finding a song's audio the website's way
 //!   (the fast way), with yt-dlp's challenge solver kept running in Deno.
@@ -31,6 +33,7 @@ pub mod helpers;
 pub mod innertube;
 pub mod library;
 pub mod lyrics;
+pub mod musixmatch;
 pub mod net;
 pub mod playreport;
 pub mod prepare;
@@ -38,6 +41,7 @@ pub mod read;
 pub mod redact;
 pub mod solver;
 pub mod stream;
+pub mod translate;
 pub mod video;
 pub mod ytcfg;
 pub mod ytdlp;

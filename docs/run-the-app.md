@@ -142,8 +142,13 @@ once a song plays.
 - **Up next** says what the songs play from ("Playing from"), lists the
   whole queue (songs already played too, the playing one marked), and
   ends with the **Autoplay** switch.
-- Lyrics follow the song: the line being sung is lit. Click any line to jump
-  there. Scroll to read ahead; it starts following again a moment later.
+- Lyrics follow the song: the line being sung lights word by word as it is
+  sung. Click any line to jump there. Scroll to read ahead; it starts
+  following again a moment later.
+- **Translate**, above the lyrics, shows each line in English under it.
+  For a song in another script (Japanese, Korean, Hindi...), it also shows
+  the line in Latin letters. It stays on for the songs after it until you
+  press it again (it is in Settings too).
 - **Song** and **Video** above the cover: **Video** plays the songs in the
   queue as their music videos (the video takes the cover's place), also
   after Next, Previous or a click in Up next. Switching picks up at the
@@ -233,17 +238,24 @@ it. F or Esc leaves it, and so does closing the player page.
 **Settings** (in your account's menu, at the top right): start songs the
 fast way, keep playing when the queue ends, even out loudness, skip songs
 you dislike (on: disliking the song playing moves on to the next, as
-YouTube Music does), ask before closing while a song plays, sign out, and
-where problems are noted.
+YouTube Music does), ask before closing while a song plays, translate
+lyrics, sign out, and where problems are noted.
 
 **Closing while a song plays** asks first: "Do you really want to close?
 There's a song playing.", with **Do not ask again** ticked. Yes closes
 YTFast (and, ticked, it never asks again; Settings can turn the question
 back on); No keeps it playing.
 
-Lyrics come from YouTube Music, or from LRCLIB (lrclib.net, a free lyrics
-site) when YouTube Music has none that follow the song. LRCLIB is only
-asked about the song playing, when the Lyrics tab is open.
+Lyrics come from Musixmatch (timed word by word, for many songs), from
+YouTube Music, or from LRCLIB (lrclib.net, a free lyrics site). Lyrics
+timed only by the line also light word by word, at the song's own pace (an
+estimate). YTFast asks for the playing song's lyrics when the player page
+opens. With the Lyrics tab open, it also asks for the next song's lyrics,
+so they show as soon as that song starts. Translations come from Musixmatch
+(written by people) when it has them, else from Google Translate.
+Musixmatch and Google Translate are asked through the addresses their own
+apps use, not through an official service. They can stop answering one
+day; the lyrics then come from the other sources, without translations.
 
 ## Is it safe?
 

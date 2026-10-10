@@ -49,7 +49,12 @@ crates/ytfast-core/   the engine (no user interface)
   src/video.rs        the video mode's pictures: YouTube's H.264 read as
                       it downloads, decoded (rusty_h264) in time with the
                       music
-  src/lyrics.rs       LRCLIB's lyrics and LRC text
+  src/lyrics.rs       LRCLIB's lyrics and LRC text; words' times
+                      estimated from a line's
+  src/musixmatch.rs   Musixmatch: lyrics timed word by word, people's
+                      translations and rōmaji
+  src/translate.rs    lyrics in English and in Latin letters (people's,
+                      else Google Translate's)
   src/net.rs          HTTP clients
   src/redact.rs       keeping secrets out of messages
   tests/fixtures/     saved YouTube replies (see its README)
@@ -73,8 +78,9 @@ crates/ytfast/        the app: an egui window on fastframe
   src/theme.rs        colours, fonts, icons, drawing helpers
   src/views/          what the window draws: backdrop, sidebar, top bar,
                       page, player bar, player page (now_playing), the
-                      video mode's switch and picture (video), Up next,
-                      settings, dialogs, sign-in
+                      video mode's switch and picture (video), the
+                      lyrics' words lit as sung and Translate
+                      (lyric_lines), Up next, settings, dialogs, sign-in
   assets/             icons (Google's Material Symbols, Apache 2.0), the
                       Roboto font (OFL) and the app's own mark
   build.rs            the icon and name in the Windows program
@@ -182,9 +188,28 @@ Paolino), as `audio.rs` does.
   them). The player page is plain, as YouTube Music's, with lyrics that
   follow the song in the style of Better Lyrics' Even Better Lyrics Plus
   theme (recreated, not copied).
-- Lyrics: YouTube Music's timed lyrics, else LRCLIB's (lrclib.net, found
-  by title, artist, album and length), else YouTube Music's plain ones.
-  Asked for only when the player page shows them.
+- Lyrics: Musixmatch's, timed word by word, else YouTube Music's timed
+  lyrics, else LRCLIB's (lrclib.net, found by title, artist, album and
+  length), else YouTube Music's plain ones (`backend::find_lyrics`).
+  Musixmatch is asked beside the others (at most 4 s), through
+  musixmatch-inofficial, as its Android app asks; its song must be YouTube's
+  length (4 s either way) and version, and its lines must be half the
+  same as YouTube's or LRCLIB's (`lyrics::same_words`: under the English
+  title "Idol" it holds YOASOBI's English version of アイドル, the same
+  length). Lyrics timed by the line get their words' times estimated, by
+  syllables at the song's own pace (`lyrics::estimate_words`), so every
+  timed song lights word by word: each word lit from its left as it is
+  sung, by the colours of its letters (`views/lyric_lines.rs`, in each
+  look). The window is drawn 25 times a second only while a word lights,
+  else when the next word or line starts (`Lyrics::next_change`): about
+  58% of the frames of the old 30 a second over the demo's songs. The
+  playing song's lyrics are asked for when the player page opens
+  (whatever its tab), and with Lyrics showing, the next song's too, so
+  they show as it starts. Translate (the chip above the lyrics, and
+  Settings) shows each line in English and, for another script, in Latin
+  letters: people's translation and rōmaji from Musixmatch when they fit
+  the lines (`translate::lay_over`), else Google Translate's free address
+  (`translate.rs`; over HTTP/1.1, as it answers HTTP/2 from apps with 429).
 - The video mode, YouTube Music's Song and Video switch over the cover on
   the player page: while it says Video, the queue's songs play as their
   music videos, sound and picture. Next, Previous, a song ending and Up
@@ -311,6 +336,11 @@ Paolino), as `audio.rs` does.
   export holds every site's sign-in; drop the rest as soon as it is read.
 - Cookie files go in private folders (0600 files, 0700 folders on Unix) and
   are deleted after use.
+- Musixmatch's session (an anonymous token Musixmatch gives the app) is
+  kept in `musixmatch-session.json` in the cache folder, readable by this
+  user only. Never print or log it: musixmatch-inofficial writes part of it
+  in its notes, so `main.rs` keeps that library to warnings, even with
+  `--verbose`.
 - Never ask the owner to paste cookies or a cookies.txt file into a chat.
 
 ### Talking to YouTube
@@ -352,6 +382,12 @@ Paolino), as `audio.rs` does.
     result) gets one request for its first byte only (`stream::touch`),
     once per song (`App::warm`); nothing more of it is fetched until it
     plays.
+  - Lyrics are asked for once per song (30 songs' kept): the playing
+    song's when the player page opens, and the next song's while Lyrics
+    shows. That is one request to YouTube, LRCLIB's one or two, and two to
+    Musixmatch. Translate adds one or two to Musixmatch and one to Google
+    Translate per song. Refused, Musixmatch is left alone for 15 minutes
+    (`REST` in `musixmatch.rs`).
 - Every song played is reported twice: when it starts, and how long it
   played (`playreport.rs`). Without this, History and recommendations stop
   learning.
@@ -454,6 +490,13 @@ Paolino), as `audio.rs` does.
 - Spotifast and fastframe: MIT, credit when copying. ytmusicapi fixtures:
   MIT, credited in the fixtures README. Better Lyrics: GPL, do not copy its
   code. yt-dlp and Deno are downloaded, not bundled in the repository.
+- musixmatch-inofficial (MIT) asks Musixmatch as its Android app does. Its
+  author means it for private use and says public apps can get into
+  trouble; YTFast is public, and the owner chose to use it (11 October
+  2026). Never copy its app key into YTFast: it stays in the library.
+  It is built without an encryption engine of its own (`rustls-no-provider`)
+  and given YTFast's (ring): a second engine (aws-lc-rs) would leave
+  rustls unable to choose one for all of YTFast's connections.
 - The video decoder is rusty_h264 (BSD 2-Clause; its SIMD kernels from
   OpenH264, BSD 2-Clause), with its default `global-alloc` off (it would
   replace YTFast's allocator); its notices are in
@@ -480,6 +523,11 @@ The video test that decodes a real video (`decodes_a_real_video_in_time`
 in `video.rs`) runs only when `YTFAST_TEST_VIDEO` names a YouTube H.264
 picture stream (720p, `yt-dlp -f 136`, as YouTube serves it); run it with
 `--release`. Such a file is never committed.
+
+Two tests ask the real services, and only when told to:
+`musixmatch_itself` when `YTFAST_TEST_MUSIXMATCH` names a folder for
+Musixmatch's session, and `google_translate_itself` when
+`YTFAST_TEST_TRANSLATE` is set. Neither sends anything of the owner's.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and
 Linux, and uploads the app (`YTFast-for-Mac`: YTFast.app, signed ad hoc, in
@@ -855,6 +903,29 @@ on that laptop, not committed) decoded in time: 249 pictures in 10 s at
 right; and the demo in each look. Not yet tested: a real video in YTFast
 with the owner's account (its picture found the fast way and
 downloaded), and the Mac.
+
+Then, at the owner's word (10 and 11 October 2026, not yet released):
+disliking the song playing skips it (Settings, on by default); closing
+YTFast while a song plays asks first, with "Do not ask again" ticked; F
+puts the player page in full screen in every look. And the lyrics, after
+the owner asked to build on Better Lyrics: its code is GPL and its own
+lyrics server lets only browsers in (an anti-bot check), so YTFast asks
+the same kind of sources itself (above): word by word from Musixmatch,
+estimated elsewhere; Translate; the next song's lyrics asked for ahead.
+Tested on the owner's Windows laptop: the unit tests (276, among them the
+words estimated by syllables in each script, Musixmatch's word times read
+and its versions told apart, Google's answer read line by line, people's
+translation needing no Google, the next song's lyrics and translations
+asked for, the word lighting in each look, and the redraws only while a
+word lights); Musixmatch and Google Translate asked for real from that
+laptop, with public song titles and made-up lines only (Lemon timed word
+by word with 32 lines translated by people, in 1.3 s; Kaikai Kitan's
+rōmaji by people; Google over HTTP/1.1 only, as above); and the demo off
+the screen in YouTube Music's look: Japanese lyrics, a line lighting word
+by word, Translate's rōmaji and English, 20% of one core with the old 30
+redraws a second (before the change to fewer). Not yet tested: the new
+redraws measured, Premium and Dynamic Background in the demo (only in the
+tests), any of it with the owner's account, and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

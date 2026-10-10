@@ -1,17 +1,21 @@
 //! Lyrics: a song's lines, with when each is sung when that is known.
 //!
-//! YouTube Music's own lyrics come first (`Session::lyrics`, in
-//! `library.rs`). LRCLIB (lrclib.net, a free and open lyrics database)
-//! fills in where YouTube has none, or none with times. LRCLIB's timed
-//! lyrics are LRC text (`[01:02.03]A line`), read by [`parse_lrc`].
+//! Musixmatch's lyrics timed word by word come first (`musixmatch.rs`),
+//! then YouTube Music's own (`Session::lyrics`, in `library.rs`). LRCLIB
+//! (lrclib.net, a free and open lyrics database) fills in where YouTube
+//! has none, or none with times. LRCLIB's timed lyrics are LRC text
+//! (`[01:02.03]A line`), read by [`parse_lrc`]. Lyrics timed by the line
+//! get their words' times estimated ([`estimate_words`]), so every timed
+//! song's words light as they are sung.
 
 use serde_json::Value;
 
 use crate::redact;
 
 const LRCLIB: &str = "https://lrclib.net/api";
-/// LRCLIB asks apps to say who they are.
-const USER_AGENT: &str = "YTFast (https://github.com/Likheet/YTFast)";
+/// LRCLIB asks apps to say who they are (and YTFast says so to Google
+/// Translate too).
+pub(crate) const USER_AGENT: &str = "YTFast (https://github.com/Likheet/YTFast)";
 /// How far a search result's length may be from the song's, in seconds.
 const CLOSE_ENOUGH_SECONDS: f64 = 5.0;
 /// The one line shown for a song without words.
@@ -28,6 +32,21 @@ pub struct LyricLine {
     pub end_ms: Option<u64>,
     /// The words. Empty for a pause, or the gap between two verses.
     pub text: String,
+    /// Its words' times, in order, when they are known: the source's own
+    /// (Musixmatch's), or estimated from the line's ([`estimate_words`]).
+    /// Empty for lyrics without times.
+    pub words: Vec<Word>,
+}
+
+/// A word of a line (or a few letters of one), and when it is sung.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Word {
+    /// When it starts and ends, in milliseconds from the start of the song.
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// Where it is in the line's text, in bytes.
+    pub from: usize,
+    pub to: usize,
 }
 
 /// A song's lyrics.
@@ -38,6 +57,225 @@ pub struct Lyrics {
     pub synced: bool,
     /// Where they come from, to show with them: "Musixmatch", "LRCLIB".
     pub source: String,
+    /// The words' times are the source's own (Musixmatch's word by word),
+    /// not estimated.
+    pub timed_words: bool,
+    /// Their language, when the source says (ISO 639-1: "ja").
+    pub language: Option<String>,
+    /// The song on Musixmatch, whose people's translations can be asked
+    /// for.
+    pub musixmatch: Option<crate::musixmatch::Song>,
+}
+
+/// How long a syllable takes when a song's own pace cannot be read from
+/// its lines, in milliseconds.
+const DEFAULT_PACE_MS: f64 = 300.0;
+
+/// Whether `ours` are the same song's words as `theirs` (another source's
+/// lyrics for it): half of our lines or more are among theirs, by their
+/// letters alone (whatever the capitals, spaces and punctuation). With
+/// nothing to compare, they are taken to be. Musixmatch can hold another
+/// language's version under the same name ("Idol", YOASOBI's アイドル sung
+/// in English), and YouTube's own lyrics are always the song's.
+pub fn same_words(ours: &Lyrics, theirs: &Lyrics) -> bool {
+    let key = |line: &LyricLine| -> String {
+        line.text
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let theirs: std::collections::HashSet<String> = theirs
+        .lines
+        .iter()
+        .map(key)
+        .filter(|k| !k.is_empty())
+        .collect();
+    let ours: Vec<String> = ours
+        .lines
+        .iter()
+        .map(key)
+        .filter(|k| !k.is_empty())
+        .collect();
+    if ours.is_empty() || theirs.is_empty() {
+        return true;
+    }
+    let shared = ours.iter().filter(|line| theirs.contains(*line)).count();
+    shared * 2 >= ours.len()
+}
+
+/// Gives each timed line without word times estimated ones, so its words
+/// light one after another as it is sung (the lyrics of every source but
+/// Musixmatch's word by word are timed by the line only). A line's time is
+/// shared among its words by their syllables (a character each in
+/// Chinese, Japanese and Korean), sung at the song's own pace: what a
+/// syllable usually takes in its lines, a little quicker, so a line before
+/// a long pause is not drawn out over it. A line is sung in nine tenths of
+/// the time to the next at most.
+pub fn estimate_words(lines: &mut [LyricLine]) {
+    let units: Vec<Vec<Unit>> = lines.iter().map(|line| units(&line.text)).collect();
+    let weight = |units: &[Unit]| units.iter().map(|u| u.weight).sum::<f64>();
+    // Milliseconds a syllable takes, line by line; the middle one is the
+    // song's.
+    let mut paces: Vec<f64> = lines
+        .iter()
+        .zip(&units)
+        .filter_map(|(line, units)| {
+            let time = line.end_ms?.checked_sub(line.start_ms?)? as f64;
+            let weight = weight(units);
+            (weight >= 3.0 && (500.0..=15_000.0).contains(&time)).then(|| time / weight)
+        })
+        .collect();
+    paces.sort_by(f64::total_cmp);
+    let pace = paces
+        .get(paces.len() / 2)
+        .copied()
+        .unwrap_or(DEFAULT_PACE_MS);
+    for (line, units) in lines.iter_mut().zip(units) {
+        let total = weight(&units);
+        let Some(start) = line.start_ms else {
+            continue;
+        };
+        if !line.words.is_empty() || total <= 0.0 {
+            continue;
+        }
+        let room = line
+            .end_ms
+            .map_or(f64::INFINITY, |end| end.saturating_sub(start) as f64 * 0.9);
+        let length = (total * pace * 0.85).min(room).max(1.0);
+        let at = |done: f64| start + (length * done / total).round() as u64;
+        let mut done = 0.0;
+        line.words = units
+            .iter()
+            .map(|unit| {
+                let start_ms = at(done);
+                done += unit.weight;
+                Word {
+                    start_ms,
+                    end_ms: at(done),
+                    from: unit.from,
+                    to: unit.to,
+                }
+            })
+            .collect();
+    }
+}
+
+/// A word to light, where it is in its line (bytes), and about how long it
+/// takes to sing (its syllables).
+#[derive(Debug, PartialEq)]
+struct Unit {
+    from: usize,
+    to: usize,
+    weight: f64,
+}
+
+/// A line's words: each run of letters between spaces, and each character
+/// of Chinese, Japanese and Korean (written without spaces). Punctuation
+/// on its own, and theirs (。「」), goes with the word before it (or,
+/// first in the line, the word after it).
+fn units(text: &str) -> Vec<Unit> {
+    let mut units: Vec<Unit> = Vec::new();
+    // Where punctuation that opens the line starts.
+    let mut opening: Option<usize> = None;
+    let mut add = |units: &mut Vec<Unit>, from: usize, to: usize, weight: f64| {
+        if weight > 0.0 {
+            units.push(Unit {
+                from: opening.take().unwrap_or(from),
+                to,
+                weight,
+            });
+        } else if let Some(last) = units.last_mut() {
+            last.to = to;
+        } else {
+            opening = opening.or(Some(from));
+        }
+    };
+    let mut word: Option<(usize, usize)> = None;
+    for (i, c) in text.char_indices() {
+        let end = i + c.len_utf8();
+        let cjk_mark = is_cjk_mark(c);
+        if c.is_whitespace() || is_cjk(c) || cjk_mark {
+            if let Some((from, to)) = word.take() {
+                add(&mut units, from, to, syllables(&text[from..to]));
+            }
+            if is_cjk(c) {
+                add(&mut units, i, end, 1.0);
+            } else if cjk_mark {
+                add(&mut units, i, end, 0.0);
+            }
+        } else {
+            word = Some(word.map_or((i, end), |(from, _)| (from, end)));
+        }
+    }
+    if let Some((from, to)) = word {
+        add(&mut units, from, to, syllables(&text[from..to]));
+    }
+    units
+}
+
+/// About how many syllables a word has: its groups of vowels, in the
+/// Latin, Greek and Cyrillic alphabets; a third of its letters in other
+/// scripts. None for punctuation.
+fn syllables(word: &str) -> f64 {
+    let letters: Vec<char> = word
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if letters.is_empty() {
+        return 0.0;
+    }
+    let (mut groups, mut in_vowel, mut alphabet) = (0, false, false);
+    for &c in &letters {
+        let vowel = is_vowel(c);
+        if vowel && !in_vowel {
+            groups += 1;
+        }
+        in_vowel = vowel;
+        let code = c as u32;
+        alphabet |= c.is_alphabetic() && (code < 0x0530 || (0x1E00..0x2000).contains(&code));
+    }
+    // A silent "e" at the end, as in English "love" and "time" (not
+    // "little").
+    if let [.., before, 'e'] = letters[..]
+        && groups > 1
+        && !is_vowel(before)
+        && before != 'l'
+    {
+        groups -= 1;
+    }
+    if alphabet {
+        groups.max(1) as f64
+    } else {
+        (letters.len() as f64 / 3.0).max(1.0)
+    }
+}
+
+/// A vowel of the Latin, Greek or Cyrillic alphabet, with or without its
+/// marks.
+fn is_vowel(c: char) -> bool {
+    const VOWELS: &str = "aeiouyàáâãäåæèéêëìíîïòóôõöøùúûüýÿœāăąēĕėęěīĭįıōŏőūŭůűųơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹαεηιουωάέήίόύώϊϋΐΰаеёиоуыэюяіїєў";
+    c.to_lowercase().any(|lower| VOWELS.contains(lower))
+}
+
+/// Chinese, Japanese and Korean punctuation (。、「」！), and their
+/// spaces.
+fn is_cjk_mark(c: char) -> bool {
+    matches!(c as u32, 0x3000..=0x303F | 0xFE30..=0xFE4F | 0xFF00..=0xFF65) && !c.is_alphanumeric()
+}
+
+/// Chinese, Japanese or Korean, sung a character at a time.
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3040..=0x30FF // Hiragana, Katakana
+        | 0x31F0..=0x31FF // Katakana's small letters
+        | 0x3400..=0x4DBF // Han, extension A
+        | 0x4E00..=0x9FFF // Han
+        | 0xAC00..=0xD7AF // Hangul
+        | 0xF900..=0xFAFF // Han, compatibility
+        | 0xFF66..=0xFF9F // half-width Katakana
+        | 0x20000..=0x2FFFF) // Han, extensions B on
 }
 
 /// Reads LRC text: lines that start with their times (`[mm:ss.xx]`,
@@ -102,6 +340,7 @@ pub fn parse_lrc(text: &str) -> Vec<LyricLine> {
             start_ms: Some(starts[i]),
             end_ms: starts.get(i + 1).copied(),
             text,
+            words: Vec::new(),
         })
         .collect()
 }
@@ -246,6 +485,7 @@ pub fn from_lrclib(record: &Value) -> Option<Lyrics> {
         lines,
         synced,
         source: "LRCLIB".to_string(),
+        ..Lyrics::default()
     };
     if record.get("instrumental").and_then(Value::as_bool) == Some(true) {
         let line = LyricLine {
@@ -317,7 +557,155 @@ mod tests {
             start_ms: Some(start),
             end_ms: end,
             text: text.into(),
+            words: Vec::new(),
         }
+    }
+
+    /// The words a line was split into.
+    fn words_of(line: &LyricLine) -> Vec<&str> {
+        line.words
+            .iter()
+            .map(|w| &line.text[w.from..w.to])
+            .collect()
+    }
+
+    #[test]
+    fn a_lines_words_by_their_syllables_and_scripts() {
+        let pieces = |text: &str| -> Vec<(String, f64)> {
+            units(text)
+                .into_iter()
+                .map(|u| (text[u.from..u.to].to_string(), u.weight))
+                .collect()
+        };
+        assert_eq!(
+            pieces("Beautiful day, isn't it?"),
+            [
+                ("Beautiful".into(), 3.0),
+                ("day,".into(), 1.0),
+                ("isn't".into(), 1.0),
+                ("it?".into(), 1.0)
+            ]
+        );
+        // Punctuation alone goes with the word before; first in the line,
+        // with the one after.
+        assert_eq!(
+            pieces("— oh — yeah"),
+            [("— oh —".into(), 1.0), ("yeah".into(), 1.0)]
+        );
+        // A character at a time in Japanese, its punctuation with the one
+        // before it; Latin words among them as words.
+        assert_eq!(
+            pieces("君の名は。Love"),
+            [
+                ("君".into(), 1.0),
+                ("の".into(), 1.0),
+                ("名".into(), 1.0),
+                ("は。".into(), 1.0),
+                ("Love".into(), 1.0)
+            ]
+        );
+        assert_eq!(
+            pieces("「愛して」る"),
+            [
+                ("「愛".into(), 1.0),
+                ("し".into(), 1.0),
+                ("て」".into(), 1.0),
+                ("る".into(), 1.0)
+            ]
+        );
+        assert_eq!(
+            pieces("사랑해 Привет"),
+            [
+                ("사".into(), 1.0),
+                ("랑".into(), 1.0),
+                ("해".into(), 1.0),
+                ("Привет".into(), 2.0)
+            ]
+        );
+        assert!(pieces("").is_empty() && pieces("♪").is_empty() && pieces(" ... ").is_empty());
+    }
+
+    /// Estimated words follow one another through the line, by their
+    /// syllables, at the song's pace: a line before a long pause is not
+    /// drawn out over it, and no line runs into the next.
+    #[test]
+    fn words_are_estimated_at_the_songs_pace() {
+        let mut lines = vec![
+            line(10_000, Some(13_000), "Hold on, hold on, the night is young"),
+            line(13_000, Some(16_000), "A thousand lights and only one"),
+            // Then a long pause.
+            line(16_000, Some(40_000), "Such a beautiful day"),
+            line(40_000, Some(40_400), "Quick words here"),
+            line(40_400, None, "The end"),
+            line(41_000, Some(42_000), ""),
+        ];
+        estimate_words(&mut lines);
+        assert_eq!(
+            words_of(&lines[0]),
+            ["Hold", "on,", "hold", "on,", "the", "night", "is", "young"]
+        );
+        for line in &lines[..5] {
+            let words = &line.words;
+            let start = line.start_ms.unwrap();
+            assert_eq!(words[0].start_ms, start);
+            // Each word starts as the one before it ends.
+            for pair in words.windows(2) {
+                assert_eq!(pair[0].end_ms, pair[1].start_ms);
+                assert!(pair[0].start_ms < pair[0].end_ms);
+            }
+            let end = words.last().unwrap().end_ms;
+            if let Some(next) = line.end_ms {
+                assert!(end <= start + (next - start) * 9 / 10, "{}", line.text);
+            }
+        }
+        // "beautiful" (three syllables) takes three times as long as "day".
+        let length = |w: &Word| w.end_ms - w.start_ms;
+        let (beautiful, day) = (&lines[2].words[2], &lines[2].words[3]);
+        assert!(length(beautiful).abs_diff(3 * length(day)) <= 2);
+        // Before the pause, the line takes about what a line of its size
+        // takes elsewhere in the song, not the 24 seconds to the next.
+        assert!(lines[2].words.last().unwrap().end_ms < 16_000 + 3_000);
+        // A line without words has none to light.
+        assert!(lines[5].words.is_empty());
+        // Words given by the source are left as they are.
+        let mut given = vec![LyricLine {
+            words: vec![Word {
+                start_ms: 1,
+                end_ms: 2,
+                from: 0,
+                to: 2,
+            }],
+            ..line(0, Some(5_000), "Hi there")
+        }];
+        estimate_words(&mut given);
+        assert_eq!(given[0].words.len(), 1);
+    }
+
+    #[test]
+    fn the_same_songs_words_or_another_versions() {
+        let lyrics = |lines: &[&str]| Lyrics {
+            lines: lines.iter().map(|text| line(0, None, text)).collect(),
+            ..Lyrics::default()
+        };
+        let original = lyrics(&["夜空に星が光る", "", "君の声が聞こえる", "♪"]);
+        let english = lyrics(&["Stars shine in the night sky", "I can hear your voice"]);
+        assert!(!same_words(&english, &original));
+        // Capitals, spaces and punctuation aside, the same.
+        let youtube = lyrics(&[
+            "Hold on, hold on",
+            "The night is young",
+            "A thousand lights",
+        ]);
+        let musixmatch = lyrics(&[
+            "Hold on hold on",
+            "the night is young!",
+            "A thousand lights",
+        ]);
+        assert!(same_words(&musixmatch, &youtube));
+        // Half is enough (a line split another way).
+        let split = lyrics(&["Hold on, hold on, the night is young", "A thousand lights"]);
+        assert!(same_words(&split, &youtube));
+        assert!(same_words(&english, &lyrics(&[])));
     }
 
     #[test]

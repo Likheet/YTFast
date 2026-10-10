@@ -158,6 +158,17 @@ nothing then), so whatever keeps the music going belongs there, not in
   generation (`Queue::generation`) and playlist answers a ticket
   (`App::wanted_playlist`); one for a queue since replaced is dropped. Do
   the same for any new answer that changes what plays.
+- **Lyrics are checked against each other.** Musixmatch can hold another
+  version under the same name (YOASOBI's アイドル sung in English, as
+  "Idol", the same length): its word-timed lyrics show only when half
+  their lines are YouTube's or LRCLIB's too (`lyrics::same_words`).
+  Musixmatch's list of translations is empty for some songs that have
+  them (Lemon): ask anyway (`Song::may_have`). Its rōmaji is a
+  "translation" into `rj`.
+- **Google Translate's free address answers HTTP/2 with 429** (too many
+  requests) when an app asks; it answers HTTP/1.1. Its client is its own
+  (`translate::client`, made the first time lyrics are translated); never
+  hand it the shared download client.
 - **Fonts for other scripts load when needed.** `theme::ScriptFonts` adds
   the computer's fonts for Chinese, Arabic, the Indian scripts and so on
   (about 60 MB) only once some text needs them. Text that reaches the

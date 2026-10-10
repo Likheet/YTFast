@@ -1,8 +1,10 @@
 //! The player page, laid out as YouTube Music's: the playing song's cover
 //! large on the left, and on the right a panel with the tabs Up next,
 //! Lyrics and Related, on the window's own near-black. Lyrics follow the
-//! song in the Even Better Lyrics Plus way: the line being sung lit, the
-//! rest dimmed, scrolling smoothly; click a line to jump there.
+//! song in the Even Better Lyrics Plus way: the line being sung lit word
+//! by word as it is sung, the rest dimmed, scrolling smoothly; click a
+//! line to jump there. Translate shows each line in Latin letters and in
+//! English under it.
 //!
 //! Premium: the cover (at most 480, r 16) with the song's name and artist
 //! centred under it, and beside it the tabs in clear glass and what they
@@ -21,7 +23,7 @@ use crate::app::{Action, App, NpTab, PlayState};
 use crate::lyrics::{Lyrics, State};
 use crate::queue::Entry;
 use crate::theme::{self, Icon, PALETTE};
-use crate::views::{page, queue_panel, video, widgets};
+use crate::views::{lyric_lines, page, queue_panel, video, widgets};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
     if theme::dynamic() {
@@ -511,15 +513,21 @@ fn lyrics(app: &App, ui: &mut egui::Ui, entry: &Entry) {
                 );
             });
         }
-        Some(State::Ready(lyrics)) => lines(app, ui, lyrics, &entry.track.video_id),
+        Some(State::Ready(lyrics)) => {
+            lyric_lines::translate_bar(app, ui, &entry.track.video_id, 16.0);
+            lines(app, ui, lyrics, &entry.track.video_id);
+        }
     }
 }
 
 /// How bright a line is: the one being sung, those already sung, and
-/// those still to come.
+/// those still to come (and the words of the one being sung not yet sung).
 const LIT: f32 = 1.0;
 const SUNG: f32 = 0.34;
 const COMING: f32 = 0.5;
+/// What is under a line (in Latin letters, in English), as a share of the
+/// line's brightness.
+const UNDER: f32 = 0.7;
 /// Premium's sung lines, a little brighter.
 const PREMIUM_SUNG: f32 = 0.40;
 
@@ -527,14 +535,21 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let id = ui.id().with(("lyrics", video_id));
     let now = ui.input(|i| i.time);
     // Timed to the song: while its video plays, by YouTube's map.
-    let current = app
-        .lyrics_clock()
-        .and_then(|position| lyrics.current(position));
+    let clock = app.lyrics_clock();
+    let current = clock.and_then(|position| lyrics.current(position));
+    let translated = lyric_lines::translation(app, lyrics, video_id);
     let viewport = ui.available_height();
     // Lines that follow the song move on as it plays.
-    if lyrics.synced && app.audio_status.entry.is_some() && !app.audio_status.paused {
+    // Drawn again when they next look different: often only while a word
+    // lights.
+    if app.audio_status.entry.is_some()
+        && !app.audio_status.paused
+        && let Some(wait) = clock.and_then(|position| lyrics.next_change(position))
+    {
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
+            .request_repaint_after(std::time::Duration::from_secs_f64(
+                wait.max(crate::lyrics::WORD_FRAME),
+            ));
     }
     // Scrolling by hand pauses following for a few seconds. Read before
     // the scroll area below takes the wheel's movement for itself.
@@ -564,7 +579,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     area.show(ui, |ui| {
         let origin = ui.min_rect().top();
         let clip = ui.clip_rect();
-        ui.add_space(24.0);
+        ui.add_space(8.0);
         let mut new_tops = Vec::with_capacity(lyrics.lines.len());
         let width = ui.available_width() - 16.0;
         // Lines that follow the song are large and bold; plain ones are
@@ -581,6 +596,19 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
             ),
             (false, true) => (theme::regular(18.0), 10.0, Some(27.0)),
         };
+        // Under a line, smaller: it in Latin letters, and in English.
+        let (small, small_height) = match (lyrics.synced, premium) {
+            (true, false) => (theme::regular(16.0), None),
+            (false, false) => (theme::regular(13.0), Some(18.2)),
+            (true, true) => (
+                theme::regular(if width >= 480.0 { 19.0 } else { 16.0 }),
+                None,
+            ),
+            (false, true) => (theme::regular(15.0), Some(22.0)),
+        };
+        // The edge between a word's sung part and the rest: softer when
+        // its time is estimated.
+        let feather = font.size * if lyrics.timed_words { 0.5 } else { 0.9 };
         let sung = if premium { PREMIUM_SUNG } else { SUNG };
         for (i, line) in lyrics.lines.iter().enumerate() {
             let goal = match current {
@@ -608,24 +636,56 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
                 }
                 _ => 1.0,
             };
-            let color = Color32::from_white_alpha((bright * edge * 255.0) as u8);
-            ui.set_max_width(width);
-            let response = ui.add(
-                egui::Label::new(
-                    egui::RichText::new(text)
-                        .font(font.clone())
-                        .color(color)
-                        .line_height(line_height),
+            let shade = |share: f32| Color32::from_white_alpha((share * edge * 255.0) as u8);
+            let color = shade(bright);
+            let galley = lyric_lines::layout(ui, text, &font, width, line_height);
+            let under: Vec<_> = lyric_lines::under(translated, i)
+                .map(|words| lyric_lines::layout(ui, words, &small, width, small_height))
+                .collect();
+            let size = under.iter().fold(galley.size(), |size, line| {
+                vec2(
+                    size.x.max(line.size().x),
+                    size.y + lyric_lines::UNDER_GAP + line.size().y,
                 )
-                .wrap()
-                .selectable(false)
-                .sense(if line.start.is_some() {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                }),
-            );
-            new_tops.push(response.rect.top() - origin);
+            });
+            let sense = if line.start.is_some() {
+                Sense::click()
+            } else {
+                Sense::hover()
+            };
+            let (rect, response) = ui.allocate_exact_size(size, sense);
+            super::lyric_lines::name(&response, text, line.start.is_some());
+            if ui.is_rect_visible(rect) {
+                let painter = ui.painter();
+                match clock {
+                    // The line being sung, word by word.
+                    Some(position) if current == Some(i) && !line.words.is_empty() => {
+                        let unsung = shade(bright.min(COMING));
+                        let lit = lyric_lines::sung(
+                            &galley,
+                            &line.words,
+                            position,
+                            color,
+                            unsung,
+                            feather,
+                        );
+                        painter.galley(rect.min, lit, color);
+                    }
+                    _ => painter.galley_with_override_text_color(rect.min, galley.clone(), color),
+                }
+                let mut y = rect.top() + galley.size().y;
+                for line in under {
+                    y += lyric_lines::UNDER_GAP;
+                    let height = line.size().y;
+                    painter.galley_with_override_text_color(
+                        pos2(rect.left(), y),
+                        line,
+                        shade(bright * UNDER),
+                    );
+                    y += height;
+                }
+            }
+            new_tops.push(rect.top() - origin);
             if let Some(start) = line.start {
                 if response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

@@ -86,6 +86,14 @@ fn contents(app: &App, ui: &mut egui::Ui) {
         app.settings.confirm_close,
         Setting::ConfirmClose,
     );
+    switch(
+        app,
+        ui,
+        "Translate lyrics",
+        "Under each line of lyrics, the line in English, and in Latin letters when it is written in another script (Japanese, Korean, Hindi...). Also the Lyrics tab's Translate button.",
+        app.settings.translate_lyrics,
+        Setting::TranslateLyrics,
+    );
 
     ui.add_space(18.0);
     heading(ui, "Theme");
