@@ -521,9 +521,10 @@ pub struct App {
     /// The latest loading of each page: its answers carry that number
     /// ([`Request::Page`]), and an older loading's are dropped.
     page_loads: HashMap<Route, u64>,
-    /// Searches of one kind whose next results are on their way (true) or
-    /// have all arrived (false); one entry per such page shown.
-    more_results: HashMap<Route, bool>,
+    /// Pages whose next part (a search of one kind's results, Home's
+    /// shelves) is on its way (true) or has all arrived (false); one entry
+    /// per such page shown.
+    pub more_results: HashMap<Route, bool>,
     /// Numbers the page loadings.
     loads: u64,
     /// The text search suggestions were last asked for.
@@ -1313,6 +1314,24 @@ impl App {
                     }
                     // Asked for again when the list's new end comes into
                     // view, unless that was all.
+                    if done {
+                        self.more_results.insert(route, false);
+                    } else {
+                        self.more_results.remove(&route);
+                    }
+                }
+                Event::MoreSections {
+                    route,
+                    load,
+                    sections,
+                    done,
+                } => {
+                    if self.page_loads.get(&route) != Some(&load) {
+                        continue;
+                    }
+                    if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
+                        page.sections.extend(sections);
+                    }
                     if done {
                         self.more_results.insert(route, false);
                     } else {
@@ -2738,6 +2757,17 @@ fn words(event: &Event) -> Vec<&str> {
                 }
             }
         }
+        Event::MoreSections { sections, .. } => {
+            for section in sections {
+                words.push(section.title.as_str());
+                for item in &section.items {
+                    match item {
+                        Item::Track(t) => track(t, &mut words),
+                        Item::Card(c) => words.extend([c.title.as_str(), c.subtitle.as_str()]),
+                    }
+                }
+            }
+        }
         Event::Suggestions(_, found) => {
             words.extend(found.words.iter().map(|w| w.text.as_str()));
             for item in &found.items {
@@ -3811,6 +3841,86 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r, Request::Page { route: r, .. } if *r == route))
         );
+    }
+
+    /// Home shows its first shelves, and its next ones come as its end
+    /// comes into view, one batch at a time, until YouTube has no more;
+    /// shelves for an older loading of Home are dropped.
+    #[test]
+    fn home_loads_its_next_shelves_as_its_end_comes_into_view() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.act(Action::Navigate(Route::Home));
+        w.h.app.load(Route::Home);
+        let load =
+            w.h.requests()
+                .into_iter()
+                .filter_map(|r| match r {
+                    Request::Page {
+                        route: Route::Home,
+                        load,
+                        ..
+                    } => Some(load),
+                    _ => None,
+                })
+                .last()
+                .expect("Home is asked for");
+        let shelf = |title: &str, ids: [&str; 2]| Section {
+            title: title.into(),
+            items: ids.map(|v| Item::Track(song(v))).to_vec(),
+            ..Section::default()
+        };
+        let page = Page {
+            sections: vec![shelf("Quick picks", ["a", "b"])],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(Route::Home, load, Ok(page)));
+        let asked = |w: &mut Window| {
+            w.h.requests()
+                .into_iter()
+                .filter(
+                    |r| matches!(r, Request::MoreResults { route, .. } if *route == Route::Home),
+                )
+                .count()
+        };
+        // Its end is in view (one short shelf): asked once, however many
+        // frames pass before the answer.
+        w.settle();
+        assert_eq!(asked(&mut w), 1);
+        w.h.answer(Event::MoreSections {
+            route: Route::Home,
+            load,
+            sections: vec![shelf("Mixed for you", ["c", "d"])],
+            done: false,
+        });
+        let titles = |w: &Window| match w.h.app.pages.get(&Route::Home) {
+            Some(Loadable::Ready(page)) => page
+                .sections
+                .iter()
+                .map(|s| s.title.clone())
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        assert_eq!(titles(&w), ["Quick picks", "Mixed for you"]);
+        // Shelves for an older loading change nothing.
+        w.h.answer(Event::MoreSections {
+            route: Route::Home,
+            load: load - 1,
+            sections: vec![shelf("Stale", ["e", "f"])],
+            done: false,
+        });
+        assert_eq!(titles(&w).len(), 2);
+        // The new end in view: the next batch, which is the last.
+        w.settle();
+        assert_eq!(asked(&mut w), 1);
+        w.h.answer(Event::MoreSections {
+            route: Route::Home,
+            load,
+            sections: vec![shelf("Forgotten favourites", ["g", "h"])],
+            done: true,
+        });
+        assert_eq!(titles(&w).len(), 3);
+        w.settle();
+        assert_eq!(asked(&mut w), 0);
     }
 
     #[test]

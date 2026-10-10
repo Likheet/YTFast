@@ -455,6 +455,14 @@ const SHELVES: [&str; 6] = [
     "musicImmersiveCarouselShelfRenderer",
 ];
 
+/// Where a page's next shelves come from (Home's, a mood's), when there
+/// are more: next to its shelves in older replies (`continuations`), as a
+/// last row in newer ones. Works on the page's reply and on a reply with
+/// more shelves, which [`page`] reads as well.
+pub fn shelf_continuation(reply: &Value) -> Option<super::Continuation> {
+    super::list_continuation(reply, &SHELVES)
+}
+
 const HEADERS: [&str; 4] = [
     "musicResponsiveHeaderRenderer",
     "musicImmersiveHeaderRenderer",
@@ -1214,6 +1222,76 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Home's shelves, as the synthetic Home reply holds them.
+    fn home_shelves() -> Value {
+        let reply: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/home_synthetic.json")).unwrap();
+        crate::read::find_key(&reply, "sectionListRenderer")
+            .and_then(|list| list.get("contents"))
+            .cloned()
+            .expect("Home's shelves")
+    }
+
+    /// Where Home's next shelves come from: next to its shelves in an
+    /// older reply, in a last row in a newer one, and on again in the
+    /// reply with more shelves, whose shelves are read as a page's.
+    #[test]
+    fn a_page_of_shelves_says_where_its_next_shelves_come_from() {
+        let shelves = home_shelves();
+        let first = serde_json::json!({
+            "contents": { "singleColumnBrowseResultsRenderer": { "tabs": [{ "tabRenderer": {
+                "content": { "sectionListRenderer": {
+                    "contents": shelves,
+                    "continuations": [{ "nextContinuationData": { "continuation": "NEXT" } }]
+                } }
+            } }] } }
+        });
+        assert_eq!(
+            shelf_continuation(&first),
+            Some(super::super::Continuation::Address("NEXT".into()))
+        );
+        let more = serde_json::json!({
+            "continuationContents": { "sectionListContinuation": {
+                "contents": shelves,
+                "continuations": [{ "nextContinuationData": { "continuation": "AFTER" } }]
+            } }
+        });
+        assert_eq!(
+            shelf_continuation(&more),
+            Some(super::super::Continuation::Address("AFTER".into()))
+        );
+        let shown = page(&more).sections;
+        assert!(!shown.is_empty());
+        assert_eq!(shown.len(), page(&first).sections.len());
+        // The last batch: no token, so no more.
+        let last = serde_json::json!({
+            "continuationContents": { "sectionListContinuation": { "contents": shelves } }
+        });
+        assert_eq!(shelf_continuation(&last), None);
+        // A newer reply: the token in a last row.
+        let mut rows = shelves.as_array().unwrap().clone();
+        rows.push(serde_json::json!({ "continuationItemRenderer": {
+            "continuationEndpoint": { "continuationCommand": { "token": "NEWER" } }
+        } }));
+        let newer = serde_json::json!({ "onResponseReceivedActions": [{
+            "appendContinuationItemsAction": { "continuationItems": rows }
+        }] });
+        assert_eq!(
+            shelf_continuation(&newer),
+            Some(super::super::Continuation::Body("NEWER".into()))
+        );
+        // A page without more says so.
+        assert_eq!(
+            shelf_continuation(
+                &serde_json::from_str::<Value>(include_str!(
+                    "../../tests/fixtures/home_synthetic.json"
+                ))
+                .unwrap()
+            ),
+            None
+        );
+    }
 
     fn fixture(name: &str) -> Value {
         let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
