@@ -14,7 +14,8 @@ pub enum Theme {
     /// YouTube Music's own, measured from music.youtube.com.
     #[default]
     YouTubeMusic,
-    /// A charcoal theme with rounder shapes and a warm accent.
+    /// A charcoal theme with rounder shapes, a pink-red accent, and the
+    /// playing song's colours behind the player page.
     Premium,
     /// The playing song's cover, blurred and slowly moving, behind the
     /// whole window, with glass over it (`crate::dynamic`).
@@ -32,7 +33,10 @@ impl Theme {
                 "The playing song's colours behind everything, under glass",
             ),
             Self::YouTubeMusic => ("YouTube Music", "YouTube Music's own look"),
-            Self::Premium => ("Premium", "Charcoal, rounder, with a warm accent"),
+            Self::Premium => (
+                "Premium",
+                "Charcoal and rounder, the playing song's colours behind its page",
+            ),
         }
     }
 }
@@ -130,24 +134,25 @@ impl std::ops::Deref for CurrentPalette {
     }
 }
 
-/// The Premium theme's colours: charcoal surfaces, warm off-white text
-/// and a warm accent.
+/// The Premium theme's colours: one neutral charcoal behind everything,
+/// raised surfaces a little lighter, and a pink-red accent (Apple Music's
+/// red, which sits well beside the red logo).
 const PREMIUM: Palette = Palette {
-    window: Color32::from_rgb(0x14, 0x16, 0x1a),
-    panel: Color32::from_rgb(0x1d, 0x20, 0x26),
-    surface: white(16),
-    surface_hover: white(30),
-    field: Color32::from_rgb(0x24, 0x27, 0x2e),
-    outline: white(22),
-    divider: white(18),
-    text: Color32::from_rgb(0xf4, 0xf3, 0xef),
-    secondary: Color32::from_rgb(0xb3, 0xb6, 0xbf),
-    dim: Color32::from_rgb(0x99, 0x9e, 0xaa),
+    window: Color32::from_rgb(0x11, 0x11, 0x13),
+    panel: Color32::from_rgb(0x1c, 0x1c, 0x1f),
+    surface: white(18),
+    surface_hover: white(32),
+    field: Color32::from_rgb(0x24, 0x24, 0x28),
+    outline: white(24),
+    divider: white(16),
+    text: Color32::from_rgb(0xf5, 0xf5, 0xf7),
+    secondary: Color32::from_rgb(0xae, 0xae, 0xb4),
+    dim: Color32::from_rgb(0x8e, 0x8e, 0x93),
     faint: white(77),
-    accent: Color32::from_rgb(0xde, 0xc5, 0x9b),
-    subscribe: Color32::from_rgb(0xde, 0xc5, 0x9b),
-    switch: Color32::from_rgb(0xde, 0xc5, 0x9b),
-    menu: Color32::from_rgb(0x24, 0x27, 0x2e),
+    accent: Color32::from_rgb(0xfa, 0x2d, 0x48),
+    subscribe: Color32::from_rgb(0xfa, 0x2d, 0x48),
+    switch: Color32::from_rgb(0xfa, 0x2d, 0x48),
+    menu: Color32::from_rgb(0x26, 0x26, 0x2a),
     danger: Color32::from_rgb(0xff, 0x4e, 0x45),
     quiet: Color32::from_rgb(0x90, 0x90, 0x90),
     disabled: Color32::from_rgb(0x71, 0x71, 0x71),
@@ -220,9 +225,16 @@ impl Grid {
     /// For a window `window` wide whose page area (the window less the
     /// menu) is `area` wide.
     pub fn new(window: f32, area: f32) -> Self {
-        // Premium: even margins, at most 1440 wide.
+        // Premium: even margins (56 from a window 1364 wide, 40 from 1150,
+        // else 24), at most 1440 wide.
         if premium() {
-            let margin = if window >= 1150.0 { 40.0 } else { 24.0 };
+            let margin = if window >= 1364.0 {
+                56.0
+            } else if window >= 1150.0 {
+                40.0
+            } else {
+                24.0
+            };
             let width = (area - margin * 2.0 - SCROLL_BAR).min(1440.0);
             return Self::centred(window, area, width);
         }
@@ -757,7 +769,7 @@ pub const MENU_WIDTH: f32 = 240.0;
 /// the menu show through its outermost pixel).
 pub fn menu_edge() -> Color32 {
     if premium() {
-        Color32::from_rgb(0x36, 0x39, 0x41)
+        Color32::from_rgb(0x38, 0x38, 0x3d)
     } else {
         Color32::from_rgb(0x37, 0x37, 0x37)
     }
@@ -1008,6 +1020,8 @@ pub fn round_button(
             Round::Tonal => (Some(PALETTE.surface), color),
             // A main button that cannot be used: no disc, its icon grey.
             Round::Filled if !ui.is_enabled() => (None, PALETTE.thumb),
+            // Premium: the accent, its icon white.
+            Round::Filled if premium() => (Some(PALETTE.accent), Color32::WHITE),
             Round::Filled => (Some(PALETTE.text), Color32::BLACK),
         };
         let scale = if pressed && style == Round::Filled {

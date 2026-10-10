@@ -7,13 +7,14 @@ use egui::{Color32, Mesh, Pos2, Rect, Shape, TextureId, pos2};
 
 use crate::theme::PALETTE;
 
-/// The window's colour, and a place kept just above it for an album's
-/// background (`album_cover`), which the page knows of only after the bars
-/// and the menu are drawn but must lie under them.
-pub fn paint(ui: &egui::Ui, screen: Rect) -> ShapeIdx {
+/// The window's colour, and two places kept just above it, which the page
+/// knows of only after the bars and the menu are drawn but must lie under
+/// them: an album's background (`album_cover`), and over it Premium's
+/// player page colours (`listening`).
+pub fn paint(ui: &egui::Ui, screen: Rect) -> (ShapeIdx, ShapeIdx) {
     let painter = ui.ctx().layer_painter(egui::LayerId::background());
     painter.rect_filled(screen, 0.0, PALETTE.window);
-    painter.add(Shape::Noop)
+    (painter.add(Shape::Noop), painter.add(Shape::Noop))
 }
 
 /// Behind an album's or playlist's page, as YouTube Music: its cover,
@@ -73,7 +74,9 @@ pub fn album_cover(
         pos2(screen.left(), top),
         pos2(screen.right(), top + screen.height()),
     );
-    let veil = gradient_shape(dark, Color32::from_black_alpha(153), PALETTE.window);
+    // Premium: a lighter veil, so more of the cover's colour shows.
+    let darkest = if crate::theme::premium() { 110 } else { 153 };
+    let veil = gradient_shape(dark, Color32::from_black_alpha(darkest), PALETTE.window);
     painter.set(slot, Shape::Vec(vec![Shape::mesh(mesh), veil]));
 }
 
@@ -138,15 +141,96 @@ fn gradient_shape(rect: Rect, top: Color32, bottom: Color32) -> Shape {
     Shape::mesh(mesh)
 }
 
-/// Premium's player page: a still wash of the small cover already loaded
-/// (no blur pass, nothing moving), fading to the window's colour.
-pub fn listening(ui: &egui::Ui, rect: Rect, texture: TextureId) {
-    ui.painter().image(
-        texture,
-        rect,
-        Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
-        Color32::from_white_alpha(42),
-    );
-    ui.painter()
-        .add(gradient_shape(rect, Color32::TRANSPARENT, PALETTE.window));
+/// Premium's player page: the playing song's colours (`App::listening_wash`,
+/// the cover blurred, so it never moves) over `screen`, darkened more
+/// toward the foot and at the corners so white words read on them, at
+/// `shown` (fading in as the page rises).
+pub fn listening(screen: Rect, texture: TextureId, shown: f32) -> Shape {
+    let alpha = |a: f32| (a * shown) as u8;
+    Shape::Vec(vec![
+        Shape::image(
+            texture,
+            screen,
+            Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
+            Color32::from_white_alpha(alpha(255.0)),
+        ),
+        gradient_shape(
+            screen,
+            Color32::from_black_alpha(alpha(40.0)),
+            Color32::from_black_alpha(alpha(150.0)),
+        ),
+        vignette(screen, alpha(110.0)),
+    ])
+}
+
+/// Premium's main pages: the playing song's colours (`App::listening_wash`)
+/// across the window's top, fading out by 70% of its height into the
+/// page's charcoal; with nothing playing (or its cover not yet here), a
+/// deep wine-to-indigo glow there instead. Fixed to the window and still,
+/// so it costs nothing while idle. At `shown`.
+pub fn ambient(screen: Rect, texture: Option<TextureId>, shown: f32) -> Shape {
+    let foot = screen.top() + screen.height() * 0.7;
+    let band = Rect::from_min_max(screen.min, pos2(screen.right(), foot));
+    let corners = [
+        band.left_top(),
+        band.right_top(),
+        band.right_bottom(),
+        band.left_bottom(),
+    ];
+    let mut mesh = match texture {
+        Some(texture) => {
+            let top = Color32::from_white_alpha((150.0 * shown) as u8);
+            let uvs = [
+                pos2(0.0, 0.0),
+                pos2(1.0, 0.0),
+                pos2(1.0, 0.7),
+                pos2(0.0, 0.7),
+            ];
+            let colors = [top, top, Color32::TRANSPARENT, Color32::TRANSPARENT];
+            let mut mesh = Mesh::with_texture(texture);
+            for ((pos, uv), color) in corners.into_iter().zip(uvs).zip(colors) {
+                mesh.vertices.push(egui::epaint::Vertex { pos, uv, color });
+            }
+            mesh
+        }
+        None => {
+            let glow = (100.0 * shown) as u8;
+            let wine = Color32::from_rgba_unmultiplied(0x5a, 0x16, 0x2c, glow);
+            let indigo = Color32::from_rgba_unmultiplied(0x22, 0x26, 0x5c, glow);
+            let colors = [wine, indigo, Color32::TRANSPARENT, Color32::TRANSPARENT];
+            let mut mesh = Mesh::default();
+            for (pos, color) in corners.into_iter().zip(colors) {
+                mesh.colored_vertex(pos, color);
+            }
+            mesh
+        }
+    };
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    Shape::mesh(mesh)
+}
+
+/// Black `alpha` at `rect`'s corners, half that at its edges' middles,
+/// nothing at its centre: the edges darkened, as a lens does.
+fn vignette(rect: Rect, alpha: u8) -> Shape {
+    let edge = Color32::from_black_alpha(alpha / 2);
+    let corner = Color32::from_black_alpha(alpha);
+    let mut mesh = Mesh::default();
+    let xs = [rect.left(), rect.center().x, rect.right()];
+    let ys = [rect.top(), rect.center().y, rect.bottom()];
+    for (row, &y) in ys.iter().enumerate() {
+        for (column, &x) in xs.iter().enumerate() {
+            let color = match (row, column) {
+                (1, 1) => Color32::TRANSPARENT,
+                (1, _) | (_, 1) => edge,
+                _ => corner,
+            };
+            mesh.colored_vertex(pos2(x, y), color);
+        }
+    }
+    for (a, b, c, d) in [(0, 1, 4, 3), (1, 2, 5, 4), (3, 4, 7, 6), (4, 5, 8, 7)] {
+        mesh.add_triangle(a, b, c);
+        mesh.add_triangle(a, c, d);
+    }
+    Shape::mesh(mesh)
 }

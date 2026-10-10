@@ -30,34 +30,35 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             let guide = sidebar::width(app);
             // (An album's background, painted behind everything, shows
             // through the bar while the page is at its top.)
-            if !app.settings.mini_guide {
+            let premium = theme::premium();
+            if !app.settings.mini_guide && !premium {
                 // The open menu is solid from the window's top, behind the
-                // logo too (`#guide-wrapper`).
+                // logo too (`#guide-wrapper`). (Premium's is see-through.)
                 let corner = Rect::from_min_max(bar.min, pos2(bar.left() + guide, bar.bottom()));
-                let fill = if theme::premium() {
-                    PALETTE.panel
-                } else {
-                    PALETTE.window
-                };
-                ui.painter().rect_filled(corner, 0.0, fill);
+                ui.painter().rect_filled(corner, 0.0, PALETTE.window);
             }
             // Once the page scrolls (or the player page is open), the bar
             // turns `#030303` with a white@0.15 line under it, fading over
-            // 0.2 s (`#nav-bar-background`).
-            let solid = app.page_scrolled.get() || app.now_playing;
+            // 0.2 s (`#nav-bar-background`). Premium: the player page's
+            // colours show through it.
+            let solid = app.page_scrolled.get() || (app.now_playing && !premium);
             let shown = ui
                 .ctx()
                 .animate_bool_with_time(ui.id().with("solid"), solid, 0.2);
             if shown > 0.0 {
                 // Beside the open menu (its corner is already solid).
+                // Premium's stays see-through, its background showing: only
+                // the hairline marks the scroll.
                 let left = if app.settings.mini_guide {
                     bar.left()
                 } else {
                     bar.left() + guide
                 };
                 let content = Rect::from_min_max(pos2(left, bar.top()), bar.max);
-                ui.painter()
-                    .rect_filled(content, 0.0, PALETTE.window.gamma_multiply(shown));
+                if !premium {
+                    ui.painter()
+                        .rect_filled(content, 0.0, PALETTE.window.gamma_multiply(shown));
+                }
                 ui.painter().hline(
                     bar.x_range(),
                     bar.bottom() - 0.5,
@@ -114,35 +115,12 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 app.act(Action::Navigate(Route::Home));
             }
 
-            // The page's grid, so the search box and the account line up
-            // with what is under them (on search, its narrower column).
-            let window = ui.ctx().content_rect().width();
-            let area = bar.width() - guide;
-            let grid = theme::Grid::new(window, area);
-            let column = if matches!(app.route, Route::Search(_) | Route::SearchOnly(..)) {
-                theme::Grid::search(window, area)
+            let (avatar, arrows, field) = if theme::premium() {
+                premium_places(bar, guide, name.right())
             } else {
-                grid
+                youtube_music_places(app, ui, bar, guide, name.right())
             };
-            let search_left = (bar.left() + guide + column.left).max(name.right() + 12.0);
-            // At the content's right edge, unless the window's buttons
-            // (YTFast's own, on Windows) are there: then 16 before them.
-            let account_right = (bar.left() + guide + grid.left + grid.width)
-                .min(bar.right() - window_frame::buttons_width() - 16.0);
-
-            // The account: 26 round, its right edge at the content's.
-            let avatar = Rect::from_center_size(
-                pos2(account_right - 13.0, bar.center().y),
-                Vec2::splat(26.0),
-            );
             account(app, ui, avatar);
-
-            // Back and forward, 8 before the account (where YouTube
-            // Music's cast button stands).
-            let arrows = Rect::from_min_max(
-                pos2(avatar.left() - 8.0 - 80.0, bar.center().y - 20.0),
-                pos2(avatar.left() - 8.0, bar.center().y + 20.0),
-            );
             let mut nav = ui.new_child(
                 UiBuilder::new()
                     .max_rect(arrows)
@@ -166,15 +144,71 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                     }
                 });
             }
-
-            // The search box: at most 480, 42 high, in the bar's middle (from
-            // y 11).
-            let width = (arrows.left() - 16.0 - search_left).clamp(120.0, 480.0);
-            let field =
-                Rect::from_min_size(pos2(search_left, bar.center().y - 21.0), vec2(width, 42.0));
             search_box(app, ui, field);
             window_frame::buttons(ui, bar);
         });
+}
+
+/// Where YouTube Music puts the account, back and forward, and the search
+/// box (`avatar`, `arrows`, `field`): the search box over the page's own
+/// column (on search, its narrower one), the account at the content's
+/// right edge (16 before the window's buttons when they are there), back
+/// and forward just left of it. `name_right` is where the app's name ends.
+fn youtube_music_places(
+    app: &App,
+    ui: &egui::Ui,
+    bar: Rect,
+    guide: f32,
+    name_right: f32,
+) -> (Rect, Rect, Rect) {
+    let window = ui.ctx().content_rect().width();
+    let area = bar.width() - guide;
+    let grid = theme::Grid::new(window, area);
+    let column = if matches!(app.route, Route::Search(_) | Route::SearchOnly(..)) {
+        theme::Grid::search(window, area)
+    } else {
+        grid
+    };
+    let search_left = (bar.left() + guide + column.left).max(name_right + 12.0);
+    let account_right = (bar.left() + guide + grid.left + grid.width)
+        .min(bar.right() - window_frame::buttons_width() - 16.0);
+    // The account: 26 round, its right edge at the content's.
+    let avatar = Rect::from_center_size(
+        pos2(account_right - 13.0, bar.center().y),
+        Vec2::splat(26.0),
+    );
+    // Back and forward, 8 before the account (where YouTube Music's cast
+    // button stands).
+    let arrows = Rect::from_min_max(
+        pos2(avatar.left() - 8.0 - 80.0, bar.center().y - 20.0),
+        pos2(avatar.left() - 8.0, bar.center().y + 20.0),
+    );
+    // The search box: at most 480, 42 high, in the bar's middle (from y 11).
+    let width = (arrows.left() - 16.0 - search_left).clamp(120.0, 480.0);
+    let field = Rect::from_min_size(pos2(search_left, bar.center().y - 21.0), vec2(width, 42.0));
+    (avatar, arrows, field)
+}
+
+/// Premium's places, balanced across the bar: back and forward just past
+/// the menu, the search box (at most 560) in the middle of the page, kept
+/// 24 clear of both, and the account 16 before the window's buttons; all on
+/// the bar's middle line, as the window's buttons are.
+fn premium_places(bar: Rect, guide: f32, name_right: f32) -> (Rect, Rect, Rect) {
+    let y = bar.center().y;
+    let page_left = bar.left() + guide;
+    let arrows_left = (page_left + 16.0).max(name_right + 16.0);
+    let arrows = Rect::from_min_max(
+        pos2(arrows_left, y - 20.0),
+        pos2(arrows_left + 80.0, y + 20.0),
+    );
+    let account_right = bar.right() - window_frame::buttons_width() - 16.0;
+    let avatar = Rect::from_center_size(pos2(account_right - 13.0, y), Vec2::splat(26.0));
+    let (room_left, room_right) = (arrows.right() + 24.0, avatar.left() - 24.0);
+    let width = (room_right - room_left).clamp(120.0, 560.0);
+    let middle = (page_left + bar.right()) / 2.0;
+    let left = (middle - width / 2.0).clamp(room_left, (room_right - width).max(room_left));
+    let field = Rect::from_min_size(pos2(left, y - 21.0), vec2(width, 42.0));
+    (avatar, arrows, field)
 }
 
 /// The account's round button (its photo 26 on `#909090`; the name's first
@@ -394,10 +428,19 @@ fn search_box(app: &App, ui: &mut egui::Ui, rect: Rect) {
     let open = ui
         .data(|d| d.get_temp::<Rect>(ui.id().with("suggest").with("rect")))
         .is_some();
-    // Premium: always the field's colour, corners 12, outlined in the
-    // accent while typing.
+    // Premium: glass, as its other buttons (white@0.07, more under the
+    // pointer and while typing; solid while the suggestions hang under
+    // it), corners 12, outlined in the accent while typing.
     let premium = theme::premium();
-    let fill = if (focused || open) && !premium {
+    let fill = if premium {
+        if open {
+            PALETTE.menu
+        } else if focused || ui.rect_contains_pointer(rect) {
+            egui::Color32::from_white_alpha(26)
+        } else {
+            egui::Color32::from_white_alpha(18)
+        }
+    } else if focused || open {
         PALETTE.window
     } else {
         PALETTE.field
@@ -641,14 +684,20 @@ fn suggestions(
         .order(egui::Order::Foreground)
         .fixed_pos(rect.left_bottom() - vec2(0.0, 1.0))
         .show(ui.ctx(), |ui| {
+            // Premium: the menu's colour, its foot rounded 12.
+            let (backing, round) = if theme::premium() {
+                (PALETTE.menu, 12)
+            } else {
+                (PALETTE.window, 8)
+            };
             Frame::new()
-                .fill(PALETTE.window)
+                .fill(backing)
                 .stroke(egui::Stroke::new(1.0, PALETTE.divider))
                 .corner_radius(CornerRadius {
                     nw: 0,
                     ne: 0,
-                    sw: 8,
-                    se: 8,
+                    sw: round,
+                    se: round,
                 })
                 .inner_margin(Margin::symmetric(0, 8))
                 .shadow(egui::Shadow {
