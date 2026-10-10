@@ -105,11 +105,14 @@ fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> R
     panel
 }
 
-/// Premium's cover (at most 480, r 16) and the song's name (26 bold) and
-/// artist (16) centred under it, over the song's colours (`backdrop::listening`,
-/// painted in `views::show`). Returns where the panel goes.
+/// Premium's cover (at most 480, r 16; larger on a large screen) and the
+/// song's name (26 bold) and artist (16) centred under it, a little larger
+/// with a larger cover (at most 34 and 20), over the song's colours
+/// (`backdrop::listening`, painted in `views::show`). Returns where the
+/// panel goes.
 fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rect {
     let (art, panel) = listening_layout(area);
+    let grow = ((art.width() - 480.0) / 420.0).clamp(0.0, 1.0);
     widgets::cover_with(
         app,
         ui,
@@ -130,14 +133,14 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
     theme::label(
         &mut details,
         &entry.track.title,
-        theme::bold(26.0),
+        theme::bold(26.0 + 8.0 * grow),
         PALETTE.text,
     );
     details.add_space(6.0);
     theme::label(
         &mut details,
         &entry.track.artists,
-        theme::regular(16.0),
+        theme::regular(16.0 + 4.0 * grow),
         PALETTE.secondary,
     );
     panel
@@ -147,11 +150,24 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
 /// the whole height at the right (52% of the room, at most 680), and the
 /// cover (at most 480) with its words centred in the rest, 48 before it
 /// (32 in less room), so the two share a middle line.
+///
+/// Up to a page 1520 wide (a laptop's) the room is at most 1280, centred.
+/// A larger page (a large screen's) keeps margins of 120 and gives the
+/// rest to what it shows, which would otherwise huddle in the middle: for
+/// each point past 1280, the panel grows a quarter (to at most 960), the
+/// cover a quarter (to at most 900, as the height allows) and the space
+/// between them 0.15 (to at most 160).
 fn listening_layout(area: Rect) -> (Rect, Rect) {
-    let width = (area.width() - 64.0).clamp(0.0, 1280.0);
+    let margin = ((area.width() - 1280.0) / 2.0).clamp(32.0, 120.0);
+    let width = (area.width() - 2.0 * margin).max(0.0);
+    let extra = (width - 1280.0).max(0.0);
     let inner = Rect::from_center_size(area.center(), vec2(width, (area.height() - 48.0).max(0.0)));
-    let gap = if width >= 900.0 { 48.0 } else { 32.0 };
-    let panel_width = (width * 0.52).min(680.0);
+    let gap = if width >= 900.0 {
+        (48.0 + extra * 0.15).min(160.0)
+    } else {
+        32.0
+    };
+    let panel_width = (width * 0.52).min((680.0 + extra * 0.25).min(960.0));
     let panel = Rect::from_min_max(pos2(inner.right() - panel_width, inner.top()), inner.max);
     let main = Rect::from_min_max(
         inner.min,
@@ -160,7 +176,7 @@ fn listening_layout(area: Rect) -> (Rect, Rect) {
     let side = main
         .width()
         .min((main.height() - 104.0).max(0.0))
-        .min(480.0);
+        .min((480.0 + extra * 0.25).min(900.0));
     let art = Rect::from_min_size(
         pos2(
             main.center().x - side / 2.0,
@@ -172,13 +188,14 @@ fn listening_layout(area: Rect) -> (Rect, Rect) {
 }
 
 /// Premium's tabs, Up next, Lyrics and Related, in clear glass as an
-/// iPhone draws it: a capsule 44 high (at most 480 wide, centred over the
-/// list) barely filled and with no edge; the chosen tab a clear capsule
-/// inside it with a single rim of light; the one under the pointer barely
-/// filled.
+/// iPhone draws it: a capsule 44 high (480 wide, or 60% of a wider panel's
+/// width up to 560, centred over the list) barely filled and with no edge;
+/// the chosen tab a clear capsule inside it with a single rim of light;
+/// the one under the pointer barely filled.
 fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
-    let bar = Rect::from_center_size(row.center(), vec2(row.width().min(480.0), 44.0));
+    let wide = (row.width() * 0.6).clamp(480.0, 560.0);
+    let bar = Rect::from_center_size(row.center(), vec2(row.width().min(wide), 44.0));
     glass(ui.painter(), bar, 0.05, 0.0);
     let no_lyrics = matches!(app.lyrics.get(&entry.track.video_id), Some(State::Missing));
     let tabs = [
@@ -566,15 +583,58 @@ mod tests {
 
     #[test]
     fn premium_player_page_keeps_cover_and_words_inside_the_window() {
-        for (width, height) in [(700.0, 400.0), (1040.0, 652.0), (1487.0, 851.0)] {
+        for (width, height) in [
+            (700.0, 400.0),
+            (1040.0, 652.0),
+            (1487.0, 851.0),
+            (1680.0, 880.0),
+            (2320.0, 1250.0),
+            (3200.0, 1250.0),
+            (3600.0, 2000.0),
+        ] {
             let area = Rect::from_min_size(pos2(220.0, 72.0), vec2(width, height));
             let (art, panel) = listening_layout(area);
             assert!(area.contains_rect(art));
             assert!(area.contains_rect(panel));
             assert!(art.right() + 24.0 <= panel.left());
-            assert!(art.width() <= 480.0);
+            assert!(art.width() <= 900.0);
             assert!(art.bottom() + 80.0 <= area.bottom());
             assert!(panel.width() >= art.width());
+            assert!(panel.width() <= 960.0);
         }
+    }
+
+    /// A laptop's page is laid out as before: the room at most 1280,
+    /// centred, the cover 480 and the panel 52% of the room.
+    #[test]
+    fn premium_player_page_is_unchanged_on_a_laptop() {
+        for width in [1344.0, 1467.0, 1520.0] {
+            let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(width, 851.0));
+            let (art, panel) = listening_layout(area);
+            let margin = (width - 1280.0) / 2.0;
+            assert!(
+                (area.right() - panel.right() - margin).abs() < 0.01,
+                "{width}"
+            );
+            assert!((panel.width() - 1280.0 * 0.52).abs() < 0.01, "{width}");
+            assert_eq!(art.width(), 480.0, "{width}");
+        }
+    }
+
+    /// On a large screen what the page shows spreads out instead of
+    /// keeping to the middle: margins of 120, a larger cover and panel, and
+    /// more room between them.
+    #[test]
+    fn premium_player_page_spreads_out_on_a_large_screen() {
+        // A 2560 wide screen, the menu open.
+        let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(2320.0, 1250.0));
+        let (art, panel) = listening_layout(area);
+        assert!((area.right() - panel.right() - 120.0).abs() < 0.01);
+        assert!((panel.width() - 880.0).abs() < 0.01);
+        assert!((art.width() - 680.0).abs() < 0.01);
+        // The cover centred in the room left of the panel, 160 before it.
+        let main_right = panel.left() - 160.0;
+        let main_left = area.left() + 120.0;
+        assert!(((art.center().x - (main_left + main_right) / 2.0).abs()) < 0.01);
     }
 }

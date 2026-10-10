@@ -586,6 +586,18 @@ fn default_browser() -> Browser {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, demo: bool, startup: Startup) -> Self {
         let script_fonts = crate::theme::install(&cc.egui_ctx);
+        // The demo laid out as on another screen (`YTFAST_DEMO_ZOOM`): 0.67
+        // shows a laptop's window as a 2560 wide screen's, smaller, for
+        // pictures of large screens on a small one. Set every time, as the
+        // demo's saved window state would otherwise keep the last one.
+        if demo {
+            let zoom = std::env::var("YTFAST_DEMO_ZOOM")
+                .ok()
+                .and_then(|z| z.parse::<f32>().ok())
+                .filter(|z| (0.25..=4.0).contains(z))
+                .unwrap_or(1.0);
+            cc.egui_ctx.set_zoom_factor(zoom);
+        }
         let settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value::<Settings>(s, "ytfast"))
