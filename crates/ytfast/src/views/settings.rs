@@ -208,4 +208,15 @@ fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
     if response.clicked() && !chosen {
         app.act(Action::SetTheme(choice));
     }
+    // Dynamic Background's own switch, under it while it is worn.
+    if choice == Theme::DynamicBackground && chosen {
+        switch(
+            app,
+            ui,
+            "Moving background",
+            "The song's colours drift slowly while it plays. Off, they stay still, and YTFast draws the window less often.",
+            app.settings.moving_background,
+            Setting::MovingBackground,
+        );
+    }
 }

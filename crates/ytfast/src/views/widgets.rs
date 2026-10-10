@@ -15,6 +15,9 @@ pub fn cover(app: &App, ui: &egui::Ui, rect: Rect, thumb: Option<&Thumb>, round:
 
 /// How round a cover's corners are, by its width.
 fn cover_radius(width: f32, round: bool) -> CornerRadius {
+    if theme::dynamic() {
+        return super::dynamic::cover_radius(width, round);
+    }
     if round {
         CornerRadius::same(255)
     } else if width > 200.0 {
@@ -151,6 +154,9 @@ impl Row {
     /// between them; an album's and a playlist's songs closer together and
     /// lit under the pointer; a shelf's songs taller and apart.
     pub fn themed(self) -> Self {
+        if theme::dynamic() {
+            return super::dynamic::row(self);
+        }
         if !theme::premium() {
             return self;
         }
@@ -497,7 +503,11 @@ pub fn track_row_in(
     // under the pointer gets the list's own fill.
     // Premium: every row r 8, and the focused one lit and outlined.
     let premium = theme::premium();
-    let radius = if style.album || premium { 8 } else { 0 };
+    let radius = if style.album || premium || theme::dynamic() {
+        8
+    } else {
+        0
+    };
     let focused = premium && response.has_focus();
     if playing {
         ui.painter()
@@ -826,7 +836,9 @@ fn tick_box(app: &App, ui: &egui::Ui, rect: Rect, id: egui::Id, track: &Track, c
         )
     });
     let square = Rect::from_center_size(spot.center(), Vec2::splat(18.0));
-    if ticked {
+    if theme::dynamic() {
+        super::dynamic::tick_box_look(ui, square, ticked);
+    } else if ticked {
         ui.painter()
             .rect_filled(square, CornerRadius::same(2), PALETTE.text);
         theme::paint_icon(ui, Icon::Check, square, 16.0, PALETTE.window);
@@ -1200,6 +1212,8 @@ pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text
     let art = Rect::from_min_size(rect.min, vec2(size, height));
     let radius = if card.round {
         CornerRadius::same(255)
+    } else if theme::dynamic() {
+        CornerRadius::same(crate::dynamic::RADIUS_ART_LG)
     } else {
         CornerRadius::same(8)
     };
@@ -1217,7 +1231,9 @@ pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text
     let current = plays_from(app, card);
     let shade = if current { 1.0 } else { lit };
     let mut pressed = false;
-    if shade > 0.0 && !card.round {
+    if shade > 0.0 && !card.round && theme::dynamic() {
+        super::dynamic::card_shade(ui, art, shade);
+    } else if shade > 0.0 && !card.round {
         // The gradient over the cover's top third.
         let mut mesh = egui::Mesh::default();
         let top = Rect::from_min_size(art.min, vec2(art.width(), art.height() / 3.0));
@@ -1570,8 +1586,13 @@ pub fn big_button(app: &App, ui: &mut egui::Ui, card: &Card, width: f32, gap: f3
         let hover =
             ui.ctx()
                 .animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.2);
-        let fill = lerp_color(PALETTE.field, PALETTE.panel, hover);
-        ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+        let icon_color = if theme::dynamic() {
+            super::dynamic::big_button_look(ui, rect, hover)
+        } else {
+            let fill = lerp_color(PALETTE.field, PALETTE.panel, hover);
+            ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+            PALETTE.dim
+        };
         let icon = match card.look.icon.as_deref() {
             Some("MUSIC_NEW_RELEASE") => Some(Icon::NewReleases),
             Some("TRENDING_UP") => Some(Icon::Charts),
@@ -1581,7 +1602,7 @@ pub fn big_button(app: &App, ui: &mut egui::Ui, card: &Card, width: f32, gap: f3
         let mut x = rect.left() + 16.0;
         if let Some(icon) = icon {
             let spot = Rect::from_min_size(pos2(x, rect.center().y - 12.0), Vec2::splat(24.0));
-            theme::paint_icon(ui, icon, spot, 24.0, PALETTE.dim);
+            theme::paint_icon(ui, icon, spot, 24.0, icon_color);
             x = spot.right() + gap;
         }
         let words = theme::fit(
@@ -1616,23 +1637,29 @@ pub fn mood_button(app: &App, ui: &mut egui::Ui, card: &Card, width: f32) {
         let stripe = card.look.stripe.map_or(PALETTE.text, |rgb| {
             Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
         });
-        // The whole button in the stripe's colour, then the rest over it.
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(8), stripe);
-        let rest = Rect::from_min_max(pos2(rect.left() + 6.0, rect.top()), rect.max);
-        let corners = CornerRadius {
-            nw: 0,
-            sw: 0,
-            ne: 8,
-            se: 8,
-        };
-        ui.painter().rect_filled(rest, corners, PALETTE.window);
-        let fill = if response.hovered() {
-            PALETTE.panel
+        let rest = if theme::dynamic() {
+            super::dynamic::mood_button_look(ui, rect, stripe, response.hovered())
         } else {
-            PALETTE.field
+            // The whole button in the stripe's colour, then the rest over
+            // it.
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(8), stripe);
+            let rest = Rect::from_min_max(pos2(rect.left() + 6.0, rect.top()), rect.max);
+            let corners = CornerRadius {
+                nw: 0,
+                sw: 0,
+                ne: 8,
+                se: 8,
+            };
+            ui.painter().rect_filled(rest, corners, PALETTE.window);
+            let fill = if response.hovered() {
+                PALETTE.panel
+            } else {
+                PALETTE.field
+            };
+            ui.painter().rect_filled(rest, corners, fill);
+            rest
         };
-        ui.painter().rect_filled(rest, corners, fill);
         let words = theme::fit(
             ui,
             &card.title,

@@ -10,7 +10,9 @@ use crate::backend::{Backend, Request};
 
 enum Slot {
     Loading,
-    Ready(TextureHandle, crate::colors::Summary),
+    /// The texture, the colours taken from it, and the cover at 24 × 24
+    /// (`backend::Picture::soft`).
+    Ready(TextureHandle, crate::colors::Summary, egui::ColorImage),
     /// It did not load, at this time.
     Failed(Instant),
 }
@@ -82,7 +84,7 @@ impl Images {
                     backend.send(Request::Image(url.to_string()));
                 }
                 match &cached.slot {
-                    Slot::Ready(texture, _) => Some(texture.clone()),
+                    Slot::Ready(texture, ..) => Some(texture.clone()),
                     Slot::Loading | Slot::Failed(_) => None,
                 }
             }
@@ -105,7 +107,16 @@ impl Images {
     pub fn summary(&mut self, url: &str, backend: &Backend) -> Option<crate::colors::Summary> {
         let _texture = self.get(url, backend)?;
         match &self.cache.get(url)?.slot {
-            Slot::Ready(_, summary) => Some(summary.clone()),
+            Slot::Ready(_, summary, _) => Some(summary.clone()),
+            _ => None,
+        }
+    }
+
+    /// The cover at `url` at 24 × 24, asking for it the first time.
+    pub fn soft(&mut self, url: &str, backend: &Backend) -> Option<egui::ColorImage> {
+        let _texture = self.get(url, backend)?;
+        match &self.cache.get(url)?.slot {
+            Slot::Ready(_, _, soft) => Some(soft.clone()),
             _ => None,
         }
     }
@@ -129,7 +140,7 @@ impl Images {
             Some(picture) => {
                 let bytes = picture.image.size[0] * picture.image.size[1] * 4;
                 let texture = ctx.load_texture(&url, picture.image, egui::TextureOptions::LINEAR);
-                (Slot::Ready(texture, picture.summary), bytes)
+                (Slot::Ready(texture, picture.summary, picture.soft), bytes)
             }
             None => (Slot::Failed(Instant::now()), 0),
         };

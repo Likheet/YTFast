@@ -19,6 +19,9 @@ use crate::theme::{self, Icon, PALETTE};
 use crate::views::{page, queue_panel, widgets};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
+    if theme::dynamic() {
+        return super::dynamic::player_page(app, ui);
+    }
     let area = ui.max_rect();
     let Some(entry) = &app.playback.entry else {
         ui.painter().text(

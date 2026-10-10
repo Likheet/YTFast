@@ -317,9 +317,15 @@ fn playlist_item(
         play.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Play {title}"))
         });
-        ui.painter()
-            .circle_filled(disc.center(), 12.0, PALETTE.text);
-        theme::paint_icon(ui, Icon::Play, disc, 16.0, PALETTE.window);
+        if theme::dynamic() {
+            // Dynamic Background: the icon alone, white (`#play-button`
+            // clear).
+            theme::paint_icon(ui, Icon::Play, disc, 18.0, PALETTE.text);
+        } else {
+            ui.painter()
+                .circle_filled(disc.center(), 12.0, PALETTE.text);
+            theme::paint_icon(ui, Icon::Play, disc, 16.0, PALETTE.window);
+        }
         if play.clicked() {
             pressed = true;
             app.act(Action::QueuePlaylist(
