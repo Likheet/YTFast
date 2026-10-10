@@ -1,8 +1,10 @@
 //! YTFast's own window frame on Windows, in place of Windows' title bar:
 //! the top bar moves the window (drag it) and maximizes it (double-click),
 //! minimize, maximize and close stand at its right end on its middle line,
-//! round as the bar's other small buttons, and the window's edges resize
-//! it. Windows still draws the shadow and rounds the corners.
+//! round as the bar's other small buttons (each answers the pointer over
+//! the bar's whole height, and close up to the window's corner), and the
+//! window's edges resize it. Windows still draws the shadow and rounds the
+//! corners.
 //! The Mac keeps its own title bar.
 
 use egui::{
@@ -16,10 +18,10 @@ use crate::theme::PALETTE;
 pub const OWN_FRAME: bool = cfg!(windows);
 
 /// The window's buttons: round, 36 across (as the bar's other small
-/// buttons), 4 apart, the last 12 from the window's right edge.
+/// buttons), 4 apart, the last 4 from the window's right edge.
 const BUTTON: f32 = 36.0;
 const BUTTON_GAP: f32 = 4.0;
-const BUTTONS_MARGIN: f32 = 12.0;
+const BUTTONS_MARGIN: f32 = 4.0;
 
 /// How far in from the window's edge a press resizes it.
 const EDGE: f32 = 5.0;
@@ -67,6 +69,11 @@ enum Caption {
 /// 1.5 thick with round ends, in the bar's white (its quieter grey while
 /// the window is in the background). A hand under the pointer, as every
 /// button.
+///
+/// Each answers the pointer in a column of the bar's whole height, the
+/// columns meeting halfway between the buttons, and close's reaching the
+/// window's right edge: the pointer thrown into the top right corner, as
+/// far as it goes, lands on close, as on Windows' own title bars.
 pub fn buttons(ui: &egui::Ui, bar: Rect) {
     if !OWN_FRAME {
         return;
@@ -81,11 +88,26 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
     let y = bar.center().y;
     let mut right = bar.right() - BUTTONS_MARGIN;
     for caption in [Caption::Close, Caption::Maximize, Caption::Minimize] {
-        let rect = Rect::from_min_max(
+        let disc = Rect::from_min_max(
             pos2(right - BUTTON, y - BUTTON / 2.0),
             pos2(right, y + BUTTON / 2.0),
         );
         right -= BUTTON + BUTTON_GAP;
+        // Where it answers the pointer: the bar's height, from halfway to
+        // the next button (minimize from its own edge, where the bar moves
+        // the window), close to the window's edge.
+        let left = match caption {
+            Caption::Minimize => disc.left(),
+            _ => disc.left() - BUTTON_GAP / 2.0,
+        };
+        let right_edge = match caption {
+            Caption::Close => bar.right(),
+            _ => disc.right() + BUTTON_GAP / 2.0,
+        };
+        let rect = Rect::from_min_max(
+            pos2(left, bar.top().min(disc.top())),
+            pos2(right_edge, bar.bottom().max(disc.bottom())),
+        );
         let name = match caption {
             Caption::Minimize => "Minimize window",
             Caption::Maximize if maximized => "Restore window",
@@ -106,7 +128,7 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
                 (false, true) => Color32::from_white_alpha(20),
             };
             ui.painter()
-                .circle_filled(rect.center(), BUTTON / 2.0, fill);
+                .circle_filled(disc.center(), BUTTON / 2.0, fill);
         }
         let color = if close && lit {
             Color32::WHITE
@@ -115,7 +137,7 @@ pub fn buttons(ui: &egui::Ui, bar: Rect) {
         } else {
             PALETTE.text
         };
-        glyph(ui, caption, maximized, rect.center(), color);
+        glyph(ui, caption, maximized, disc.center(), color);
         if response.clicked() {
             let command = match caption {
                 Caption::Minimize => ViewportCommand::Minimized(true),

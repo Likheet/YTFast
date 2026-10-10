@@ -278,14 +278,17 @@ impl Preparer {
         })
     }
 
-    /// Finds a song's audio ahead of time, the fast way only, so playing it
-    /// later starts at once. Does nothing without the fast way, or while it
-    /// is getting ready (see [`Direct::find_ahead`]).
+    /// Finds a song's audio ahead of time, the fast way only, and has its
+    /// server get it ready ([`stream::touch`]: one byte, not a download),
+    /// so playing it later starts at once. Does nothing without the fast
+    /// way, or while it is getting ready (see [`Direct::find_ahead`]).
     pub async fn warm(&self, video_id: &str) {
-        if let Some(direct) = &self.direct
-            && let Err(e) = direct.find_ahead(video_id).await
-        {
-            log::debug!("could not find a song ahead of time: {e}");
+        let Some(direct) = &self.direct else {
+            return;
+        };
+        match direct.find_ahead(video_id).await {
+            Ok(found) => stream::touch(&self.download, &found.source).await,
+            Err(e) => log::debug!("could not find a song ahead of time: {e}"),
         }
     }
 }
