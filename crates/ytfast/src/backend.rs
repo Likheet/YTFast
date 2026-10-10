@@ -16,7 +16,7 @@ use ytfast_core::library::{LibraryTab, Privacy};
 use ytfast_core::net;
 use ytfast_core::prepare::{PrepareError, Prepared, Preparer};
 use ytfast_core::read::{
-    Continuation, Item, Page, PlayerInfo, Rating, Section, Shape, SongDetails, Track,
+    Continuation, Item, Page, PlayerInfo, Rating, Section, Shape, SongDetails, Track, VideoPair,
 };
 use ytfast_core::solver::{self, Solver};
 use ytfast_core::stream::SongData;
@@ -179,6 +179,12 @@ pub enum Request {
     /// Find a song's audio ahead of time (it was pointed at, or is the
     /// top search result), so it starts at once if played.
     Warm(String),
+    /// The picture of a video playing in the video mode (its sound plays
+    /// already), for a queue entry: found the fast way, and downloaded.
+    Video {
+        entry: u64,
+        video_id: String,
+    },
     /// A song's lyrics (time-synced when they can be found).
     Lyrics {
         video_id: String,
@@ -370,6 +376,17 @@ pub enum Event {
         done: bool,
     },
     Image(String, Option<Picture>),
+    /// A video's picture stream for an entry ([`Request::Video`]), still
+    /// arriving; `None` is the demo's stand-in.
+    Video {
+        entry: u64,
+        result: Result<Option<Arc<SongData>>, String>,
+    },
+    /// What a song's video is, as its details say ([`Request::Details`]):
+    /// itself for a video, its music video for a song (with YouTube's map
+    /// of the song in it), `None` when it has none; an error when the
+    /// details did not load.
+    SongVideo(String, Result<Option<VideoPair>, String>),
     /// A picture not fetched, because it was no longer wanted (it scrolled
     /// past): it is asked for again when it next shows.
     ImageSkipped(String),
@@ -763,6 +780,7 @@ async fn serve(
                 } => lyrics(&shared, video_id, title, artist, album, duration).await,
                 Request::Related(video_id) => related(&shared, video_id).await,
                 Request::Details(video_id) => song_started(&shared, video_id).await,
+                Request::Video { entry, video_id } => video(&shared, entry, video_id).await,
                 // Queued above, in order.
                 Request::Edit(_) => {}
                 Request::FastWay(on) => shared
@@ -831,6 +849,11 @@ fn failure_for(request: &Request) -> Option<Event> {
         Request::Lyrics { video_id, .. } => Event::Lyrics(video_id.clone(), None),
         Request::Related(video_id) => Event::Related(video_id.clone(), Err(failed())),
         Request::Image(url) => Event::Image(url.clone(), None),
+        Request::Video { entry, .. } => Event::Video {
+            entry: *entry,
+            result: Err(failed()),
+        },
+        Request::Details(video_id) => Event::SongVideo(video_id.clone(), Err(failed())),
         Request::Edit(change) => Event::EditFailed(change.clone(), failed()),
         // No more, rather than asking again while the end is in view.
         Request::MoreResults { route, load } if route.shelves().is_some() => Event::MoreSections {
@@ -1606,21 +1629,81 @@ async fn details(
         .cloned()
 }
 
+/// A song's details, when it starts (its like) or is about to in the
+/// video mode (its video). Always answers [`Event::SongVideo`], which the
+/// video mode may be waiting for.
 async fn song_started(shared: &Shared, video_id: String) {
     if shared.demo {
+        // Most made-up songs have a made-up video (itself); some none.
+        let video = demo::has_video(&video_id).then(|| VideoPair {
+            video: video_id.clone(),
+            segments: Vec::new(),
+        });
+        shared.send(Event::SongVideo(video_id, Ok(video)));
         return;
     }
     let Some(p) = shared.preparer().await else {
+        shared.send(Event::SongVideo(video_id, Err("Not signed in.".into())));
         return;
     };
     match details(shared, &p.session, &video_id).await {
         Ok(found) => {
+            shared.send(Event::SongVideo(video_id.clone(), Ok(found.video.clone())));
             if let Some(rating) = found.like {
                 shared.send(Event::Liked(video_id, like_state(rating)));
             }
         }
-        Err(e) => log::info!("the song's details did not load: {e}"),
+        Err(e) => {
+            log::info!("the song's details did not load: {e}");
+            shared.send(Event::SongVideo(video_id, Err(e.to_string())));
+        }
     }
+}
+
+/// The picture of a video playing in the video mode: found the fast way
+/// (it was, with its sound), then downloaded as it plays, and stopped
+/// when the window lets it go (`stream::fetch` holds it weakly).
+async fn video(shared: &Shared, entry: u64, video_id: String) {
+    let answer = |result| shared.send(Event::Video { entry, result });
+    if shared.demo {
+        answer(Ok(None));
+        return;
+    }
+    let Some(preparer) = shared.preparer().await else {
+        answer(Err("Not signed in.".into()));
+        return;
+    };
+    let Some(direct) = preparer.direct.clone() else {
+        answer(Err(
+            "Videos need YTFast's fast way of finding songs (Settings).".into(),
+        ));
+        return;
+    };
+    let found = match direct.find(&video_id).await {
+        Ok(found) => found,
+        Err(e) => {
+            log::warn!("a video was not found: {e}");
+            answer(Err("This video could not be found.".into()));
+            return;
+        }
+    };
+    let Some(picture) = found.video else {
+        answer(Err("This video has no picture YTFast can show.".into()));
+        return;
+    };
+    let data = SongData::new_on_disk(picture.source.size);
+    let (http, source, wanted) = (
+        preparer.download.clone(),
+        picture.source.clone(),
+        Arc::downgrade(&data),
+    );
+    tokio::spawn(async move {
+        match ytfast_core::stream::fetch(&http, &source, wanted).await {
+            Ok(_) => {}
+            Err(e) => log::warn!("a video's download stopped: {e}"),
+        }
+    });
+    answer(Ok(Some(data)));
 }
 
 fn like_state(rating: Rating) -> crate::app::LikeState {

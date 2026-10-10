@@ -29,6 +29,17 @@ pub struct Found {
     /// How long finding took: zero when the song was found earlier and
     /// remembered.
     pub took: Duration,
+    /// For a video (not a song), its picture: H.264 up to 720 lines, for
+    /// the video mode.
+    pub video: Option<VideoSource>,
+}
+
+/// A video's picture stream (its sound is the found song's).
+#[derive(Clone)]
+pub struct VideoSource {
+    pub source: Source,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Stream addresses work for about six hours; found songs are reused for
@@ -322,17 +333,28 @@ impl Direct {
         }
         let formats = read::stream_formats(&reply);
         let format = read::best_stream(&formats).ok_or_else(|| why_no_stream(&formats))?;
-        let url = self.unlock(&player, format).await?;
+        let url = self
+            .unlock(
+                &player,
+                format.url.as_ref(),
+                format.signature_cipher.as_ref(),
+            )
+            .await?;
+        // A video's picture too, for the video mode: found now, fetched only
+        // if shown. A song's (YouTube's `ATV`) is only its cover standing
+        // still; one YouTube does not say the kind of is taken as a video.
+        let video = if info.kind == read::TrackKind::Song {
+            None
+        } else {
+            self.video_source(&player, &reply).await
+        };
         let found = Found {
             source: Source {
                 url,
-                headers: vec![
-                    ("User-Agent".into(), crate::net::USER_AGENT.into()),
-                    ("Origin".into(), "https://music.youtube.com".into()),
-                    ("Referer".into(), "https://music.youtube.com/".into()),
-                ],
+                headers: stream_headers(),
                 size: format.content_length,
             },
+            video,
             format: format.describe(),
             premium: format.is_premium(),
             duration_seconds: format
@@ -388,8 +410,47 @@ impl Direct {
     /// The stream address with its puzzles solved: the signature (when the
     /// address is scrambled) and `n` (without which YouTube slows the
     /// stream to a crawl).
-    async fn unlock(&self, player: &Player, format: &read::StreamFormat) -> Result<String, String> {
-        let locked = Locked::of(format)?;
+    /// The video's picture stream: H.264 up to 720 lines, unlocked. `None`
+    /// when it has none, or its address will not unlock (the song still
+    /// plays).
+    async fn video_source(
+        &self,
+        player: &Player,
+        reply: &serde_json::Value,
+    ) -> Option<VideoSource> {
+        let formats = read::video_formats(reply);
+        let format = read::best_video(&formats, 720)?;
+        match self
+            .unlock(
+                player,
+                format.url.as_ref(),
+                format.signature_cipher.as_ref(),
+            )
+            .await
+        {
+            Ok(url) => Some(VideoSource {
+                source: Source {
+                    url,
+                    headers: stream_headers(),
+                    size: format.content_length,
+                },
+                width: format.width,
+                height: format.height,
+            }),
+            Err(e) => {
+                log::info!("a video's picture did not unlock: {e}");
+                None
+            }
+        }
+    }
+
+    async fn unlock(
+        &self,
+        player: &Player,
+        url: Option<&String>,
+        cipher: Option<&String>,
+    ) -> Result<String, String> {
+        let locked = Locked::of(url, cipher)?;
         let sig: Vec<String> = locked.signature.iter().map(|(_, s)| s.clone()).collect();
         let answers = self
             .solver
@@ -397,6 +458,15 @@ impl Direct {
             .await?;
         locked.unlock(&answers)
     }
+}
+
+/// What a stream is asked for with, as the website asks.
+fn stream_headers() -> Vec<(String, String)> {
+    vec![
+        ("User-Agent".into(), crate::net::USER_AGENT.into()),
+        ("Origin".into(), "https://music.youtube.com".into()),
+        ("Referer".into(), "https://music.youtube.com/".into()),
+    ]
 }
 
 /// A stream address and the puzzles on it.
@@ -410,8 +480,8 @@ struct Locked {
 }
 
 impl Locked {
-    fn of(format: &read::StreamFormat) -> Result<Self, String> {
-        let (url, signature) = match (&format.url, &format.signature_cipher) {
+    fn of(url: Option<&String>, cipher: Option<&String>) -> Result<Self, String> {
+        let (url, signature) = match (url, cipher) {
             (Some(url), _) => (url.clone(), None),
             (None, Some(cipher)) => {
                 let fields = query_pairs(cipher);
@@ -626,7 +696,11 @@ mod tests {
              "signatureCipher": "s=AB%3DC&sp=sig&url=https%3A%2F%2Fr1.example%2Fvideoplayback%3Fn%3Dxyz%26itag%3D141"}
         ]}});
         let formats = read::stream_formats(&reply);
-        let locked = Locked::of(&formats[0]).unwrap();
+        let locked = Locked::of(
+            formats[0].url.as_ref(),
+            formats[0].signature_cipher.as_ref(),
+        )
+        .unwrap();
         assert_eq!(locked.n.as_deref(), Some("xyz"));
         assert_eq!(
             locked.signature,
@@ -646,13 +720,19 @@ mod tests {
 
         // Puzzles left unsolved, or `n` handed back as it was, are refused:
         // the stream would be refused or slowed to a crawl.
-        let unsolved = Locked::of(&formats[0])
-            .unwrap()
-            .unlock(&answers(&[("xyz", "solved-n")], &[]));
+        let unsolved = Locked::of(
+            formats[0].url.as_ref(),
+            formats[0].signature_cipher.as_ref(),
+        )
+        .unwrap()
+        .unlock(&answers(&[("xyz", "solved-n")], &[]));
         assert_eq!(unsolved, Err("the signature was not solved".into()));
-        let unchanged = Locked::of(&formats[0])
-            .unwrap()
-            .unlock(&answers(&[("xyz", "xyz")], &[("AB=C", "solved-sig")]));
+        let unchanged = Locked::of(
+            formats[0].url.as_ref(),
+            formats[0].signature_cipher.as_ref(),
+        )
+        .unwrap()
+        .unlock(&answers(&[("xyz", "xyz")], &[("AB=C", "solved-sig")]));
         assert_eq!(unchanged, Err("n came back unchanged".into()));
     }
 
@@ -665,12 +745,20 @@ mod tests {
              "url": "https://r1.example/videoplayback?itag=139"}
         ]}});
         let formats = read::stream_formats(&reply);
-        let locked = Locked::of(&formats[0]).unwrap();
+        let locked = Locked::of(
+            formats[0].url.as_ref(),
+            formats[0].signature_cipher.as_ref(),
+        )
+        .unwrap();
         assert!(locked.signature.is_none());
         let url = locked.unlock(&answers(&[("abc", "cba")], &[])).unwrap();
         assert_eq!(query_pairs(url.split_once('?').unwrap().1)["n"], "cba");
         // Nothing to solve: the address as it came.
-        let plain = Locked::of(&formats[1]).unwrap();
+        let plain = Locked::of(
+            formats[1].url.as_ref(),
+            formats[1].signature_cipher.as_ref(),
+        )
+        .unwrap();
         assert!(plain.n.is_none() && plain.signature.is_none());
         assert_eq!(
             plain.unlock(&Answers::default()).unwrap(),

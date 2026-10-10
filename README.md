@@ -43,6 +43,9 @@ YouTube Music **Premium** accounts, on **Mac (Apple Silicon)** and **Windows**.
   YouTube Music's own filters.
 - **The player page**: the cover beside **Up next** (drag songs into any
   order), **lyrics that follow the song** line by line, and **Related**.
+- **Music videos**: the player page's Song and Video switch plays your
+  queue's songs as their music videos, joining each at the same music and
+  keeping the lyrics in time.
 - **Your account, live**: likes, playlists, saves and subscriptions go
   straight to YouTube Music, and every song you play reaches your History,
   so your recommendations keep learning.
@@ -112,6 +115,8 @@ Mac build comes from the same code but has been tried less.
   yt-dlp and Deno and checks both against their published fingerprints.
 - **Lyrics** come from YouTube Music, or from [LRCLIB](https://lrclib.net)
   (a free lyrics database) when YouTube Music has none that follow the song.
+- **Videos** are YouTube's own, decoded by YTFast itself (H.264, up to
+  720p), and only while the player page shows them.
 - **Playing** happens in YTFast itself, through the same audio code as
   Spotifast: it follows your headphones and uses no processor while paused.
 
@@ -143,7 +148,10 @@ Plus theme (recreated without its code), and its Dynamic Background look
 recreates chengggit's
 [Dynamic Background](https://github.com/chengggit/YouTube-Music-Dynamic-Theme)
 theme for Better Lyrics (MIT). Lyrics come partly from
-[LRCLIB](https://lrclib.net). Icons are Google's
+[LRCLIB](https://lrclib.net). Music videos are decoded by
+[rusty_h264](https://github.com/remade-with-rust/rusty_h264) (BSD
+2-Clause), with SIMD kernels from
+[OpenH264](https://github.com/cisco/openh264) (BSD 2-Clause). Icons are Google's
 [Material Symbols](https://fonts.google.com/icons) (Apache 2.0) and
 [Lucide](https://lucide.dev) (ISC); the fonts are
 [Roboto](https://github.com/googlefonts/roboto-classic) and

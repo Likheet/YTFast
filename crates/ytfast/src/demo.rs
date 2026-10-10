@@ -70,6 +70,12 @@ pub fn length(video_id: &str) -> f64 {
     150.0 + (seed(video_id) % 150) as f64
 }
 
+/// Whether a made-up song has a (made-up) music video: most do, about a
+/// quarter not, as with real songs.
+pub fn has_video(video_id: &str) -> bool {
+    seed(video_id) % 4 != 3
+}
+
 fn song(i: usize) -> Track {
     let (title, artist, album) = SONGS[i % SONGS.len()];
     let video_id = format!("demo{:07}", i % SONGS.len());
@@ -88,6 +94,8 @@ fn song(i: usize) -> Track {
         // Some made-up songs are explicit, as real ones are.
         more: (i % 5 == 1).then(|| {
             Box::new(TrackMore {
+                counterpart: None,
+                segments: Vec::new(),
                 explicit: true,
                 ..TrackMore::default()
             })
@@ -107,6 +115,8 @@ fn chart(from: usize, count: usize) -> Vec<Item> {
             let views = 40 - 3 * place;
             track.album = None;
             track.more = Some(Box::new(TrackMore {
+                counterpart: None,
+                segments: Vec::new(),
                 rank: Some((place + 1).to_string()),
                 count: Some(format!("{views}M views")),
                 explicit: false,
@@ -606,6 +616,8 @@ fn browse(id: &str) -> Page {
                 if let Item::Track(track) = item {
                     let plays = 9 + seed(&track.video_id) % 40 - row as u64;
                     track.more = Some(Box::new(TrackMore {
+                        counterpart: None,
+                        segments: Vec::new(),
                         rank: None,
                         count: Some(format!("{plays}M plays")),
                         explicit: false,
@@ -655,6 +667,8 @@ fn browse(id: &str) -> Page {
                 if let Item::Track(track) = item {
                     track.duration_seconds = None;
                     track.more = Some(Box::new(TrackMore {
+                        counterpart: None,
+                        segments: Vec::new(),
                         rank: None,
                         count: Some(format!("{}M plays", 20 + seed(&track.video_id) % 900)),
                         explicit: false,
@@ -988,6 +1002,8 @@ pub fn suggestions(text: &str) -> ytfast_core::read::Suggestions {
     {
         let mut track = song(i);
         track.more = Some(Box::new(TrackMore {
+            counterpart: None,
+            segments: Vec::new(),
             rank: None,
             count: Some(format!("{}M plays", 20 + seed(&track.video_id) % 900)),
             explicit: false,

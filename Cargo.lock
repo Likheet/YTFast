@@ -265,7 +265,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
  "x11rb",
 ]
 
@@ -1531,7 +1531,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3634,7 +3634,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3969,7 +3969,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4026,10 +4026,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty_h264-accel"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18110c8f692668ccf004393bee04e369d4f0f173dd0ea4b515080258e6f9c599"
+
+[[package]]
+name = "rusty_h264-common"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaf982ae23ecf8f13015ec1c5576fe2935f4e4296b097ebc4233b5872623af2a"
+dependencies = [
+ "bytemuck",
+ "once_cell",
+ "portable-atomic",
+ "rusty_h264-accel",
+ "wide",
+]
+
+[[package]]
+name = "rusty_h264-decoder"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0f4deb1a3a5e928cbaa1dff7db6bc46262c850aedeb75cb5aeab890494c18a5"
+dependencies = [
+ "rusty_h264-common",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "same-file"
@@ -4578,7 +4615,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5440,6 +5477,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5461,7 +5508,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5977,7 +6024,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast"
-version = "0.6.6"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -6007,7 +6054,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast-check"
-version = "0.6.6"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6023,7 +6070,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast-core"
-version = "0.6.6"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -6033,6 +6080,8 @@ dependencies = [
  "rand 0.9.5",
  "reqwest",
  "rodio",
+ "rusty_h264-common",
+ "rusty_h264-decoder",
  "serde",
  "serde_json",
  "sha1",
@@ -6046,7 +6095,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast-release"
-version = "0.6.6"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "ring",

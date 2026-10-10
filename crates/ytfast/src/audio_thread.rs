@@ -13,12 +13,14 @@ use std::time::{Duration, Instant};
 use ytfast_core::audio::{Maintenance, Player};
 
 pub enum Command {
-    /// Play a whole song from the start. `length` is in seconds.
+    /// Play a song from `from` seconds (the start, unless the video mode
+    /// changed which version plays partway). `length` is in seconds.
     Play {
         entry: u64,
         data: std::sync::Arc<ytfast_core::stream::SongData>,
         gain: f32,
         length: f64,
+        from: f64,
     },
     Pause,
     Resume,
@@ -43,6 +45,24 @@ pub struct Status {
     pub failed: Option<PlayFailure>,
     pub device: String,
     pub problem: Option<String>,
+    /// When `position` was read, and whether it was moving then (playing,
+    /// not paused nor waiting to jump), for a clock finer than the reads
+    /// (the video mode's pictures).
+    pub measured: Option<Instant>,
+    pub running: bool,
+}
+
+impl Status {
+    /// Where the song is now: `position`, moved on by the time since it
+    /// was read while it runs.
+    pub fn clock(&self) -> f64 {
+        match self.measured {
+            Some(at) if self.running => {
+                (self.position + at.elapsed().as_secs_f64()).min(self.length.max(self.position))
+            }
+            _ => self.position,
+        }
+    }
 }
 
 /// A song that could not play to its end.
@@ -307,6 +327,8 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
     // A jump waiting for the rest of the song to arrive. Waiting here, not
     // in the jump, keeps Pause, Next and Stop answering meanwhile.
     let mut pending_jump: Option<f64> = None;
+    // A song started partway waits for that jump silent, then sounds.
+    let mut sound_after_jump = false;
     let update = |f: &mut dyn FnMut(&mut Status)| {
         let mut s = status.lock().unwrap_or_else(PoisonError::into_inner);
         f(&mut s);
@@ -361,9 +383,10 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                     }
                 }
             }
-            // A sounding song is followed closely (its position, its end);
-            // otherwise a look now and then is enough (a device that changed).
-            let sounding = entry.is_some() && !engine.paused();
+            // A sounding song is followed closely (its position, its end),
+            // as is one about to sound once its jump is made; otherwise a
+            // look now and then is enough (a device that changed).
+            let sounding = entry.is_some() && (!engine.paused() || sound_after_jump);
             let wait = Duration::from_millis(if sounding { 100 } else { 1000 });
             match commands.recv_timeout(wait) {
                 Ok(command) => {
@@ -374,8 +397,10 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                             data,
                             gain,
                             length: song_length,
+                            from,
                         } => {
                             pending_jump = None;
+                            sound_after_jump = false;
                             // Speakers or headphones may have been connected
                             // since: look again rather than play to nobody.
                             if no_device {
@@ -405,6 +430,14 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                                     length = song_length;
                                     ended_sent = false;
                                     problem = None;
+                                    // Partway: silent until there, not the
+                                    // song's start heard first.
+                                    let from = from.clamp(0.0, (length - 0.5).max(0.0));
+                                    if from > 0.5 {
+                                        engine.pause();
+                                        pending_jump = Some(from);
+                                        sound_after_jump = true;
+                                    }
                                 }
                                 Err(message) => {
                                     // The song cannot be played: the window
@@ -422,7 +455,12 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                                 }
                             }
                         }
-                        Command::Pause => engine.pause(),
+                        Command::Pause => {
+                            sound_after_jump = false;
+                            engine.pause();
+                        }
+                        // Waiting silent for a jump, it sounds once there.
+                        Command::Resume if sound_after_jump => {}
                         Command::Resume => engine.resume(),
                         Command::Seek(to) => {
                             let to = to.clamp(0.0, (length - 0.5).max(0.0));
@@ -437,6 +475,7 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                             engine.stop();
                             entry = None;
                             pending_jump = None;
+                            sound_after_jump = false;
                             // Not the next song's length.
                             length = 0.0;
                         }
@@ -455,6 +494,9 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
             {
                 pending_jump = None;
                 jump(&mut engine, to, &mut ended_sent, &mut problem);
+                if std::mem::take(&mut sound_after_jump) {
+                    engine.resume();
+                }
                 changed = true;
             }
             match engine.maintain() {
@@ -484,9 +526,15 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
             last_paused = paused;
             update(&mut |s| {
                 s.entry = entry;
-                s.position = engine.position().min(length);
+                // Waiting silent for a jump: where it starts.
+                s.position = match (sound_after_jump, pending_jump) {
+                    (true, Some(to)) => to,
+                    _ => engine.position().min(length),
+                };
+                s.measured = Some(Instant::now());
+                s.running = entry.is_some() && !paused && !sound_after_jump;
                 s.length = length;
-                s.paused = paused;
+                s.paused = paused && !sound_after_jump;
                 s.device = engine.device();
                 s.problem = problem.clone();
                 match (&broke_off, entry) {
@@ -531,3 +579,44 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
 
 /// How often a device that failed is tried again.
 const RECOVER_EVERY: Duration = Duration::from_secs(2);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The status once `ready` says so, or after two seconds.
+    fn status_when(audio: &Audio, ready: impl Fn(&Status) -> bool) -> Status {
+        let since = Instant::now();
+        loop {
+            let status = audio.status();
+            if ready(&status) || since.elapsed() > Duration::from_secs(2) {
+                return status;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A song started partway (the other version, in the video mode) is
+    /// heard from there, not from its start, and its clock runs from there.
+    #[test]
+    fn a_song_started_partway_plays_from_there() {
+        let audio = Audio::start(|| {}, true);
+        audio.send(Command::Play {
+            entry: 7,
+            data: ytfast_core::stream::SongData::complete(Vec::new()),
+            gain: 1.0,
+            length: 200.0,
+            from: 42.0,
+        });
+        let status = status_when(&audio, |s| s.entry == Some(7) && s.running);
+        assert!(status.running, "it plays: {status:?}");
+        assert!(!status.paused);
+        assert!((42.0..43.0).contains(&status.position), "{status:?}");
+        assert!((42.0..43.0).contains(&status.clock()), "{status:?}");
+        // Paused, the clock stays where it is.
+        audio.send(Command::Pause);
+        let paused = status_when(&audio, |s| s.paused);
+        assert!(paused.paused && !paused.running);
+        assert!((paused.clock() - paused.position).abs() < 1e-9);
+    }
+}

@@ -502,8 +502,9 @@ pub fn track_row_in(
         return None;
     }
     let id = placed.id.with("row");
-    // Up next's rows move when dragged (the pointer shows it), as YouTube
-    // Music's (`cursor: move`).
+    // Up next's rows move when dragged: the open hand shows it (the
+    // owner's choice over YouTube Music's move arrows), a closed one while
+    // one is carried (`queue_panel::carry`).
     let sense = if queued {
         Sense::click_and_drag()
     } else {
@@ -511,7 +512,7 @@ pub fn track_row_in(
     };
     let response = ui.interact(rect, id, sense);
     if queued && response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &track.title));
@@ -581,11 +582,6 @@ pub fn track_row_in(
         pos2(rect.left() + style.pad, rect.center().y - style.art / 2.0),
         Vec2::splat(style.art),
     );
-    // Up next's rows move (above), but their cover plays: a hand there, as
-    // YouTube Music's play button.
-    if queued && playable && ui.rect_contains_pointer(art) {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
     // YouTube Music's small play button: a 24 icon (its 32 spot centred).
     // The playing song: bars while it sounds (still, so a playing list
     // costs nothing), pause under the pointer, play while paused.

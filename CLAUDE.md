@@ -23,7 +23,11 @@ cargo test -p ytfast-core seeking_lands_exactly   # one test, by name
 cargo test -p ytfast queue                    # the app crate's tests
 
 cargo build --release --locked -p ytfast -p ytfast-check   # what CI builds
+
+# a real YouTube H.264 video decoded in time (never commit the file)
+YTFAST_TEST_VIDEO=path/to/video.mp4 cargo test --release -p ytfast-core decodes_a_real_video_in_time
 ```
+
 
 - Tests sit beside the code, in a `mod tests` at the foot of each file.
   `crates/ytfast-core/tests/` holds only the saved replies and the test
@@ -84,12 +88,13 @@ nothing then), so whatever keeps the music going belongs there, not in
   thread).
 - **The pointer is YouTube Music's** (read from its stylesheet): a hand on
   whatever can be pressed (`theme::pointing`; round buttons, chips, pills,
-  switches and menus already do it), the move arrows only on Up next's
-  rows, also while dragging one (their cover and ⋮ still show the hand:
-  a button's hand is set after the row's arrows, so it wins), and "not
-  allowed" on the player's buttons
-  and the player page's tabs when off (`theme::pointing_or_not`). YouTube
-  Music shows no grab hand anywhere in its music screens.
+  switches and menus already do it), and "not allowed" on the player's
+  buttons
+  and the player page's tabs when off (`theme::pointing_or_not`). One
+  difference, the owner's choice: Up next's rows (dragged to a new place)
+  show the open hand, cover included, closed while one is dragged, where
+  YouTube Music shows move arrows; their ⋮ keeps the pointing hand (a
+  button's hand is set after the row's, so it wins).
 - **Give every new button a name** (`response.widget_info`). Screen
   readers need it, and it is how the demo is driven on the owner's laptop
   (see AGENTS.md, "Where things can be tested").
@@ -139,6 +144,16 @@ nothing then), so whatever keeps the music going belongs there, not in
   lyrics and Related all need. A download holds its song weakly
   (`stream::fetch`): once the player and the songs made ready ahead let go
   of it, it stops. Keep it that way, or skipping downloads in bulk.
+- **The video mode keeps to the queue.** Only `App::play_tracks` turns it
+  off (every new queue passes through it); Next, Previous, a song ending
+  and Up next keep it. `Playback::version` is the ID asked for and
+  `App::version_of` the one wanted: a `Prepared` for the other version
+  (the switch moved meanwhile) starts the right one instead
+  (`App::prepared`). A moment moves between a song and its video only by
+  YouTube's map (`App::moment_in`, `App::lyrics_clock`), never as the
+  same second. The video's thread decodes only while the player page
+  draws it (`App::video_drawn`), and the window is asked to draw again
+  only while the music runs.
 - **Answers about the queue are tagged.** Up next answers carry the queue's
   generation (`Queue::generation`) and playlist answers a ticket
   (`App::wanted_playlist`); one for a queue since replaced is dropped. Do

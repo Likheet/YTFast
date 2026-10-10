@@ -16,7 +16,7 @@ use crate::lyrics::{Lyrics, State};
 use crate::queue::Entry;
 use crate::theme::{self, Icon, PALETTE};
 use crate::views::widgets::Row;
-use crate::views::{page, queue_panel, widgets};
+use crate::views::{page, queue_panel, video, widgets};
 
 /// The theme's song rows: an album's and a playlist's 56 high, the cover
 /// (or the number) 38 with 24 after it; an artist's top songs 54 high;
@@ -330,12 +330,25 @@ pub fn player_page(app: &App, ui: &mut egui::Ui) {
             .animate_bool_with_time(egui::Id::new("player-page-open"), app.now_playing, 0.3);
     ui.set_opacity(open.max(0.0));
 
-    let (art, panel) = layout(ui.ctx().content_rect().width(), area);
+    let (main, panel) = layout(ui.ctx().content_rect().width(), area);
     let corners = CornerRadius::same(dynamic::RADIUS_ART_LG);
-    ui.painter().add(SHADOW.as_shape(art, corners));
-    ui.painter().rect_filled(art, corners, PALETTE.thumb);
-    widgets::picture(app, ui, art, entry.track.thumbnail.as_ref(), corners);
-    cover_click(app, ui, art);
+    // The Song and Video switch over the cover, or in the video mode over
+    // the video in its place (16:9, at most 400 high).
+    if video::shown(app) {
+        let (row, place) = video::stack(main, video::size_in(main, f32::INFINITY, 400.0));
+        video::switch(app, ui, row);
+        ui.painter().add(SHADOW.as_shape(place, corners));
+        video::paint(app, ui, place, corners);
+        cover_click(app, ui, place);
+    } else {
+        let (row, art) = cover_in(main);
+        video::switch(app, ui, row);
+        ui.painter().add(SHADOW.as_shape(art, corners));
+        ui.painter().rect_filled(art, corners, PALETTE.thumb);
+        widgets::picture(app, ui, art, entry.track.thumbnail.as_ref(), corners);
+        cover_click(app, ui, art);
+        video::note(app, ui, art);
+    }
 
     let mut ui = ui.new_child(
         UiBuilder::new()
@@ -353,8 +366,8 @@ pub fn player_page(app: &App, ui: &mut egui::Ui) {
 
 /// YouTube Music's places on the player page, by the window's width (the
 /// space above, at the sides, between the cover and the panel, and the
-/// panel's share, at most 800); the cover square in what is left, at most
-/// 400 (`--album-art-size`), centred. Returns the cover and the panel.
+/// panel's share, at most 800). Returns the room left of the panel (for
+/// the cover, [`cover_in`]) and the panel.
 fn layout(window: f32, area: Rect) -> (Rect, Rect) {
     let (top, side, gap, share) = if window >= 1800.0 {
         (64.0, 96.0, 96.0, 0.36)
@@ -377,11 +390,17 @@ fn layout(window: f32, area: Rect) -> (Rect, Rect) {
         inner.min,
         pos2((panel.left() - gap).max(inner.left()), inner.bottom() - top),
     );
-    let length = main.width().min(main.height()).clamp(0.0, 400.0);
-    (
-        Rect::from_center_size(main.center(), Vec2::splat(length)),
-        panel,
-    )
+    (main, panel)
+}
+
+/// The Song and Video switch's row and the cover under it, square and at
+/// most 400 (`--album-art-size`), together centred in `main`.
+fn cover_in(main: Rect) -> (Rect, Rect) {
+    let length = main
+        .width()
+        .min(main.height() - video::SWITCH_ROOM)
+        .clamp(0.0, 400.0);
+    video::stack(main, Vec2::splat(length))
 }
 
 /// A click on the cover pauses and plays again, and shows what it did: a
@@ -545,7 +564,10 @@ const BLURRED: f32 = 1.0;
 fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let id = ui.id().with(("lyrics", video_id));
     let now = ui.input(|i| i.time);
-    let current = lyrics.current(app.audio_status.position);
+    // Timed to the song: while its video plays, by YouTube's map.
+    let current = app
+        .lyrics_clock()
+        .and_then(|position| lyrics.current(position));
     let viewport = ui.available_height();
     if lyrics.synced && app.audio_status.entry.is_some() && !app.audio_status.paused {
         ui.ctx()
@@ -647,7 +669,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if response.clicked() {
-                    app.act(Action::Seek(start));
+                    app.act(Action::Seek(app.lyrics_moment(start)));
                     ui.data_mut(|d| d.insert_temp(id.with("manual"), 0.0f64));
                 }
             }
@@ -756,8 +778,10 @@ mod tests {
             (1920.0, 1680.0, 1000.0),
         ] {
             let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(width, height));
-            let (art, panel) = layout(window, area);
+            let (main, panel) = layout(window, area);
+            let (row, art) = cover_in(main);
             assert!(area.contains_rect(art) && area.contains_rect(panel));
+            assert!(area.contains_rect(row));
             assert!(art.right() + 24.0 <= panel.left());
             assert!(art.width() <= 400.0 && (art.width() - art.height()).abs() < 0.01);
         }

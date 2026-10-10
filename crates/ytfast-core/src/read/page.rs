@@ -1190,6 +1190,20 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
                 links.add(node);
             }
         }
+        // The same song's other version (its music video, or its song), and
+        // where the song's music is in the video.
+        let pair = row.pointer("/playlistPanelVideoWrapperRenderer/counterpart/0");
+        let counterpart = pair
+            .and_then(|p| p.pointer("/counterpartRenderer/playlistPanelVideoRenderer/videoId"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let kind = TrackKind::from_music_video_type(
+            find_key(video, "watchEndpointMusicConfig")
+                .and_then(|c| c.get("musicVideoType"))
+                .and_then(Value::as_str),
+        );
+        let primary_is_song = !matches!(kind, TrackKind::MusicVideo | TrackKind::Other(_));
+        let segments = pair.map_or_else(Vec::new, |p| super::pair_segments(p, primary_is_song));
         Some(Track {
             video_id: video.get("videoId")?.as_str()?.to_string(),
             set_video_id: video
@@ -1204,16 +1218,18 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
                 .and_then(text)
                 .and_then(|l| parse_duration(&l))
                 .or(byline.duration_seconds),
-            kind: TrackKind::from_music_video_type(
-                find_key(video, "watchEndpointMusicConfig")
-                    .and_then(|c| c.get("musicVideoType"))
-                    .and_then(Value::as_str),
-            ),
+            kind,
             thumbnail: video.get("thumbnail").and_then(Thumb::best),
             artist_id: links.artist_id,
             album_id: links.album_id,
             playable: true,
-            more: None,
+            more: counterpart.map(|counterpart| {
+                Box::new(super::TrackMore {
+                    counterpart: Some(counterpart),
+                    segments,
+                    ..super::TrackMore::default()
+                })
+            }),
         })
     })
     .collect()
@@ -1692,6 +1708,26 @@ mod tests {
         assert_eq!(tracks[0].album.as_deref(), Some("Album One"));
         assert_eq!(tracks[0].duration_seconds, Some(215));
         assert_eq!(tracks[1].kind, TrackKind::Song);
+        // A song's music video, as its pair in Up next: the video mode's,
+        // with where the song's music is in it (YouTube's map: two
+        // stretches, a scene of the video's own between them).
+        assert_eq!(tracks[1].video(), Some("nextVideo002"));
+        assert_eq!(
+            tracks[1].more.as_ref().unwrap().segments,
+            [
+                crate::read::Segment {
+                    song_ms: 0,
+                    video_ms: 3_385,
+                    length_ms: 169_615
+                },
+                crate::read::Segment {
+                    song_ms: 169_616,
+                    video_ms: 176_229,
+                    length_ms: 33_124
+                }
+            ]
+        );
+        assert_eq!(tracks[0].video(), None);
         // Nothing after these.
         assert_eq!(queue_continuation(&reply), None);
     }

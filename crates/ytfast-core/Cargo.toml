@@ -21,6 +21,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "ti
 # client, is SHA-1. Downloads are checked with SHA-256.
 sha1 = "0.10"
 sha2 = "0.10"
+# The video mode's decoder (video.rs): H.264, the one kind of video YouTube
+# offers YouTube Music's web player that YTFast can download (it is offered
+# no AV1). rusty_h264 is pure Rust and safe (BSD-2-Clause), with portable
+# SIMD; 720p takes about 8.5 ms a picture on one core of the owner's
+# laptop. Its default `global-alloc` would put its own allocator under all
+# of YTFast, so the defaults are off.
+rusty_h264-decoder = { version = "0.16.0", default-features = false, features = ["std", "asm"] }
+rusty_h264-common = { version = "0.16.0", default-features = false, features = ["std", "asm"] }
 rand = "0.9"
 # Unpacks the yt-dlp and Deno release archives.
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
