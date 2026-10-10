@@ -85,7 +85,9 @@ nothing then), so whatever keeps the music going belongs there, not in
 - **The pointer is YouTube Music's** (read from its stylesheet): a hand on
   whatever can be pressed (`theme::pointing`; round buttons, chips, pills,
   switches and menus already do it), the move arrows only on Up next's
-  rows, also while dragging one, and "not allowed" on the player's buttons
+  rows, also while dragging one (their cover and ⋮ still show the hand:
+  a button's hand is set after the row's arrows, so it wins), and "not
+  allowed" on the player's buttons
   and the player page's tabs when off (`theme::pointing_or_not`). YouTube
   Music shows no grab hand anywhere in its music screens.
 - **Give every new button a name** (`response.widget_info`). Screen

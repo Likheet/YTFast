@@ -3140,6 +3140,8 @@ mod tests {
         named: Vec<(String, egui::Rect)>,
         /// What the frames asked of the window (close it, move it...).
         commands: Vec<egui::ViewportCommand>,
+        /// The pointer's look after the last frame.
+        cursor: egui::CursorIcon,
     }
 
     impl Window {
@@ -3157,6 +3159,7 @@ mod tests {
                 time: 0.0,
                 named: Vec::new(),
                 commands: Vec::new(),
+                cursor: egui::CursorIcon::Default,
             }
         }
 
@@ -3180,6 +3183,7 @@ mod tests {
                 views::show(app, ui);
             });
             output.textures_delta.clear();
+            self.cursor = output.platform_output.cursor_icon;
             self.commands.extend(
                 output
                     .viewport_output
@@ -3248,6 +3252,76 @@ mod tests {
             self.button(at, false);
             self.frame(Vec::new());
         }
+
+        /// A right-click at `at`.
+        fn right_click(&mut self, at: egui::Pos2) {
+            self.point(at);
+            for pressed in [true, false] {
+                self.frame(vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+            }
+            self.frame(Vec::new());
+        }
+
+        fn shows(&self, name: &str) -> bool {
+            self.named.iter().any(|(n, _)| n == name)
+        }
+    }
+
+    /// In every theme, a right-click on the player bar (not on its
+    /// buttons) opens the playing song's menu, as its ⋮ does.
+    #[test]
+    fn a_right_click_on_the_player_bar_opens_the_songs_menu() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a", "b", "c"]);
+            w.settle();
+            assert!(!w.shows("Start mix"), "{theme:?}");
+            // Just after Next, on the bar itself.
+            let next = w.find("Next", 0);
+            w.right_click(egui::pos2(next.right() + 16.0, next.center().y));
+            assert!(w.shows("Start mix"), "{theme:?}");
+            // A left-click there still opens the player page.
+            assert!(!w.h.app.now_playing, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// In Up next, a row shows the move arrows (it is dragged to a new
+    /// place), but its ⋮ shows the hand, as YouTube Music's.
+    #[test]
+    fn up_next_shows_a_hand_over_its_menu_button() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a", "b", "c"]);
+            w.h.app.now_playing = true;
+            w.h.app.np_tab = NpTab::UpNext;
+            w.settle();
+            let b = w.find("B", 0);
+            w.point(b.center());
+            w.frame(Vec::new());
+            assert_eq!(w.cursor, egui::CursorIcon::Move, "{theme:?}");
+            let more = w.find("More actions", 0);
+            assert!(b.contains_rect(more), "{theme:?} {b:?} {more:?}");
+            w.point(more.center());
+            w.frame(Vec::new());
+            assert_eq!(w.cursor, egui::CursorIcon::PointingHand, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
     }
 
     /// In Dynamic Background, whose rows in Up next are taller and apart,

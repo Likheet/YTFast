@@ -82,6 +82,10 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             if open.clicked() {
                 app.act(Action::ToggleNowPlaying);
             }
+            // A right-click on it opens the playing song's menu where the
+            // pointer is, as its ⋮ does (and a song's row on a right-click).
+            theme::context_menu(&open)
+                .show(|ui| widgets::song_menu(app, ui, &entry.track, widgets::Place::Playing));
 
             let narrow = ui.ctx().content_rect().width() < NARROW;
             // Premium: the song's line, in the middle column under the
