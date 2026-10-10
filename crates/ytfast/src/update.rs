@@ -56,8 +56,9 @@ pub enum State {
     },
     Downloading {
         version: String,
-        /// Out of 100.
-        percent: u8,
+        /// Bytes so far, and in all (0 while unknown).
+        received: u64,
+        total: u64,
     },
     /// Downloaded and checked: a restart installs it.
     Ready {
@@ -100,6 +101,18 @@ impl Updates {
             commands,
             state,
             automatic,
+        }
+    }
+
+    /// An updater that only shows `state`, for the demo's pictures of the
+    /// update badge and window (`YTFAST_DEMO_UPDATE`): nothing is looked
+    /// for or downloaded.
+    pub fn sample(state: State) -> Self {
+        let (commands, _) = mpsc::channel();
+        Self {
+            commands,
+            state: Arc::new(Mutex::new(state)),
+            automatic: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -206,9 +219,24 @@ fn run(
                     }
                 }
             }
+            // Download now (also "Retry download"): after looking again
+            // when the last look failed.
             Some(Command::Install) => {
                 if prepared.is_none() {
-                    prepared = download(&updater, found.as_ref(), &set);
+                    if found.is_none() {
+                        set(State::Checking);
+                        found = updater.check().ok().flatten();
+                    }
+                    match (found.as_ref(), installable(&updater)) {
+                        (None, _) => set(State::Failed(
+                            "Could not look for a new version. Try again later.".into(),
+                        )),
+                        (Some(release), Err(note)) => set(State::Available {
+                            version: release.version.clone(),
+                            note: Some(note),
+                        }),
+                        (Some(_), Ok(())) => prepared = download(&updater, found.as_ref(), &set),
+                    }
                 }
             }
             Some(Command::Restart) => {
@@ -249,20 +277,19 @@ fn download(
     let version = release.version.clone();
     set(State::Downloading {
         version: version.clone(),
-        percent: 0,
+        received: 0,
+        total: 0,
     });
-    let mut last = 0;
+    let mut last = None;
     let done = updater.download(release, |received, total| {
-        let percent = received
-            .saturating_mul(100)
-            .checked_div(total)
-            .map_or(0, |p| p.min(100) as u8);
-        // A step at a time, not at every chunk.
-        if percent >= last + 5 {
-            last = percent;
+        let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
+        // A step of 2% at a time (and the end), not at every chunk.
+        if last.is_none_or(|before| percent >= before + 2 || received == total) {
+            last = Some(percent);
             set(State::Downloading {
                 version: version.clone(),
-                percent,
+                received,
+                total,
             });
         }
     });
