@@ -165,6 +165,17 @@ impl Row {
             line: false,
             ..self
         };
+        // Up next: the covers larger (48, r 6), the rows 64 high.
+        if self == Self::QUEUE {
+            row = Self {
+                height: 64.0,
+                gap: 2.0,
+                art: 48.0,
+                corner: 6,
+                art_gap: 14.0,
+                ..row
+            };
+        }
         if self == Self::LIST || self == Self::PLAYLIST {
             row.text_gap = 4.0;
             row.hover = ROW_HOVER;
@@ -594,7 +605,26 @@ pub fn track_row_in(
             let radius = CornerRadius::same(style.corner);
             cover_with(app, ui, art, track.thumbnail.as_ref(), radius);
             // Darkened by black at 80% (measured), with the play icon 24.
-            if playing || (hovered && playable) {
+            // Premium keeps the cover in sight (black at 35%) with a white
+            // disc and its mark on it, as YouTube Music marks a song under
+            // the pointer; bars while the song sounds.
+            if theme::premium() && (playing || (hovered && playable)) {
+                ui.painter()
+                    .rect_filled(art, radius, Color32::from_black_alpha(90));
+                if playing && sounding && !hovered {
+                    paint_bars(ui, art.center());
+                } else {
+                    let icon = if playing && sounding {
+                        Icon::Pause
+                    } else {
+                        Icon::Play
+                    };
+                    let disc = (art.width() * 0.3).max(11.0);
+                    ui.painter().circle_filled(art.center(), disc, PALETTE.text);
+                    let spot = Rect::from_center_size(art.center(), Vec2::splat(disc * 2.0));
+                    theme::paint_icon(ui, icon, spot, disc * 1.1, Color32::BLACK);
+                }
+            } else if playing || (hovered && playable) {
                 ui.painter()
                     .rect_filled(art, radius, Color32::from_black_alpha(204));
                 if playing {

@@ -5,8 +5,10 @@
 //! rest dimmed, scrolling smoothly; click a line to jump there.
 //!
 //! Premium: the cover (at most 480, r 16) with the song's name and artist
-//! under it, and beside it one glass panel holding the tabs and what they
-//! show, over the song's own colours; the lyrics larger.
+//! centred under it, and beside it the tabs in clear glass and what they
+//! show, straight on the song's own colours (no box round them), as
+//! YouTube Music sets a playlist's songs beside its cover; the lyrics
+//! larger.
 
 use egui::{
     Align, Align2, Color32, CornerRadius, Layout, Rect, Sense, UiBuilder, Vec2, pos2, vec2,
@@ -40,30 +42,14 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         youtube_music_cover(app, ui, area, entry)
     };
 
-    // Premium: the tabs and what they show on one glass panel (black@0.27,
-    // a white@0.08 edge, corners 20), 12 in.
-    let inside = if theme::premium() {
-        let corners = CornerRadius::same(20);
-        ui.painter()
-            .rect_filled(panel, corners, Color32::from_black_alpha(70));
-        ui.painter().rect_stroke(
-            panel,
-            corners,
-            egui::Stroke::new(1.0, Color32::from_white_alpha(20)),
-            egui::StrokeKind::Inside,
-        );
-        panel.shrink(12.0)
-    } else {
-        panel
-    };
     let mut ui = ui.new_child(
         UiBuilder::new()
-            .max_rect(inside)
+            .max_rect(panel)
             .layout(Layout::top_down(Align::Min)),
     );
     if theme::premium() {
-        // Nothing drawn over the panel's edge.
-        ui.set_clip_rect(inside);
+        // Nothing drawn past the column's edges.
+        ui.set_clip_rect(panel);
     }
     ui.spacing_mut().item_spacing.y = 0.0;
     if theme::premium() {
@@ -120,7 +106,7 @@ fn youtube_music_cover(app: &App, ui: &egui::Ui, area: Rect, entry: &Entry) -> R
 }
 
 /// Premium's cover (at most 480, r 16) and the song's name (26 bold) and
-/// artist (16) under it, over the song's colours (`backdrop::listening`,
+/// artist (16) centred under it, over the song's colours (`backdrop::listening`,
 /// painted in `views::show`). Returns where the panel goes.
 fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rect {
     let (art, panel) = listening_layout(area);
@@ -139,7 +125,7 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
     let mut details = ui.new_child(
         UiBuilder::new()
             .max_rect(words)
-            .layout(Layout::top_down(Align::Min)),
+            .layout(Layout::top_down(Align::Center)),
     );
     theme::label(
         &mut details,
@@ -185,13 +171,15 @@ fn listening_layout(area: Rect) -> (Rect, Rect) {
     (art, panel)
 }
 
-/// Premium's tabs, at the top of the glass panel: Up next, Lyrics and
-/// Related, equally wide in a rounded strip 48 high (white@0.04), the
-/// chosen one white@0.16.
+/// Premium's tabs, Up next, Lyrics and Related, in clear glass as an
+/// iPhone draws it: a capsule 44 high (at most 480 wide, centred over the
+/// list) barely filled and with no edge; the chosen tab a clear capsule
+/// inside it with a single rim of light; the one under the pointer barely
+/// filled.
 fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
-    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
-    ui.painter()
-        .rect_filled(bar, CornerRadius::same(12), Color32::from_white_alpha(10));
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
+    let bar = Rect::from_center_size(row.center(), vec2(row.width().min(480.0), 44.0));
+    glass(ui.painter(), bar, 0.05, 0.0);
     let no_lyrics = matches!(app.lyrics.get(&entry.track.video_id), Some(State::Missing));
     let tabs = [
         (NpTab::UpNext, "UP NEXT", "Up next"),
@@ -211,7 +199,7 @@ fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
         };
         let rect = Rect::from_min_size(
             pos2(bar.left() + 4.0 + index as f32 * width, bar.top() + 4.0),
-            vec2(width, 40.0),
+            vec2(width, 36.0),
         );
         let sense = if enabled {
             Sense::click()
@@ -222,18 +210,15 @@ fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, chosen, name)
         });
-        if chosen || response.hovered() && enabled {
-            let fill = if chosen {
-                Color32::from_white_alpha(40)
-            } else {
-                Color32::from_white_alpha(20)
-            };
-            ui.painter().rect_filled(rect, CornerRadius::same(9), fill);
+        if chosen {
+            glass(ui.painter(), rect, 0.06, 0.32);
+        } else if response.hovered() && enabled {
+            glass(ui.painter(), rect, 0.05, 0.0);
         }
         if response.has_focus() {
             ui.painter().rect_stroke(
                 rect,
-                CornerRadius::same(9),
+                CornerRadius::same(18),
                 egui::Stroke::new(1.0, PALETTE.accent),
                 egui::StrokeKind::Inside,
             );
@@ -250,6 +235,19 @@ fn premium_tabs(app: &App, ui: &mut egui::Ui, entry: &Entry) {
         }
     }
     ui.add_space(16.0);
+}
+
+/// Clear glass, as an iPhone's, as a capsule over `rect`: white `fill`
+/// inside (nearly none) and, when `rim` is more than none, one edge of
+/// light in white `rim`.
+fn glass(painter: &egui::Painter, rect: Rect, fill: f32, rim: f32) {
+    let radius = CornerRadius::same((rect.height() / 2.0).round() as u8);
+    let white = |alpha: f32| Color32::from_white_alpha((alpha * 255.0) as u8);
+    painter.rect_filled(rect, radius, white(fill));
+    if rim > 0.0 {
+        let edge = egui::Stroke::new(1.0, white(rim));
+        painter.rect_stroke(rect, radius, edge, egui::StrokeKind::Inside);
+    }
 }
 
 /// A click on the cover pauses and plays again, as on YouTube Music, and
