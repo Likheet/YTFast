@@ -356,7 +356,13 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
         ui,
         art,
         track.thumbnail.as_ref(),
-        CornerRadius::same(if premium { 8 } else { 2 }),
+        CornerRadius::same(if theme::dynamic() {
+            crate::dynamic::RADIUS_ART
+        } else if premium {
+            8
+        } else {
+            2
+        }),
     );
     let text_left = art.right() + art_gap;
     // Two lines, together centred down.
@@ -596,8 +602,19 @@ fn expanding_menu(app: &App, ui: &mut egui::Ui, bar: Rect, button: Rect) {
     if shown > 0.0 {
         // Over the song's words: the strip takes the pointer there.
         ui.interact(strip, id.with("strip"), Sense::click());
-        ui.painter()
-            .rect_filled(strip, 0.0, PALETTE.panel.gamma_multiply(shown));
+        if theme::dynamic() {
+            // Dynamic Background: glass over the song's words.
+            let mut faded = ui.painter().clone();
+            faded.set_opacity(shown);
+            crate::dynamic::glass(
+                &faded,
+                strip.shrink2(vec2(0.0, 10.0)),
+                CornerRadius::same(crate::dynamic::RADIUS_PANEL),
+            );
+        } else {
+            ui.painter()
+                .rect_filled(strip, 0.0, PALETTE.panel.gamma_multiply(shown));
+        }
         if open {
             let shuffle = Rect::from_min_size(
                 pos2(strip.right() - 8.0 - 36.0, bar.center().y - 18.0),
@@ -742,6 +759,12 @@ fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
             Color32::from_rgb(0xff, 0x27, 0x91),
         )
     };
+    // Dynamic Background: the accent, white.
+    let (red, pink) = if theme::dynamic() {
+        (PALETTE.accent, PALETTE.accent)
+    } else {
+        (red, pink)
+    };
     let length = app.audio_status.length.max(0.0);
     let fraction = if length > 0.0 {
         (app.shown_position() / length).clamp(0.0, 1.0) as f32
@@ -827,7 +850,16 @@ fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
         let size = galley.size() + vec2(16.0, 8.0);
         let label =
             Rect::from_min_size(pos2(pointer.x - size.x / 2.0, centre - 8.0 - size.y), size);
-        painter.rect_filled(label, CornerRadius::same(2), PALETTE.panel);
+        if theme::dynamic() {
+            // Dynamic Background: glass, corners 12.
+            crate::dynamic::glass(
+                &painter,
+                label,
+                CornerRadius::same(crate::dynamic::RADIUS_PANEL),
+            );
+        } else {
+            painter.rect_filled(label, CornerRadius::same(2), PALETTE.panel);
+        }
         painter.galley(label.min + vec2(8.0, 4.0), galley, PALETTE.text);
     }
     if length > 0.0

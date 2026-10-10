@@ -42,7 +42,33 @@ pub struct Settings {
     /// its sort button's `params` for that order.
     pub library_order: BTreeMap<String, String>,
     /// The look the window wears (Settings, Theme).
+    #[serde(serialize_with = "crate::dynamic::save_theme")]
     pub theme: crate::theme::Theme,
+    /// The Dynamic Background theme's colours move while a song plays
+    /// (off: they stay still).
+    pub moving_background: bool,
+    /// The Dynamic Background theme is worn. It is saved here, `theme`
+    /// saying YouTube Music meanwhile, so that a build without that theme
+    /// still reads these settings (it skips what it does not know) instead
+    /// of forgetting them all. Set when saved; read by [`Settings::loaded`].
+    pub dynamic_background: bool,
+}
+
+impl Settings {
+    /// The settings as read from disk, with the Dynamic Background theme
+    /// back in `theme` when it was the one worn.
+    pub fn loaded(mut self) -> Self {
+        if self.dynamic_background {
+            self.theme = crate::theme::Theme::DynamicBackground;
+        }
+        self
+    }
+
+    /// Ready to save: `dynamic_background` says whether that theme is worn.
+    fn for_saving(&mut self) -> &Self {
+        self.dynamic_background = self.theme == crate::theme::Theme::DynamicBackground;
+        self
+    }
 }
 
 impl Default for Settings {
@@ -58,6 +84,8 @@ impl Default for Settings {
             shuffle: false,
             library_order: BTreeMap::new(),
             theme: crate::theme::Theme::default(),
+            moving_background: true,
+            dynamic_background: false,
         }
     }
 }
@@ -161,6 +189,7 @@ pub enum Setting {
     FastWay,
     Autoplay,
     EvenLoudness,
+    MovingBackground,
 }
 
 /// A small window asking one thing.
@@ -509,7 +538,8 @@ impl App {
         let script_fonts = crate::theme::install(&cc.egui_ctx);
         let settings: Settings = cc
             .storage
-            .and_then(|s| eframe::get_value(s, "ytfast"))
+            .and_then(|s| eframe::get_value::<Settings>(s, "ytfast"))
+            .map(Settings::loaded)
             .unwrap_or_default();
 
         let ctx = cc.egui_ctx.clone();
@@ -2058,6 +2088,7 @@ impl App {
                     }
                     Setting::Autoplay => s.autoplay = !s.autoplay,
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
+                    Setting::MovingBackground => s.moving_background = !s.moving_background,
                 }
             }
             Action::SetTheme(theme) => self.settings.theme = theme,
@@ -2601,6 +2632,8 @@ impl eframe::App for App {
         if self.styled != Some(self.settings.theme) {
             crate::theme::restyle(&ctx);
             self.styled = Some(self.settings.theme);
+            // Dynamic Background sets everything in Inter.
+            self.script_fonts.set_inter_first(crate::theme::dynamic());
         }
         self.scrolling.apply(&ctx);
         self.mend_window_size(&ctx);
@@ -2608,6 +2641,10 @@ impl eframe::App for App {
         self.images.get_mut().begin_frame();
         self.shortcuts(&ctx);
         self.want_song_extras();
+        // Dynamic Background: the song's cover behind everything.
+        if crate::theme::dynamic() {
+            crate::dynamic::paint(self, ui);
+        }
 
         views::show(self, ui);
 
@@ -2646,7 +2683,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         // What is changed in the demo is not kept: it is for trying things.
         if !self.demo {
-            eframe::set_value(storage, "ytfast", &self.settings);
+            eframe::set_value(storage, "ytfast", self.settings.for_saving());
         }
     }
 
@@ -2807,6 +2844,274 @@ mod tests {
             .iter()
             .filter(|c| matches!(c, Command::Play { .. }))
             .count()
+    }
+
+    /// The whole window drawn in the Dynamic Background theme, without a
+    /// real window: the sign-in screen; signed in with a song playing,
+    /// the pointer resting all over the window (what shows only under
+    /// it); Settings; the player page's three tabs; a dialog and a toast.
+    /// Nothing may fail, and every frame draws something.
+    #[test]
+    fn the_dynamic_background_theme_draws_every_part_of_the_window() {
+        use crate::theme::Theme;
+        let mut h = Harness::new();
+        h.app.settings.theme = Theme::DynamicBackground;
+        let size = egui::vec2(1280.0, 820.0);
+        let draw = |h: &mut Harness, pointer: Option<egui::Pos2>| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            if let Some(at) = pointer {
+                input.events.push(egui::Event::PointerMoved(at));
+            }
+            let app = &h.app;
+            let mut output = h.ctx.run_ui(input, |ui| {
+                crate::theme::set(app.settings.theme);
+                crate::dynamic::paint(app, ui);
+                views::show(app, ui);
+            });
+            assert!(!output.shapes.is_empty());
+            // No window takes the frame's new textures here.
+            output.textures_delta.clear();
+        };
+
+        // Signed out: the sign-in screen.
+        assert!(!matches!(h.app.auth, Auth::SignedIn { .. }));
+        draw(&mut h, None);
+        draw(&mut h, Some(egui::pos2(640.0, 400.0)));
+
+        // Signed in, a song playing, the pointer resting everywhere.
+        h.app.auth = Auth::SignedIn {
+            name: "Listener".into(),
+            handle: None,
+            photo: None,
+        };
+        h.play(&["a", "b", "c"]);
+        for y in (8..820).step_by(48) {
+            for x in (8..1280).step_by(96) {
+                draw(&mut h, Some(egui::pos2(x as f32, y as f32)));
+            }
+        }
+        h.act(Action::Navigate(Route::Settings));
+        draw(&mut h, None);
+
+        // The player page, each tab, as it rises.
+        h.app.now_playing = true;
+        for tab in [NpTab::UpNext, NpTab::Lyrics, NpTab::Related] {
+            h.app.np_tab = tab;
+            for x in [700.0, 1000.0, 1200.0] {
+                draw(&mut h, Some(egui::pos2(x, 300.0)));
+            }
+        }
+
+        // A dialog, and a toast.
+        h.app.now_playing = false;
+        h.act(Action::OpenDialog(Dialog::NewPlaylist {
+            name: String::new(),
+            description: String::new(),
+            privacy: ytfast_core::library::Privacy::Private,
+            songs: Vec::new(),
+        }));
+        h.app.notice = Some(("Added to the queue".into(), Instant::now()));
+        draw(&mut h, None);
+        draw(&mut h, Some(egui::pos2(640.0, 400.0)));
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// A window of the app with the pointer worked by hand: each frame is
+    /// drawn as the window would (1280 by 820, a tenth of a second apart),
+    /// its actions applied, and what screen readers see kept, so a test
+    /// can find a control by its name and press or drag it.
+    struct Window {
+        h: Harness,
+        time: f64,
+        named: Vec<(String, egui::Rect)>,
+    }
+
+    impl Window {
+        fn new(theme: crate::theme::Theme) -> Self {
+            let mut h = Harness::new();
+            h.ctx.enable_accesskit();
+            h.app.settings.theme = theme;
+            h.app.auth = Auth::SignedIn {
+                name: "Listener".into(),
+                handle: None,
+                photo: None,
+            };
+            Self {
+                h,
+                time: 0.0,
+                named: Vec::new(),
+            }
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 820.0),
+                )),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let app = &self.h.app;
+            let mut output = self.h.ctx.run_ui(input, |ui| {
+                crate::theme::set(app.settings.theme);
+                if crate::theme::dynamic() {
+                    crate::dynamic::paint(app, ui);
+                }
+                views::show(app, ui);
+            });
+            output.textures_delta.clear();
+            self.named = output
+                .platform_output
+                .accesskit_update
+                .map(|update| {
+                    update
+                        .nodes
+                        .into_iter()
+                        .filter_map(|(_, node)| {
+                            let b = node.bounds()?;
+                            let rect = egui::Rect::from_min_max(
+                                egui::pos2(b.x0 as f32, b.y0 as f32),
+                                egui::pos2(b.x1 as f32, b.y1 as f32),
+                            );
+                            Some((node.label()?.to_string(), rect))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.h.app.apply_actions();
+        }
+
+        /// Frames enough for anything sliding or fading to settle.
+        fn settle(&mut self) {
+            for _ in 0..6 {
+                self.frame(Vec::new());
+            }
+        }
+
+        /// Where the control named `name` is, the `nth` one so named (from
+        /// the top).
+        fn find(&self, name: &str, nth: usize) -> egui::Rect {
+            let mut found: Vec<egui::Rect> = self
+                .named
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, r)| *r)
+                .collect();
+            found.sort_by(|a, b| a.top().total_cmp(&b.top()));
+            *found
+                .get(nth)
+                .unwrap_or_else(|| panic!("nothing named {name} on screen"))
+        }
+
+        fn point(&mut self, at: egui::Pos2) {
+            self.frame(vec![egui::Event::PointerMoved(at)]);
+        }
+
+        fn button(&mut self, at: egui::Pos2, pressed: bool) {
+            self.frame(vec![egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+        }
+
+        fn click(&mut self, at: egui::Pos2) {
+            self.point(at);
+            self.button(at, true);
+            self.button(at, false);
+            self.frame(Vec::new());
+        }
+    }
+
+    /// In Dynamic Background, whose rows in Up next are taller and apart,
+    /// a song dragged in Up next lands where it is let go.
+    #[test]
+    fn a_song_dragged_in_up_next_lands_where_it_is_let_go() {
+        let mut w = Window::new(crate::theme::Theme::DynamicBackground);
+        w.h.play(&["a", "b", "c", "d", "e"]);
+        w.h.app.now_playing = true;
+        w.h.app.np_tab = NpTab::UpNext;
+        w.settle();
+        let b = w.find("B", 0);
+        let d = w.find("D", 0);
+        // Rows the theme's height apart (58, and 8 between).
+        assert!((d.top() - b.top() - 2.0 * 66.0).abs() < 0.5, "{b:?} {d:?}");
+        // B picked up and carried down to D's upper half: it goes before D.
+        let from = b.center();
+        w.point(from);
+        w.button(from, true);
+        for step in 1..=8 {
+            let y = from.y + (d.top() + 12.0 - from.y) * step as f32 / 8.0;
+            w.point(egui::pos2(from.x, y));
+        }
+        let to = egui::pos2(from.x, d.top() + 12.0);
+        w.button(to, false);
+        w.frame(Vec::new());
+        let order: Vec<&str> =
+            w.h.app
+                .queue
+                .entries()
+                .iter()
+                .map(|e| e.track.video_id.as_str())
+                .collect();
+        assert_eq!(order, ["a", "c", "b", "d", "e"]);
+        crate::theme::set(crate::theme::Theme::YouTubeMusic);
+    }
+
+    /// In Dynamic Background, a playlist's song is ticked by its tick box
+    /// (shown under the pointer), which brings up the bar of what can be
+    /// done with ticked songs; ticked again, it is let go.
+    #[test]
+    fn a_song_is_ticked_by_its_tick_box() {
+        let mut w = Window::new(crate::theme::Theme::DynamicBackground);
+        let route = Route::browse("VLPLx".into(), None);
+        w.h.act(Action::Navigate(route.clone()));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("the page is asked for");
+        let page = Page {
+            sections: vec![Section {
+                items: ["a", "b", "c"].map(|v| Item::Track(song(v))).to_vec(),
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(route, load, Ok(page)));
+        w.settle();
+        // Under the pointer, B's row shows its tick box.
+        let row = w.find("B", 0);
+        w.point(row.center());
+        w.frame(Vec::new());
+        let tick = w.find("Tick B", 0);
+        assert!(row.contains_rect(tick), "{row:?} {tick:?}");
+        w.click(tick.center());
+        let ticked: Vec<&str> =
+            w.h.app
+                .selected
+                .iter()
+                .map(|t| t.video_id.as_str())
+                .collect();
+        assert_eq!(ticked, ["b"]);
+        // The bar for ticked songs is drawn, glass and all.
+        w.settle();
+        w.find("Clear the ticks", 0);
+        // Ticked again: let go.
+        let tick = w.find("Tick B", 0);
+        w.click(tick.center());
+        assert!(w.h.app.selected.is_empty());
+        crate::theme::set(crate::theme::Theme::YouTubeMusic);
     }
 
     #[test]

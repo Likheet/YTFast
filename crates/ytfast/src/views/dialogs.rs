@@ -17,7 +17,10 @@ pub fn show(app: &App, ui: &egui::Ui) {
     // The first field takes the keyboard once, as the dialog opens.
     let fresh = app.dialog_fresh.replace(false);
     let premium = theme::premium();
+    let dynamic = theme::dynamic();
     let frame = match current {
+        // Dynamic Background: glass, corners 24, the theme's shadow.
+        _ if dynamic => crate::dynamic::dialog_frame(),
         // Premium: one frame for every dialog, corners 16.
         _ if premium => egui::Frame::new()
             .fill(PALETTE.panel)
@@ -53,6 +56,9 @@ pub fn show(app: &App, ui: &egui::Ui) {
         // signed in).
         .backdrop_color(egui::Color32::from_black_alpha(if premium { 140 } else { 77 }))
         .show(ui.ctx(), |ui| {
+            if dynamic {
+                crate::dynamic::glass_behind(ui, crate::dynamic::RADIUS_PANEL_LG);
+            }
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             match current {
                 Dialog::SaveToPlaylist { video_ids } => {
