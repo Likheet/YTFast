@@ -3120,6 +3120,8 @@ mod tests {
         h: Harness,
         time: f64,
         named: Vec<(String, egui::Rect)>,
+        /// What the frames asked of the window (close it, move it...).
+        commands: Vec<egui::ViewportCommand>,
     }
 
     impl Window {
@@ -3136,6 +3138,7 @@ mod tests {
                 h,
                 time: 0.0,
                 named: Vec::new(),
+                commands: Vec::new(),
             }
         }
 
@@ -3159,6 +3162,12 @@ mod tests {
                 views::show(app, ui);
             });
             output.textures_delta.clear();
+            self.commands.extend(
+                output
+                    .viewport_output
+                    .values()
+                    .flat_map(|viewport| viewport.commands.iter().cloned()),
+            );
             self.named = output
                 .platform_output
                 .accesskit_update
@@ -3305,6 +3314,155 @@ mod tests {
         w.click(tick.center());
         assert!(w.h.app.selected.is_empty());
         crate::theme::set(crate::theme::Theme::YouTubeMusic);
+    }
+
+    /// In every theme, a song the pointer rests on (0.35 s) is found ahead
+    /// of time, so a click starts it at once; one the pointer only passes
+    /// over is not.
+    #[test]
+    fn a_song_the_pointer_rests_on_is_found_ahead() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            let route = Route::browse("VLPLx".into(), None);
+            w.h.act(Action::Navigate(route.clone()));
+            let load =
+                w.h.requests()
+                    .into_iter()
+                    .find_map(|r| match r {
+                        Request::Page { load, .. } => Some(load),
+                        _ => None,
+                    })
+                    .expect("the page is asked for");
+            let page = Page {
+                header: Some(ytfast_core::read::Header {
+                    title: "A playlist".into(),
+                    thumbnail: Some(ytfast_core::read::Thumb {
+                        url: "https://example.com/cover.jpg".into(),
+                        width: 544,
+                    }),
+                    ..Default::default()
+                }),
+                sections: vec![Section {
+                    items: ["a", "b", "c"].map(|v| Item::Track(song(v))).to_vec(),
+                    ..Section::default()
+                }],
+                ..Page::default()
+            };
+            w.h.answer(Event::Page(route, load, Ok(page)));
+            // The Play button is named only in the frames it changes in.
+            let mut play = None;
+            for _ in 0..6 {
+                w.frame(Vec::new());
+                if let Some((_, rect)) = w.named.iter().find(|(n, _)| n == "Play") {
+                    play = Some(*rect);
+                }
+            }
+            let play = play.expect("the page's Play button");
+            w.h.requests();
+            let warmed = |w: &mut Window| -> Vec<String> {
+                w.h.requests()
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        Request::Warm(id) => Some(id),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            // Passing over A on the way to B: A is not found.
+            let a = w.find("A", 0);
+            w.point(a.center());
+            let b = w.find("B", 0);
+            w.point(b.center());
+            for _ in 0..6 {
+                w.frame(Vec::new());
+            }
+            assert_eq!(warmed(&mut w), ["b"], "{theme:?}");
+            // The page's Play button: the song it starts.
+            w.point(play.center());
+            for _ in 0..6 {
+                w.frame(Vec::new());
+            }
+            assert_eq!(warmed(&mut w), ["a"], "{theme:?}");
+
+            // A song's tile, as on Home.
+            w.h.act(Action::Navigate(Route::Home));
+            let load =
+                w.h.requests()
+                    .into_iter()
+                    .find_map(|r| match r {
+                        Request::Page { load, .. } => Some(load),
+                        _ => None,
+                    })
+                    .expect("Home is asked for");
+            let tile = ytfast_core::read::Card {
+                title: "Tile song".into(),
+                subtitle: String::new(),
+                thumbnail: Some(ytfast_core::read::Thumb {
+                    url: "https://example.com/tile.jpg".into(),
+                    width: 226,
+                }),
+                round: false,
+                open: None,
+                play: Some(Target::Watch {
+                    video_id: Some("t".into()),
+                    playlist_id: None,
+                }),
+                podcast: None,
+                look: Default::default(),
+            };
+            let page = Page {
+                sections: vec![Section {
+                    title: "Quick picks".into(),
+                    items: vec![Item::Card(tile)],
+                    ..Section::default()
+                }],
+                ..Page::default()
+            };
+            w.h.answer(Event::Page(Route::Home, load, Ok(page)));
+            w.settle();
+            w.h.requests();
+            let tile = w.find("Tile song", 0);
+            w.point(tile.center());
+            for _ in 0..6 {
+                w.frame(Vec::new());
+            }
+            assert_eq!(warmed(&mut w), ["t"], "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// On Windows, in every theme, the window's close button reaches the
+    /// top right corner: the pointer thrown into the corner, as far as it
+    /// goes, and pressed there, closes the window.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_top_right_corner_closes_it() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.settle();
+            for corner in [egui::pos2(1279.9, 0.1), egui::pos2(1279.9, 40.0)] {
+                w.commands.clear();
+                w.click(corner);
+                assert!(
+                    w.commands
+                        .iter()
+                        .any(|c| matches!(c, egui::ViewportCommand::Close)),
+                    "{theme:?} {corner:?}: {:?}",
+                    w.commands
+                );
+            }
+        }
+        crate::theme::set(Theme::YouTubeMusic);
     }
 
     #[test]
