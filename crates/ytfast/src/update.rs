@@ -9,9 +9,10 @@
 //! (docs/releasing.md).
 //!
 //! On Windows any copy can update itself: the `ytfast-portable.txt` marker
-//! beside the program says so, and YTFast writes it there. On a Mac the
-//! builds are not signed by Apple, which installing them needs: a new
-//! version is shown, and installed by hand.
+//! beside the program says so, and YTFast writes it there. On a Mac,
+//! fastframe-update installs only apps signed by Apple, which YTFast's are
+//! not: YTFast takes the same steps itself there (`update_mac`), for a copy
+//! in a folder it may write in (Applications).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -20,21 +21,21 @@ use std::time::{Duration, Instant};
 
 use fastframe_update::{MacConfig, MacTarget, Prepared, Release, UpdateConfig, Updater};
 
+/// Where the releases are.
+const REPOSITORY: &str = "Likheet/YTFast";
+/// The key every release's `checksums.txt` is signed with (its public half).
+const PUBLISHER_KEY: &str = include_str!("../assets/update-public-key.hex");
+
 /// How YTFast's releases are found and checked.
 pub const CONFIG: UpdateConfig = UpdateConfig {
-    publisher_key: Some(include_str!("../assets/update-public-key.hex")),
+    publisher_key: Some(PUBLISHER_KEY),
     macos: MacConfig {
         bundle_ids: &["io.github.likheet.ytfast"],
         executable_names: &[],
         legacy_bundle_names: &[],
     },
     mac_target: MacTarget::Arm64Only,
-    ..UpdateConfig::new(
-        "Likheet/YTFast",
-        "YTFast",
-        "ytfast",
-        env!("CARGO_PKG_VERSION"),
-    )
+    ..UpdateConfig::new(REPOSITORY, "YTFast", "ytfast", env!("CARGO_PKG_VERSION"))
 };
 
 /// The newest release's page, where a Mac copy gets a new version.
@@ -76,6 +77,13 @@ enum Command {
     Check,
     Install,
     Restart,
+}
+
+/// A new version downloaded and checked, waiting for "Restart to update":
+/// fastframe-update's (Windows), or YTFast's own on a Mac.
+enum Pending {
+    Library(Prepared),
+    Mac(crate::update_mac::Staged),
 }
 
 /// The updater's thread, and what it is doing.
@@ -160,10 +168,17 @@ fn run(
             wake();
         }
     };
-    let client = reqwest::blocking::Client::builder().user_agent(format!(
+    let agent = format!(
         "YTFast/{} (+https://github.com/Likheet/YTFast)",
         env!("CARGO_PKG_VERSION")
-    ));
+    );
+    // The Mac's own downloads (`update_mac`).
+    let mac_client = reqwest::blocking::Client::builder()
+        .user_agent(agent.clone())
+        .connect_timeout(Duration::from_secs(20))
+        .build()
+        .ok();
+    let client = reqwest::blocking::Client::builder().user_agent(agent);
     let updater = match fastframe_update::ReqwestTransport::new(client) {
         Ok(transport) => Updater::new(CONFIG, transport),
         Err(e) => {
@@ -175,7 +190,7 @@ fn run(
         }
     };
     let mut found: Option<Release> = None;
-    let mut prepared: Option<Prepared> = None;
+    let mut prepared: Option<Pending> = None;
     let mut next_look = Instant::now() + FIRST_LOOK;
     loop {
         let command =
@@ -210,7 +225,8 @@ fn run(
                                 });
                             }
                             Ok(()) => {
-                                prepared = download(&updater, found.as_ref(), &set);
+                                prepared =
+                                    download(&updater, mac_client.as_ref(), found.as_ref(), &set);
                             }
                         }
                     }
@@ -238,16 +254,25 @@ fn run(
                             version: release.version.clone(),
                             note: Some(note),
                         }),
-                        (Some(_), Ok(())) => prepared = download(&updater, found.as_ref(), &set),
+                        (Some(_), Ok(())) => {
+                            prepared =
+                                download(&updater, mac_client.as_ref(), found.as_ref(), &set);
+                        }
                     }
                 }
             }
             Some(Command::Restart) => {
                 if let Some(ready) = prepared.take() {
-                    match updater.handoff(ready, Vec::new()) {
+                    let handed = match ready {
+                        Pending::Library(ready) => updater
+                            .handoff(ready, Vec::new())
+                            .map_err(|e| format!("{e:#}")),
+                        Pending::Mac(staged) => crate::update_mac::hand_over(&staged),
+                    };
+                    match handed {
                         Ok(()) => set(State::Restarting),
                         Err(e) => {
-                            log::warn!("updates: could not hand over: {e:#}");
+                            log::warn!("updates: could not hand over: {e}");
                             set(State::Failed(
                                 "The new version could not be installed. Try again later.".into(),
                             ));
@@ -262,10 +287,10 @@ fn run(
 /// Whether this copy can install updates itself; the words for why not.
 fn installable(updater: &Updater) -> Result<(), String> {
     if cfg!(target_os = "macos") {
-        return Err(
-            "On a Mac, download it from its page (YTFast.dmg) and drag YTFast into Applications, as the first time."
-                .into(),
-        );
+        return crate::update_mac::bundle().map(|_| ()).map_err(|note| {
+            log::warn!("updates: this copy cannot install them: {note}");
+            note
+        });
     }
     updater.installation().map(|_| ()).map_err(|reason| {
         log::warn!("updates: this copy cannot install them: {reason}");
@@ -273,12 +298,14 @@ fn installable(updater: &Updater) -> Result<(), String> {
     })
 }
 
-/// Downloads and checks `release`; ready to install, or why not.
+/// Downloads and checks `release` (on a Mac, YTFast's own way, with
+/// `mac_client`); ready to install, or why not.
 fn download(
     updater: &Updater,
+    mac_client: Option<&reqwest::blocking::Client>,
     release: Option<&Release>,
     set: &impl Fn(State),
-) -> Option<Prepared> {
+) -> Option<Pending> {
     let release = release?;
     let version = release.version.clone();
     set(State::Downloading {
@@ -287,7 +314,7 @@ fn download(
         total: 0,
     });
     let mut last = None;
-    let done = updater.download(release, |received, total| {
+    let progress = |received: u64, total: u64| {
         let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
         // A step of 2% at a time (and the end), not at every chunk.
         if last.is_none_or(|before| percent >= before + 2 || received == total) {
@@ -298,7 +325,21 @@ fn download(
                 total,
             });
         }
-    });
+    };
+    let done = if cfg!(target_os = "macos") {
+        match mac_client {
+            Some(client) => {
+                crate::update_mac::prepare(client, REPOSITORY, PUBLISHER_KEY, &version, progress)
+                    .map(Pending::Mac)
+            }
+            None => Err("no connection could be made".into()),
+        }
+    } else {
+        updater
+            .download(release, progress)
+            .map(Pending::Library)
+            .map_err(|e| format!("{e:#}"))
+    };
     match done {
         Ok(prepared) => {
             log::warn!("updates: YTFast {version} is ready to install");
@@ -306,7 +347,7 @@ fn download(
             Some(prepared)
         }
         Err(e) => {
-            log::warn!("updates: the download failed: {e:#}");
+            log::warn!("updates: the download failed: {e}");
             set(State::Failed(format!(
                 "YTFast {version} could not be downloaded. YTFast tries again tomorrow."
             )));
@@ -370,6 +411,36 @@ pub fn dry_run() -> i32 {
         }
     };
     println!("found YTFast {} ({})", release.version, release.url);
+    // A Mac: YTFast's own way (`update_mac`), the app put nowhere.
+    if cfg!(target_os = "macos") {
+        let client = match reqwest::blocking::Client::builder().build() {
+            Ok(client) => client,
+            Err(e) => {
+                println!("no client: {e}");
+                return 1;
+            }
+        };
+        return match crate::update_mac::prepare(
+            &client,
+            REPOSITORY,
+            PUBLISHER_KEY,
+            &release.version,
+            |_, _| {},
+        ) {
+            Ok(staged) => {
+                println!(
+                    "downloaded and checked YTFast {}: signature, checksum, the app's signature and --version all good",
+                    staged.version
+                );
+                crate::update_mac::discard(staged);
+                0
+            }
+            Err(e) => {
+                println!("the download failed its checks: {e}");
+                1
+            }
+        };
+    }
     if let Err(reason) = updater.installation() {
         println!("this copy cannot install it: {reason}");
         return 1;

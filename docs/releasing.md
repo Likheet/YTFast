@@ -48,6 +48,8 @@ for builds made after its public half is put in the app.
    changing what copies update from.
 
    Every release carries both builds, even when only Windows was tried.
+   Mac copies (from 0.6.4) update themselves from `YTFast.dmg`, checked
+   against the same signed `checksums.txt`: keep that name.
 
 4. Publish, tagged `v` and the version, on `main`'s commit:
 
