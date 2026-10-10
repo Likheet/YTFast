@@ -15,6 +15,7 @@ mod settings;
 mod sidebar;
 mod signin;
 mod topbar;
+mod video;
 mod widgets;
 mod window_frame;
 

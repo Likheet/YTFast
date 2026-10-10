@@ -2,8 +2,8 @@
 
 YTFast (YouTube Music Fast) is YouTube Music as a small, fast app: Home,
 Explore, your Library and playlists, search, a player page with lyrics, and
-a player with an "Up next" queue. It plays songs only (no videos) and needs
-a YouTube Music **Premium** account.
+a player with an "Up next" queue. It plays songs, and in its video mode
+their music videos, and needs a YouTube Music **Premium** account.
 
 ## Before you start
 
@@ -144,6 +144,13 @@ once a song plays.
   ends with the **Autoplay** switch.
 - Lyrics follow the song: the line being sung is lit. Click any line to jump
   there. Scroll to read ahead; it starts following again a moment later.
+- **Song** and **Video** above the cover: **Video** plays the songs in the
+  queue as their music videos (the video takes the cover's place), also
+  after Next, Previous or a click in Up next. Switching picks up at the
+  same music, even when the video has an intro of its own, and the
+  lyrics stay in time with the video. A song you start anywhere else
+  plays as a song again. A song with no video keeps its cover, with
+  Video greyed out. Videos need the fast way (Settings) to be on.
 - **Esc**, the back arrow, the ▼ at the player bar's right, or another
   click on the player bar closes it.
 

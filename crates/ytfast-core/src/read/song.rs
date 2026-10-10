@@ -36,6 +36,9 @@ pub struct SongDetails {
     pub lyrics_id: Option<String>,
     /// The page of songs related to it (`MPTRt...`).
     pub related_id: Option<String>,
+    /// Its video for the video mode: itself when it is a video, else its
+    /// music video when it has one; with where the song's music is in it.
+    pub video: Option<super::VideoPair>,
 }
 
 /// Reads [`SongDetails`] from a `next` reply. The rating comes from the
@@ -46,7 +49,58 @@ pub fn song_details(reply: &Value) -> SongDetails {
         like: like_status(reply),
         lyrics_id: tab(reply, "MUSIC_PAGE_TYPE_TRACK_LYRICS", "MPLYt"),
         related_id: tab(reply, "MUSIC_PAGE_TYPE_TRACK_RELATED", "MPTRt"),
+        video: video_version(reply),
     }
+}
+
+/// The playing song's video: the playing row itself when it is a video,
+/// else the music video paired with it (`counterpart`) in the queue; with
+/// the pair's map of the song in the video.
+fn video_version(reply: &Value) -> Option<super::VideoPair> {
+    let playing = reply
+        .pointer("/currentVideoEndpoint/watchEndpoint/videoId")
+        .and_then(Value::as_str)?;
+    let kind = |row: &Value| {
+        row.pointer("/navigationEndpoint/watchEndpoint/watchEndpointMusicSupportedConfigs/watchEndpointMusicConfig/musicVideoType")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let id = |row: &Value| {
+        row.get("videoId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let is_video = |row: &Value| kind(row).is_some_and(|k| k != "MUSIC_VIDEO_TYPE_ATV");
+    let mut pairs = Vec::new();
+    collect(reply, "playlistPanelVideoWrapperRenderer", &mut pairs);
+    for pair in pairs {
+        let primary = pair.pointer("/primaryRenderer/playlistPanelVideoRenderer");
+        let entry = pair.pointer("/counterpart/0");
+        let other =
+            entry.and_then(|c| c.pointer("/counterpartRenderer/playlistPanelVideoRenderer"));
+        if ![primary, other]
+            .into_iter()
+            .flatten()
+            .any(|row| id(row).as_deref() == Some(playing))
+        {
+            continue;
+        }
+        // The video is the side that is one (the first, if neither says).
+        let primary_is_song = !primary.is_some_and(is_video) && other.is_some_and(is_video);
+        let video = if primary_is_song { other } else { primary }.and_then(id)?;
+        let segments = entry.map_or_else(Vec::new, |e| super::pair_segments(e, primary_is_song));
+        // A song paired with nothing that is a video has none.
+        if primary_is_song || primary.is_some_and(is_video) {
+            return Some(super::VideoPair { video, segments });
+        }
+        return None;
+    }
+    // A row on its own: a video plays as itself.
+    let row = playing_row(reply, Some(playing))?;
+    is_video(row).then(|| super::VideoPair {
+        video: playing.to_string(),
+        segments: Vec::new(),
+    })
 }
 
 fn like_status(reply: &Value) -> Option<Rating> {
@@ -301,12 +355,70 @@ mod tests {
                 like: Some(Rating::Dislike),
                 lyrics_id: Some("MPLYt_lyrics1".into()),
                 related_id: Some("MPTRt_related1".into()),
+                video: None,
             }
         );
         // Without the player's button: the queue row's menu, whose
         // "Remove from liked songs" says the song is liked.
         assert_eq!(song_details(&next_reply(None)).like, Some(Rating::Like));
         assert_eq!(song_details(&Value::Null), SongDetails::default());
+        // Its video for the video mode: a song's music video, a video
+        // itself, or none.
+        let pair = |playing: &str| {
+            serde_json::json!({
+                "currentVideoEndpoint": { "watchEndpoint": { "videoId": playing } },
+                "contents": { "playlistPanelRenderer": { "contents": [
+                    { "playlistPanelVideoWrapperRenderer": {
+                        "primaryRenderer": { "playlistPanelVideoRenderer": {
+                            "videoId": "song1",
+                            "navigationEndpoint": { "watchEndpoint": {
+                                "watchEndpointMusicSupportedConfigs": { "watchEndpointMusicConfig": {
+                                    "musicVideoType": "MUSIC_VIDEO_TYPE_ATV" } } } } } },
+                        "counterpart": [{ "counterpartRenderer": { "playlistPanelVideoRenderer": {
+                            "videoId": "video1",
+                            "navigationEndpoint": { "watchEndpoint": {
+                                "watchEndpointMusicSupportedConfigs": { "watchEndpointMusicConfig": {
+                                    "musicVideoType": "MUSIC_VIDEO_TYPE_OMV" } } } } } },
+                            "segmentMap": { "segment": [
+                                { "primaryVideoStartTimeMilliseconds": "0",
+                                  "counterpartVideoStartTimeMilliseconds": "21078",
+                                  "durationMilliseconds": "228972" } ] } }] } },
+                    { "playlistPanelVideoRenderer": {
+                        "videoId": "song2",
+                        "navigationEndpoint": { "watchEndpoint": {
+                            "watchEndpointMusicSupportedConfigs": { "watchEndpointMusicConfig": {
+                                "musicVideoType": "MUSIC_VIDEO_TYPE_ATV" } } } } } },
+                    { "playlistPanelVideoRenderer": {
+                        "videoId": "clip3",
+                        "navigationEndpoint": { "watchEndpoint": {
+                            "watchEndpointMusicSupportedConfigs": { "watchEndpointMusicConfig": {
+                                "musicVideoType": "MUSIC_VIDEO_TYPE_UGC" } } } } } }
+                ] } }
+            })
+        };
+        let video = |playing: &str| song_details(&pair(playing)).video;
+        // The song's music starts 21 s into the video (as Despacito's).
+        let map = vec![crate::read::Segment {
+            song_ms: 0,
+            video_ms: 21_078,
+            length_ms: 228_972,
+        }];
+        assert_eq!(
+            video("song1"),
+            Some(crate::read::VideoPair {
+                video: "video1".into(),
+                segments: map.clone()
+            })
+        );
+        assert_eq!(
+            video("video1"),
+            Some(crate::read::VideoPair {
+                video: "video1".into(),
+                segments: map
+            })
+        );
+        assert_eq!(video("song2"), None);
+        assert_eq!(video("clip3").map(|p| p.video).as_deref(), Some("clip3"));
     }
 
     #[test]

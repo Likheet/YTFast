@@ -10,7 +10,9 @@ use fastframe_now_playing as now_playing;
 use serde::{Deserialize, Serialize};
 use ytfast_core::library::Privacy;
 use ytfast_core::playreport::PlayReport;
-use ytfast_core::read::{Item, Page, PlayerInfo, Section, SortOrder, Target, Track, TrackKind};
+use ytfast_core::read::{
+    Item, Page, PlayerInfo, Section, SortOrder, Target, Track, TrackKind, VideoPair,
+};
 use ytfast_core::ytdlp::Browser;
 
 use crate::audio_thread::{Audio, Command, Status};
@@ -156,6 +158,41 @@ pub struct Playback {
     /// what the listening report says (YouTube's player does the same).
     pub listened: Vec<(f64, f64)>,
     pub listening_from: f64,
+    /// The ID being got ready or played: the song's own, or in the video
+    /// mode its video's (see [`App::version_of`]); `None` while the video
+    /// mode waits to hear whether it has one.
+    pub version: Option<String>,
+    /// Where it plays from, in seconds: its start, or where the other
+    /// version was when the video mode was turned on or off.
+    pub start_at: f64,
+}
+
+/// The video mode's picture for the song playing (a queue entry).
+pub struct VideoShow {
+    pub entry: u64,
+    pub state: VideoState,
+}
+
+/// Where the video mode's picture is.
+pub enum VideoState {
+    /// Waiting to hear whether the song has a video (its details).
+    Finding,
+    /// The video's sound is getting ready; its picture is asked for once
+    /// it plays.
+    Coming,
+    /// The picture is on its way.
+    Loading,
+    /// Showing: the pictures, and the one last put on screen (its time,
+    /// and the texture holding it).
+    Playing {
+        video: Box<ytfast_core::video::Video>,
+        shown: RefCell<Option<(f64, egui::TextureHandle)>>,
+    },
+    /// The demo's stand-in for a video.
+    Demo,
+    /// The song has no video: its cover shows.
+    Missing,
+    Failed(String),
 }
 
 /// What happens at the end of a song.
@@ -181,6 +218,8 @@ impl Default for Playback {
             asked_more_for: None,
             listened: Vec::new(),
             listening_from: 0.0,
+            version: None,
+            start_at: 0.0,
         }
     }
 }
@@ -389,6 +428,9 @@ pub enum Action {
     ShuffleQueue,
     /// Repeat off, the queue, this song.
     CycleRepeat,
+    /// The player page's Song and Video switch: the video mode on (the
+    /// queue's songs play as their music videos) or off.
+    VideoMode(bool),
     ChooseBrowser(Browser),
     SignIn,
     SignOut,
@@ -486,6 +528,17 @@ pub struct App {
     /// The player page is open, and on which tab.
     pub now_playing: bool,
     pub np_tab: NpTab,
+    /// The video mode: the queue's songs play as their music videos, shown
+    /// on the player page. A song started anywhere but the queue turns it
+    /// off (see [`App::play_tracks`]).
+    pub video_mode: bool,
+    /// The picture for the song playing, in the video mode.
+    pub video: Option<VideoShow>,
+    /// Songs' videos as their details said ([`Event::SongVideo`]).
+    song_videos: HashMap<String, Option<VideoPair>>,
+    /// The player page drew the video this frame; otherwise its decoding
+    /// rests.
+    pub video_drawn: std::cell::Cell<bool>,
     /// Lyrics and related pages, by song.
     pub lyrics: HashMap<String, crate::lyrics::State>,
     pub related: HashMap<String, Loadable>,
@@ -715,6 +768,10 @@ impl App {
             pointed: RefCell::new(None),
             now_playing: false,
             np_tab: NpTab::UpNext,
+            video_mode: false,
+            video: None,
+            song_videos: HashMap::new(),
+            video_drawn: std::cell::Cell::new(false),
             lyrics: HashMap::new(),
             related: HashMap::new(),
             likes: HashMap::new(),
@@ -878,8 +935,10 @@ impl App {
         match self.np_tab {
             NpTab::Lyrics if !self.lyrics.contains_key(&track.video_id) => {
                 // The player's length is this song's only once it plays it
-                // (until then it is the last song's).
-                let playing_it = self.audio_status.entry == Some(entry.id);
+                // (until then it is the last song's), as itself (not its
+                // video, in the video mode).
+                let playing_it = self.audio_status.entry == Some(entry.id)
+                    && self.playback.version.as_deref() == Some(track.video_id.as_str());
                 let duration = if playing_it && self.audio_status.length > 0.0 {
                     Some(self.audio_status.length)
                 } else {
@@ -1367,6 +1426,27 @@ impl App {
                         }
                     }
                 }
+                Event::SongVideo(song, found) => self.song_video(song, found),
+                Event::Video { entry, result } => {
+                    let Some(show) = self
+                        .video
+                        .as_mut()
+                        .filter(|v| v.entry == entry && matches!(v.state, VideoState::Loading))
+                    else {
+                        continue;
+                    };
+                    show.state = match result {
+                        Ok(Some(data)) => VideoState::Playing {
+                            video: Box::new(ytfast_core::video::Video::start(data)),
+                            shown: RefCell::new(None),
+                        },
+                        Ok(None) => VideoState::Demo,
+                        Err(message) => {
+                            log::warn!("the video did not load: {message}");
+                            VideoState::Failed(message)
+                        }
+                    };
+                }
                 Event::Image(url, picture) => self.images.borrow_mut().arrived(ctx, url, picture),
                 Event::ImageSkipped(url) => self.images.borrow_mut().skipped(&url),
             }
@@ -1417,6 +1497,17 @@ impl App {
         else {
             return;
         };
+        // The video mode was turned on or off while it got ready, or its
+        // video became known: the version now wanted instead. (One still
+        // unknown takes what is ready; it changes once known.)
+        if let Some(wanted) = self.version_of(&current.track)
+            && self.playback.version.as_ref() != Some(&wanted)
+        {
+            let from = self.playback.start_at;
+            self.start_from(current, from);
+            return;
+        }
+        let own = self.playback.version.as_deref() == Some(current.track.video_id.as_str());
         match result {
             Ok(ready) => {
                 // The player's answer names the song, for one started by
@@ -1434,7 +1525,10 @@ impl App {
                     kind: info.kind.clone(),
                     ..Track::default()
                 };
-                self.fill_in(&heard);
+                // (Its video's answer names the video.)
+                if own {
+                    self.fill_in(&heard);
+                }
                 let length = ready
                     .length
                     .or(current.track.duration_seconds.map(f64::from))
@@ -1449,6 +1543,7 @@ impl App {
                     data: ready.data,
                     gain,
                     length,
+                    from: self.playback.start_at,
                 });
                 self.backend
                     .send(Request::Details(current.track.video_id.clone()));
@@ -1465,7 +1560,7 @@ impl App {
                     self.related.remove(video_id);
                 }
                 let report = PlayReport::new(&ready.info);
-                if let Some(url) = report.started(0.0) {
+                if let Some(url) = report.started(self.playback.start_at) {
                     self.backend.send(Request::Report(url));
                 }
                 self.playback.report = Some(report);
@@ -1484,6 +1579,8 @@ impl App {
                 log::info!("song ready: {}", self.playback.format.replace('\n', "; "));
                 self.playback.state = PlayState::Playing;
                 self.skipped_in_a_row = 0;
+                // In the video mode, its picture.
+                self.ask_for_picture();
                 // Get the next song ready while this one plays.
                 self.prepare_next();
                 // With the queue on repeat, it plays again instead.
@@ -1520,6 +1617,7 @@ impl App {
         self.skipped_in_a_row = 0;
         self.finish_report();
         self.audio.send(Command::Stop);
+        self.video = None;
         self.playback.state = PlayState::Failed(message);
     }
 
@@ -1644,6 +1742,8 @@ impl App {
                 self.queue.shuffle_on();
             }
             self.playback.asked_more_for = None;
+            // Chosen anywhere but the queue: a song again, not its video.
+            self.video_mode = false;
             self.start(entry);
         }
     }
@@ -1691,19 +1791,315 @@ impl App {
 
     /// Starts preparing `entry`; it plays when ready.
     fn start(&mut self, entry: Entry) {
+        self.start_from(entry, 0.0);
+    }
+
+    /// Starts preparing `entry` to play from `from` seconds, as the
+    /// version the video mode wants; it plays when ready. In the video
+    /// mode a song whose video is not known yet waits for its details.
+    fn start_from(&mut self, entry: Entry, from: f64) {
         self.finish_report();
         self.audio.send(Command::Stop);
-        self.backend.send(Request::Prepare {
+        let version = self.version_of(&entry.track);
+        match &version {
+            Some(version) => self.backend.send(Request::Prepare {
+                entry: entry.id,
+                video_id: version.clone(),
+                play: true,
+            }),
+            None => self
+                .backend
+                .send(Request::Details(entry.track.video_id.clone())),
+        }
+        self.video = self.video_mode.then(|| VideoShow {
             entry: entry.id,
-            video_id: entry.track.video_id.clone(),
-            play: true,
+            state: self.video_state(&entry.track),
         });
         self.playback = Playback {
             entry: Some(entry),
             state: PlayState::Preparing,
             asked_more_for: self.playback.asked_more_for.take(),
+            version,
+            start_at: from,
+            listening_from: from,
             ..Playback::default()
         };
+    }
+
+    /// The video `track` shows in the video mode: itself for a video, else
+    /// its music video, as Up next or its details said, with YouTube's map
+    /// of the song in it. `Some(None)` when it has none, `None` while that
+    /// is not known.
+    pub fn pair_of(&self, track: &Track) -> Option<Option<VideoPair>> {
+        let told = self.song_videos.get(&track.video_id);
+        if track.is_video() {
+            let video = track.video_id.clone();
+            let segments = told
+                .and_then(Option::as_ref)
+                .filter(|pair| pair.video == video)
+                .map(|pair| pair.segments.clone())
+                .unwrap_or_default();
+            return Some(Some(VideoPair { video, segments }));
+        }
+        if let Some(more) = &track.more
+            && let Some(video) = &more.counterpart
+        {
+            return Some(Some(VideoPair {
+                video: video.clone(),
+                segments: more.segments.clone(),
+            }));
+        }
+        told.cloned()
+    }
+
+    /// The ID of the video `track` shows in the video mode (see
+    /// [`App::pair_of`]).
+    fn video_of(&self, track: &Track) -> Option<Option<String>> {
+        self.pair_of(track).map(|pair| pair.map(|pair| pair.video))
+    }
+
+    /// Where the song playing should start as `to` (the other version),
+    /// from `at` in the version playing: the same music, by YouTube's map
+    /// of the song in its video (a video with an intro of its own starts
+    /// the song later in it).
+    fn moment_in(&self, entry: &Entry, at: f64, to: &str) -> f64 {
+        let Some(Some(pair)) = self.pair_of(&entry.track) else {
+            return at;
+        };
+        let song = entry.track.video_id.as_str();
+        let from = self.playback.version.as_deref().unwrap_or(song);
+        if from == song && to == pair.video {
+            ytfast_core::read::song_to_video(&pair.segments, at)
+        } else if from == pair.video && to == song {
+            ytfast_core::read::video_to_song_or_next(&pair.segments, at)
+        } else {
+            at
+        }
+    }
+
+    /// The song playing's map of its music in the version playing, when
+    /// that is its music video (not the song itself).
+    fn playing_video_map(&self) -> Option<Vec<ytfast_core::read::Segment>> {
+        let entry = self.playback.entry.as_ref()?;
+        let version = self.playback.version.as_deref()?;
+        let pair = self.pair_of(&entry.track)??;
+        (version != entry.track.video_id && version == pair.video).then_some(pair.segments)
+    }
+
+    /// Where the song playing is for its lyrics, which are timed to the
+    /// song: while its music video plays, the video's moment as the song's
+    /// (by YouTube's map); `None` while the video shows what the song does
+    /// not have (its own intro, a scene between).
+    pub fn lyrics_clock(&self) -> Option<f64> {
+        let position = self.audio_status.position;
+        match self.playing_video_map() {
+            Some(map) => ytfast_core::read::video_to_song(&map, position),
+            None => Some(position),
+        }
+    }
+
+    /// The moment in what plays for `song` seconds of the song (a line of
+    /// its lyrics chosen).
+    pub fn lyrics_moment(&self, song: f64) -> f64 {
+        match self.playing_video_map() {
+            Some(map) => ytfast_core::read::song_to_video(&map, song),
+            None => song,
+        }
+    }
+
+    /// Whether the song playing has a video: `None` while that is not
+    /// known (the Song and Video switch then offers it).
+    pub fn has_video(&self) -> Option<bool> {
+        let entry = self.playback.entry.as_ref()?;
+        self.pair_of(&entry.track).map(|pair| pair.is_some())
+    }
+
+    /// What `track` plays as: itself, or in the video mode its video (a
+    /// song without one, itself). `None` while that is not known.
+    fn version_of(&self, track: &Track) -> Option<String> {
+        if !self.video_mode {
+            return Some(track.video_id.clone());
+        }
+        match self.video_of(track) {
+            Some(Some(video)) => Some(video),
+            Some(None) => Some(track.video_id.clone()),
+            None => None,
+        }
+    }
+
+    /// What the player page shows for `track` in the video mode while it
+    /// gets ready.
+    fn video_state(&self, track: &Track) -> VideoState {
+        match self.video_of(track) {
+            Some(Some(_)) => VideoState::Coming,
+            Some(None) => VideoState::Missing,
+            None => VideoState::Finding,
+        }
+    }
+
+    /// In the video mode, once the song plays as its video: the picture is
+    /// asked for (a song without one keeps its cover).
+    fn ask_for_picture(&mut self) {
+        let Some(entry) = &self.playback.entry else {
+            return;
+        };
+        let id = entry.id;
+        let video = self.video_of(&entry.track);
+        let playing = self.playback.state == PlayState::Playing;
+        let version = self.playback.version.clone();
+        let Some(show) = self.video.as_mut().filter(|v| v.entry == id) else {
+            return;
+        };
+        if !matches!(show.state, VideoState::Finding | VideoState::Coming) {
+            return;
+        }
+        match video {
+            Some(Some(video)) if playing && version.as_ref() == Some(&video) => {
+                show.state = VideoState::Loading;
+                self.backend.send(Request::Video {
+                    entry: id,
+                    video_id: video,
+                });
+            }
+            Some(Some(_)) => show.state = VideoState::Coming,
+            Some(None) => show.state = VideoState::Missing,
+            None => {}
+        }
+    }
+
+    /// A song's details said what its video is (or did not load).
+    fn song_video(&mut self, song: String, found: Result<Option<VideoPair>, String>) {
+        let known = match found {
+            Ok(video) => {
+                if self.song_videos.len() >= MAX_SONG_VIDEOS {
+                    self.song_videos.clear();
+                }
+                self.song_videos.insert(song.clone(), video);
+                true
+            }
+            Err(e) => {
+                log::info!("whether a song has a video is not known: {e}");
+                false
+            }
+        };
+        if !self.video_mode {
+            return;
+        }
+        // The next song gets ready as its video.
+        if known
+            && self
+                .queue
+                .peek_next()
+                .is_some_and(|next| next.track.video_id == song)
+        {
+            self.prepare_next();
+        }
+        let Some(entry) = self
+            .playback
+            .entry
+            .clone()
+            .filter(|e| e.track.video_id == song)
+        else {
+            return;
+        };
+        let waiting = self.playback.version.is_none();
+        match (&self.playback.state, self.version_of(&entry.track)) {
+            // It waited to know: it plays now, as its video if it has one.
+            (PlayState::Preparing, Some(_)) if waiting => {
+                let from = self.playback.start_at;
+                self.start_from(entry, from);
+            }
+            // Its details did not load: it plays as itself.
+            (PlayState::Preparing, None) if waiting => {
+                let version = entry.track.video_id.clone();
+                self.backend.send(Request::Prepare {
+                    entry: entry.id,
+                    video_id: version.clone(),
+                    play: true,
+                });
+                self.playback.version = Some(version);
+                if let Some(show) = &mut self.video {
+                    show.state = VideoState::Failed("This song's video could not be found.".into());
+                }
+            }
+            // Playing as itself, and it has a video: the video plays on
+            // from here.
+            (PlayState::Playing, Some(wanted))
+                if self.playback.version.as_ref() != Some(&wanted) =>
+            {
+                let at = self.moment_in(&entry, self.clock(), &wanted);
+                self.start_from(entry, at);
+            }
+            // (While it gets ready, `prepared` changes the version.)
+            _ => self.ask_for_picture(),
+        }
+    }
+
+    /// The Song and Video switch.
+    fn set_video_mode(&mut self, on: bool) {
+        if on == self.video_mode {
+            return;
+        }
+        self.video_mode = on;
+        let Some(entry) = self.playback.entry.clone() else {
+            return;
+        };
+        let wanted = self.version_of(&entry.track);
+        match self.playback.state {
+            // The other version plays on from the same music.
+            PlayState::Playing
+                if wanted
+                    .as_ref()
+                    .is_some_and(|w| self.playback.version.as_ref() != Some(w)) =>
+            {
+                let to = wanted.as_deref().unwrap_or_default();
+                let at = self.moment_in(&entry, self.clock(), to);
+                self.start_from(entry, at);
+            }
+            // The same sound (a video plays its own): only the picture
+            // comes or goes. Whether a song has a video is asked when it
+            // is not known (its details are kept, so this costs nothing
+            // when they have loaded).
+            PlayState::Playing => {
+                self.video = on.then(|| VideoShow {
+                    entry: entry.id,
+                    state: self.video_state(&entry.track),
+                });
+                if wanted.is_none() {
+                    self.backend
+                        .send(Request::Details(entry.track.video_id.clone()));
+                }
+                self.ask_for_picture();
+            }
+            // Waiting to hear about its video: as itself, at once.
+            PlayState::Preparing if self.playback.version.is_none() => {
+                let from = self.playback.start_at;
+                self.start_from(entry, from);
+            }
+            // Getting ready: `prepared` changes the version once it is.
+            PlayState::Preparing => {
+                self.video = on.then(|| VideoShow {
+                    entry: entry.id,
+                    state: self.video_state(&entry.track),
+                });
+            }
+            _ => self.video = None,
+        }
+        self.prepare_next();
+    }
+
+    /// Where the song playing is, in seconds, finer than the player's
+    /// reports: for the video's pictures, and where the other version
+    /// plays from when the video mode changes.
+    pub fn clock(&self) -> f64 {
+        let Some(entry) = &self.playback.entry else {
+            return 0.0;
+        };
+        match self.seeking {
+            Some((seeking, to, _)) if seeking == entry.id => to,
+            _ if self.audio_status.entry == Some(entry.id) => self.audio_status.clock(),
+            _ => self.playback.start_at,
+        }
     }
 
     /// Reports how long the current song was listened to.
@@ -1761,6 +2157,7 @@ impl App {
             None => {
                 self.finish_report();
                 self.audio.send(Command::Stop);
+                self.video = None;
                 self.playback.state = PlayState::WaitingForMore;
                 self.ask_for_more();
             }
@@ -1782,16 +2179,23 @@ impl App {
         self.audio.send(Command::Seek(0.0));
     }
 
-    /// Gets the next song ready ahead, after the queue changed.
+    /// Gets the next song ready ahead, after the queue changed: in the
+    /// video mode as its video, once its details say what that is.
     fn prepare_next(&self) {
         if self.playback.state == PlayState::Playing
             && let Some(next) = self.queue.peek_next()
         {
-            self.backend.send(Request::Prepare {
-                entry: next.id,
-                video_id: next.track.video_id.clone(),
-                play: false,
-            });
+            match self.version_of(&next.track) {
+                Some(version) => self.backend.send(Request::Prepare {
+                    entry: next.id,
+                    video_id: version,
+                    play: false,
+                }),
+                // `App::song_video` gets it ready once they have come.
+                None => self
+                    .backend
+                    .send(Request::Details(next.track.video_id.clone())),
+            }
         }
     }
 
@@ -2117,6 +2521,7 @@ impl App {
                     self.start(entry);
                 }
             }
+            Action::VideoMode(on) => self.set_video_mode(on),
             Action::PlayNext(track) | Action::AddToQueue(track) if !track.playable => {
                 self.notify(UNAVAILABLE);
             }
@@ -2800,6 +3205,9 @@ fn add_rows(page: &mut Page, tracks: Vec<Track>) {
 /// loads again.
 const MAX_PAGES: usize = 24;
 
+/// The most songs whose videos are remembered (see [`App::video_of`]).
+const MAX_SONG_VIDEOS: usize = 500;
+
 /// The most songs skipped in a row for problems of their own before the
 /// queue stops: a few removed songs together are skipped, but a problem
 /// every song has cannot run through the queue.
@@ -2886,6 +3294,15 @@ impl eframe::App for App {
         }
 
         views::show(self, ui);
+        // The player page is closed, or shows no video: its decoding rests.
+        if !self.video_drawn.replace(false)
+            && let Some(VideoShow {
+                state: VideoState::Playing { video, .. },
+                ..
+            }) = &self.video
+        {
+            video.rest();
+        }
 
         self.apply_actions();
         // A notice shows for a few seconds.
@@ -3487,8 +3904,8 @@ mod tests {
         crate::theme::set(Theme::YouTubeMusic);
     }
 
-    /// In Up next, a row shows the move arrows (it is dragged to a new
-    /// place), but its ⋮ shows the hand, as YouTube Music's.
+    /// In Up next, a row shows the open hand (it is dragged to a new
+    /// place), its cover too; its ⋮ shows the pointing hand.
     #[test]
     fn up_next_shows_a_hand_over_its_menu_button() {
         use crate::theme::Theme;
@@ -3505,7 +3922,11 @@ mod tests {
             let b = w.find("B", 0);
             w.point(b.center());
             w.frame(Vec::new());
-            assert_eq!(w.cursor, egui::CursorIcon::Move, "{theme:?}");
+            assert_eq!(w.cursor, egui::CursorIcon::Grab, "{theme:?}");
+            // Its cover, at its left.
+            w.point(egui::pos2(b.left() + 30.0, b.center().y));
+            w.frame(Vec::new());
+            assert_eq!(w.cursor, egui::CursorIcon::Grab, "{theme:?}");
             let more = w.find("More actions", 0);
             assert!(b.contains_rect(more), "{theme:?} {b:?} {more:?}");
             w.point(more.center());
@@ -4291,6 +4712,400 @@ mod tests {
             h.app.pages.get(&Route::Home),
             Some(Loadable::Failed(message)) if message == "new"
         ));
+    }
+
+    /// A song with a music video (as Up next pairs them).
+    fn song_with_video(id: &str, video: &str) -> Track {
+        Track {
+            more: Some(Box::new(ytfast_core::read::TrackMore {
+                counterpart: Some(video.to_string()),
+                ..Default::default()
+            })),
+            ..song(id)
+        }
+    }
+
+    /// A video with no map of its song in it.
+    fn pair(video: &str) -> VideoPair {
+        VideoPair {
+            video: video.into(),
+            segments: Vec::new(),
+        }
+    }
+
+    /// The song's music 21 s into its video, as Despacito's.
+    fn late_start() -> Vec<ytfast_core::read::Segment> {
+        vec![ytfast_core::read::Segment {
+            song_ms: 0,
+            video_ms: 21_000,
+            length_ms: 228_000,
+        }]
+    }
+
+    /// What was asked to be got ready (to play, or ahead), by ID.
+    fn prepares(requests: &[Request], play: bool) -> Vec<String> {
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::Prepare {
+                    video_id, play: p, ..
+                } if *p == play => Some(video_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn videos_asked(requests: &[Request]) -> Vec<String> {
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::Video { video_id, .. } => Some(video_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Where the player was told to start the song.
+    fn started_from(commands: &[Command]) -> Option<f64> {
+        commands.iter().find_map(|c| match c {
+            Command::Play { from, .. } => Some(*from),
+            _ => None,
+        })
+    }
+
+    /// The player says the song playing is at `position`.
+    fn at(h: &mut Harness, position: f64) {
+        let (entry, _) = h.entry();
+        h.app.audio.set_status(|s| {
+            s.entry = Some(entry);
+            s.position = position;
+            s.length = 200.0;
+        });
+        h.frame();
+    }
+
+    /// The video mode plays the queue's songs as their videos (Next, and
+    /// the song after, got ready ahead as its video); a song chosen
+    /// anywhere else plays as a song, and the mode is off.
+    #[test]
+    fn the_video_mode_keeps_to_the_queue() {
+        let mut h = Harness::new();
+        let mut b = song("b");
+        b.kind = TrackKind::MusicVideo;
+        h.act(Action::PlayTracks {
+            tracks: vec![song_with_video("a", "va"), b, song("c")],
+            start: 0,
+            source: None,
+        });
+        h.ready();
+        at(&mut h, 42.0);
+        h.requests();
+        h.commands();
+
+        // Turned on halfway through: its video plays on from there.
+        h.act(Action::VideoMode(true));
+        assert_eq!(prepares(&h.requests(), true), ["va"]);
+        h.ready();
+        assert_eq!(started_from(&h.commands()), Some(42.0));
+        let asked = h.requests();
+        assert_eq!(videos_asked(&asked), ["va"]);
+        // The next is a video itself: got ready ahead as it is.
+        assert_eq!(prepares(&asked, false), ["b"]);
+
+        // Next: the video plays from its start, and its picture comes.
+        h.act(Action::Next);
+        assert_eq!(prepares(&h.requests(), true), ["b"]);
+        h.ready();
+        assert_eq!(started_from(&h.commands()), Some(0.0));
+        let asked = h.requests();
+        assert_eq!(videos_asked(&asked), ["b"]);
+        // Whether the song after has a video is asked first, then it is got
+        // ready as its video.
+        assert!(prepares(&asked, false).is_empty());
+        assert!(
+            asked
+                .iter()
+                .any(|r| matches!(r, Request::Details(id) if id == "c"))
+        );
+        h.answer(Event::SongVideo("c".into(), Ok(Some(pair("vc")))));
+        assert_eq!(prepares(&h.requests(), false), ["vc"]);
+        h.act(Action::Next);
+        assert_eq!(prepares(&h.requests(), true), ["vc"]);
+        assert!(h.app.video_mode);
+
+        // A song chosen on a page: a song again.
+        h.act(Action::PlayTracks {
+            tracks: vec![song_with_video("d", "vd")],
+            start: 0,
+            source: None,
+        });
+        assert!(!h.app.video_mode);
+        assert!(h.app.video.is_none());
+        assert_eq!(prepares(&h.requests(), true), ["d"]);
+    }
+
+    /// Turned off, the song plays on from where its video was; a video
+    /// itself keeps playing, only its picture goes.
+    #[test]
+    fn turning_the_video_mode_off_plays_the_song_from_there() {
+        let mut h = Harness::new();
+        h.act(Action::VideoMode(true));
+        h.act(Action::PlayNext(song_with_video("a", "va")));
+        h.requests();
+        h.ready();
+        assert_eq!(h.app.playback.version.as_deref(), Some("va"));
+        at(&mut h, 30.0);
+        h.requests();
+        h.commands();
+        h.act(Action::VideoMode(false));
+        assert_eq!(prepares(&h.requests(), true), ["a"]);
+        assert!(h.app.video.is_none());
+        h.ready();
+        assert_eq!(started_from(&h.commands()), Some(30.0));
+
+        // A video itself: the same sound, so nothing is fetched again.
+        let mut h = Harness::new();
+        let mut v = song("v");
+        v.kind = TrackKind::MusicVideo;
+        h.act(Action::PlayNext(v));
+        h.ready();
+        h.requests();
+        h.act(Action::VideoMode(true));
+        let asked = h.requests();
+        assert!(prepares(&asked, true).is_empty());
+        assert_eq!(videos_asked(&asked), ["v"]);
+        h.act(Action::VideoMode(false));
+        assert!(prepares(&h.requests(), true).is_empty());
+        assert!(h.app.video.is_none());
+    }
+
+    /// A song whose video is not known waits for its details in the video
+    /// mode, then plays as its video; one without a video, or whose
+    /// details did not load, plays as itself.
+    #[test]
+    fn the_video_mode_waits_to_hear_of_a_songs_video() {
+        let mut h = Harness::new();
+        h.app.video_mode = true;
+        h.act(Action::PlayNext(song("a")));
+        let asked = h.requests();
+        assert!(prepares(&asked, true).is_empty());
+        assert!(
+            asked
+                .iter()
+                .any(|r| matches!(r, Request::Details(id) if id == "a"))
+        );
+        assert!(matches!(
+            h.app.video.as_ref().map(|v| &v.state),
+            Some(VideoState::Finding)
+        ));
+        h.answer(Event::SongVideo("a".into(), Ok(Some(pair("va")))));
+        assert_eq!(prepares(&h.requests(), true), ["va"]);
+
+        // None: its cover, and it plays as itself.
+        h.act(Action::PlayNext(song("b")));
+        h.act(Action::Next);
+        h.requests();
+        h.answer(Event::SongVideo("b".into(), Ok(None)));
+        assert_eq!(prepares(&h.requests(), true), ["b"]);
+        assert!(matches!(
+            h.app.video.as_ref().map(|v| &v.state),
+            Some(VideoState::Missing)
+        ));
+
+        // Its details did not load: as itself, and says so.
+        h.act(Action::PlayNext(song("c")));
+        h.act(Action::Next);
+        h.requests();
+        h.answer(Event::SongVideo("c".into(), Err("no network".into())));
+        assert_eq!(prepares(&h.requests(), true), ["c"]);
+        h.ready();
+        assert_eq!(h.app.playback.state, PlayState::Playing);
+        assert!(matches!(
+            h.app.video.as_ref().map(|v| &v.state),
+            Some(VideoState::Failed(_))
+        ));
+    }
+
+    /// Turned on while the song gets ready: what is ready does not play;
+    /// its video is got ready instead, from the start.
+    #[test]
+    fn the_video_mode_turned_on_while_a_song_gets_ready() {
+        let mut h = Harness::new();
+        h.act(Action::PlayNext(song_with_video("a", "va")));
+        h.requests();
+        h.act(Action::VideoMode(true));
+        // Nothing asked twice while the song's own is on its way.
+        assert!(prepares(&h.requests(), true).is_empty());
+        h.ready();
+        assert_eq!(plays(&h.commands()), 0);
+        assert_eq!(prepares(&h.requests(), true), ["va"]);
+        h.ready();
+        assert_eq!(started_from(&h.commands()), Some(0.0));
+        assert_eq!(videos_asked(&h.requests()), ["va"]);
+        // The picture's answer is taken for this song only.
+        let (entry, _) = h.entry();
+        h.answer(Event::Video {
+            entry: entry + 1,
+            result: Ok(None),
+        });
+        assert!(matches!(
+            h.app.video.as_ref().map(|v| &v.state),
+            Some(VideoState::Loading)
+        ));
+        h.answer(Event::Video {
+            entry,
+            result: Ok(None),
+        });
+        assert!(matches!(
+            h.app.video.as_ref().map(|v| &v.state),
+            Some(VideoState::Demo)
+        ));
+    }
+
+    /// The player page in each look, with the video mode on: the switch's
+    /// two buttons, Video pressed and Song pressed.
+    #[test]
+    fn the_song_and_video_switch_on_the_player_page() {
+        for theme in [
+            crate::theme::Theme::YouTubeMusic,
+            crate::theme::Theme::Premium,
+            crate::theme::Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a", "b"]);
+            w.h.app.now_playing = true;
+            w.settle();
+            let video = w.find("Video", 0);
+            w.click(video.center());
+            w.settle();
+            assert!(w.h.app.video_mode, "{theme:?}");
+            // Its demo stand-in shows in the cover's place.
+            w.h.answer(Event::SongVideo("a".into(), Ok(Some(pair("a")))));
+            let (entry, _) = w.h.entry();
+            w.h.answer(Event::Video {
+                entry,
+                result: Ok(None),
+            });
+            w.settle();
+            assert!(w.shows("Song"), "{theme:?}");
+            let song = w.find("Song", 0);
+            w.click(song.center());
+            w.settle();
+            assert!(!w.h.app.video_mode, "{theme:?}");
+        }
+        crate::theme::set(crate::theme::Theme::YouTubeMusic);
+    }
+
+    /// Switching between a song and its music video plays the same music:
+    /// a video whose song starts 21 s in is joined 21 s later, and left
+    /// 21 s earlier; its own intro leaves the song at its start.
+    #[test]
+    fn switching_lands_on_the_same_music() {
+        let mut h = Harness::new();
+        let mut a = song_with_video("a", "va");
+        a.more.as_mut().unwrap().segments = late_start();
+        h.act(Action::PlayNext(a));
+        h.ready();
+        at(&mut h, 42.0);
+        h.requests();
+        h.commands();
+        h.act(Action::VideoMode(true));
+        h.ready();
+        assert_eq!(started_from(&h.commands()), Some(63.0));
+        // Back to the song from 70 s into the video: the song's 49 s.
+        at(&mut h, 70.0);
+        h.act(Action::VideoMode(false));
+        h.ready();
+        assert_eq!(started_from(&h.commands()), Some(49.0));
+        // From the video's own intro: the song's start.
+        h.act(Action::VideoMode(true));
+        h.ready();
+        at(&mut h, 5.0);
+        h.commands();
+        h.act(Action::VideoMode(false));
+        h.ready();
+        assert_eq!(started_from(&h.commands()), Some(0.0));
+    }
+
+    /// The lyrics are timed to the song: while its video plays they follow
+    /// the song's moment (none lit in the video's own intro), and a line
+    /// chosen jumps to its place in the video.
+    #[test]
+    fn lyrics_follow_the_song_while_its_video_plays() {
+        let mut h = Harness::new();
+        let mut a = song_with_video("a", "va");
+        a.more.as_mut().unwrap().segments = late_start();
+        h.app.video_mode = true;
+        h.act(Action::PlayNext(a));
+        h.ready();
+        assert_eq!(h.app.playback.version.as_deref(), Some("va"));
+        at(&mut h, 81.0);
+        assert_eq!(h.app.lyrics_clock(), Some(60.0));
+        assert_eq!(h.app.lyrics_moment(60.0), 81.0);
+        at(&mut h, 10.0);
+        assert_eq!(h.app.lyrics_clock(), None);
+        // As the song itself, its own times.
+        h.act(Action::VideoMode(false));
+        h.ready();
+        at(&mut h, 30.0);
+        assert_eq!(h.app.lyrics_clock(), Some(30.0));
+        assert_eq!(h.app.lyrics_moment(30.0), 30.0);
+    }
+
+    /// A song without a video has Video greyed out: pressing it does
+    /// nothing. The mode stays as it was for the songs to come.
+    #[test]
+    fn video_is_greyed_out_for_a_song_without_one() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["a", "b"]);
+        w.h.app.now_playing = true;
+        w.h.answer(Event::SongVideo("a".into(), Ok(None)));
+        w.settle();
+        assert_eq!(w.h.app.has_video(), Some(false));
+        let video = w.find("Video", 0);
+        w.click(video.center());
+        w.settle();
+        assert!(!w.h.app.video_mode);
+        assert_eq!(w.cursor, egui::CursorIcon::NotAllowed);
+        // A song with one: Video can be pressed.
+        w.h.answer(Event::SongVideo("a".into(), Ok(Some(pair("va")))));
+        w.settle();
+        let video = w.find("Video", 0);
+        w.click(video.center());
+        w.settle();
+        assert!(w.h.app.video_mode);
+    }
+
+    /// A song without a video between two with one: the video mode stays
+    /// on, and the next song plays as its video again.
+    #[test]
+    fn the_video_mode_outlasts_a_song_without_a_video() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["g", "m", "l"]);
+        w.h.app.now_playing = true;
+        w.h.answer(Event::SongVideo("g".into(), Ok(Some(pair("g")))));
+        w.settle();
+        let video = w.find("Video", 0);
+        w.click(video.center());
+        w.settle();
+        assert!(w.h.app.video_mode, "on");
+        w.h.answer(Event::SongVideo("m".into(), Ok(None)));
+        let next = w.find("Next", 0);
+        w.click(next.center());
+        w.settle();
+        w.h.ready();
+        w.settle();
+        assert_eq!(w.h.entry().1, "m");
+        assert!(w.h.app.video_mode, "on through a song without a video");
+        w.h.answer(Event::SongVideo("l".into(), Ok(Some(pair("l")))));
+        w.settle();
+        let next = w.find("Next", 0);
+        w.click(next.center());
+        w.settle();
+        w.h.ready();
+        w.settle();
+        assert_eq!(w.h.entry().1, "l");
+        assert!(w.h.app.video_mode, "still on");
     }
 
     #[test]

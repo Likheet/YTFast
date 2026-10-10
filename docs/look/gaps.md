@@ -421,6 +421,18 @@ only matter if that changes.
 
 ---
 
+- [x] **Song and Video switch** over the cover, and the video in its
+  place (YouTube Music's `ytmusic-av-toggle` and video mode). **Done:** 10
+  Oct 2026, not measured (it shows only while a song plays, which would
+  add to the account's history): a capsule 36 high (white@0.10; Premium:
+  clear glass) with halves 88 wide, the chosen one white@0.20, 16 above
+  the cover or the video; Video greyed out ("not allowed") for a song
+  without one; the video 16:9, as large as the cover's room allows,
+  square-cornered as YouTube Music's player in video mode (its 800 and
+  r 8 are for the cover only, CSS `:not([video-mode])`); Premium and
+  Dynamic Background keep their own corners, Dynamic Background at most
+  400 high. Tested: the demo in each look (`views/video.rs`).
+
 ### 4. Player page tabs (`tp-yt-paper-tabs.ytmusic-player-page`)
 
 - [x] **Colour of the tabs not chosen.** YouTube Music: white@0.70 (CSS `tp-yt-paper-tab.ytmusic-player-page { color: rgba(255,255,255,.7) }`) inside content at opacity 0.8 (CSS `tp-yt-paper-tab:not(.iron-selected) .tab-content { opacity:.8 }`) = white@0.56 seen (measured: "#ffffff@0.70 at opacity 0.8"). YTFast: white@0.70 (now_playing.rs:99-103). Change: `Color32::from_white_alpha(143)`. Size: small. **Done:** 8 Oct 2026.

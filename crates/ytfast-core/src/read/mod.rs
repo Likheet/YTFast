@@ -18,7 +18,9 @@ mod song;
 mod sort;
 
 pub use edit::{created_playlist_id, edit_status, feedback_processed};
-pub use formats::{StreamFormat, best_stream, stream_formats};
+pub use formats::{
+    StreamFormat, VideoFormat, best_stream, best_video, stream_formats, video_formats,
+};
 pub use page::{
     Card, CardButton, CardLook, Header, HeaderButtons, Item, Page, PageKind, Section, Shape,
     Target, Thumb, TopResult, more_items, page, queue_continuation, queue_title,
@@ -156,6 +158,124 @@ pub struct TrackMore {
     pub count: Option<String>,
     /// Marked explicit (YouTube's "E").
     pub explicit: bool,
+    /// The same song's other version in Up next: the music video of a song
+    /// (or the song of a music video), as YouTube Music's Song and Video
+    /// switch plays it.
+    pub counterpart: Option<String>,
+    /// Where the song's music is in the video ([`Segment`]).
+    pub segments: Vec<Segment>,
+}
+
+/// One stretch of a song and the same music in its music video, as YouTube
+/// Music pairs them (a pair's `segmentMap`): the song from `song_ms` is the
+/// video from `video_ms`, for `length_ms`. A video with an intro of its
+/// own starts its first stretch later; one with a scene in the middle has
+/// several stretches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Segment {
+    pub song_ms: u64,
+    pub video_ms: u64,
+    pub length_ms: u64,
+}
+
+/// A song's music video (or a video itself), and where the song's music
+/// is in it ([`Segment`]; none known, the same times).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VideoPair {
+    pub video: String,
+    pub segments: Vec<Segment>,
+}
+
+/// Where `song` seconds into a song are in its music video, by `segments`:
+/// in a stretch, the same music; in music the video leaves out, where its
+/// next stretch starts; past the last, that stretch's end. With no map,
+/// the same time.
+pub fn song_to_video(segments: &[Segment], song: f64) -> f64 {
+    if segments.is_empty() {
+        return song;
+    }
+    let ms = song * 1000.0;
+    for s in segments {
+        let (start, video, length) = (s.song_ms as f64, s.video_ms as f64, s.length_ms as f64);
+        if ms < start {
+            return video / 1000.0;
+        }
+        if ms < start + length {
+            return (video + ms - start) / 1000.0;
+        }
+    }
+    segments
+        .last()
+        .map_or(song, |s| (s.video_ms + s.length_ms) as f64 / 1000.0)
+}
+
+/// Where `video` seconds into a music video are in its song, by
+/// `segments`; `None` while the video shows what the song does not have
+/// (its own intro, a scene between). With no map, the same time.
+pub fn video_to_song(segments: &[Segment], video: f64) -> Option<f64> {
+    if segments.is_empty() {
+        return Some(video);
+    }
+    let ms = video * 1000.0;
+    segments.iter().find_map(|s| {
+        let (start, song, length) = (s.video_ms as f64, s.song_ms as f64, s.length_ms as f64);
+        (start..start + length)
+            .contains(&ms)
+            .then(|| (song + ms - start) / 1000.0)
+    })
+}
+
+/// As [`video_to_song`], but where the video shows what the song does not
+/// have, where the song's music goes on next (or its end): where the song
+/// plays from when the video is left there.
+pub fn video_to_song_or_next(segments: &[Segment], video: f64) -> f64 {
+    video_to_song(segments, video).unwrap_or_else(|| {
+        let ms = video * 1000.0;
+        segments
+            .iter()
+            .find(|s| s.video_ms as f64 > ms)
+            .or(segments.last())
+            .map_or(video, |s| {
+                let next = s.video_ms as f64 > ms;
+                (s.song_ms + if next { 0 } else { s.length_ms }) as f64 / 1000.0
+            })
+    })
+}
+
+/// A pair's map, from its `counterpart` entry (`segmentMap`), as song and
+/// video: `primary_is_song` says whether the pair's first row (YouTube's
+/// "primary") is the song.
+pub(crate) fn pair_segments(counterpart: &Value, primary_is_song: bool) -> Vec<Segment> {
+    let ms = |segment: &Value, key: &str| {
+        segment.get(key).and_then(|v| match v {
+            Value::String(s) => s.parse::<u64>().ok(),
+            Value::Number(n) => n.as_u64(),
+            _ => None,
+        })
+    };
+    let mut segments: Vec<Segment> = counterpart
+        .pointer("/segmentMap/segment")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|segment| {
+            let primary = ms(segment, "primaryVideoStartTimeMilliseconds")?;
+            let other = ms(segment, "counterpartVideoStartTimeMilliseconds")?;
+            let length_ms = ms(segment, "durationMilliseconds")?;
+            let (song_ms, video_ms) = if primary_is_song {
+                (primary, other)
+            } else {
+                (other, primary)
+            };
+            Some(Segment {
+                song_ms,
+                video_ms,
+                length_ms,
+            })
+        })
+        .collect();
+    segments.sort_by_key(|s| s.song_ms);
+    segments
 }
 
 impl Track {
@@ -172,6 +292,21 @@ impl Track {
     /// Its plays or views, when its row says them.
     pub fn count(&self) -> Option<&str> {
         self.more.as_ref()?.count.as_deref()
+    }
+
+    /// Whether it is a video itself (a music video, or any other video),
+    /// not a song.
+    pub fn is_video(&self) -> bool {
+        matches!(self.kind, TrackKind::MusicVideo | TrackKind::Other(_))
+    }
+
+    /// The video to show for it in the video mode, when known: itself for
+    /// a video, else its music video ([`TrackMore::counterpart`]).
+    pub fn video(&self) -> Option<&str> {
+        if self.is_video() {
+            return Some(&self.video_id);
+        }
+        self.more.as_ref()?.counterpart.as_deref()
     }
 }
 
@@ -313,6 +448,8 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
             rank,
             count,
             explicit,
+            counterpart: None,
+            segments: Vec::new(),
         })
     });
     Some(Track {
@@ -1158,5 +1295,52 @@ mod tests {
         // The last batch says nothing more.
         let last = json!({"continuationContents": {"musicShelfContinuation": {"contents": []}}});
         assert_eq!(item_continuation(&last), None);
+    }
+
+    /// YouTube's maps of a song in its music video, as seen on 10 October
+    /// 2026: Despacito's video starts its song 21 s in; another has a scene
+    /// of its own between two stretches of the song.
+    #[test]
+    fn a_songs_moment_in_its_video_and_back() {
+        let despacito = [Segment {
+            song_ms: 0,
+            video_ms: 21_078,
+            length_ms: 228_972,
+        }];
+        assert!((song_to_video(&despacito, 0.0) - 21.078).abs() < 1e-9);
+        assert!((song_to_video(&despacito, 60.0) - 81.078).abs() < 1e-9);
+        assert_eq!(
+            video_to_song(&despacito, 81.078).map(|t| t.round()),
+            Some(60.0)
+        );
+        // The video's own intro: no lyrics yet; the song from its start.
+        assert_eq!(video_to_song(&despacito, 10.0), None);
+        assert_eq!(video_to_song_or_next(&despacito, 10.0), 0.0);
+        // Past the song's end (the video's own ending): its end.
+        assert!((video_to_song_or_next(&despacito, 270.0) - 228.972).abs() < 1e-9);
+
+        let with_a_scene = [
+            Segment {
+                song_ms: 0,
+                video_ms: 23_013,
+                length_ms: 54_937,
+            },
+            Segment {
+                song_ms: 55_000,
+                video_ms: 92_081,
+                length_ms: 110_366,
+            },
+        ];
+        // The scene between (78 s to 92 s of the video): the song waits at
+        // 55 s, where it goes on.
+        assert_eq!(video_to_song(&with_a_scene, 85.0), None);
+        assert!((video_to_song_or_next(&with_a_scene, 85.0) - 55.0).abs() < 1e-9);
+        assert!((song_to_video(&with_a_scene, 60.0) - 97.081).abs() < 1e-9);
+        // Music the video leaves out (54.937 s to 55 s of the song): where
+        // the video goes on.
+        assert!((song_to_video(&with_a_scene, 54.95) - 92.081).abs() < 1e-9);
+        // No map: the same moment.
+        assert_eq!(song_to_video(&[], 42.0), 42.0);
+        assert_eq!(video_to_song(&[], 42.0), Some(42.0));
     }
 }
