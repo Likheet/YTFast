@@ -368,6 +368,9 @@ pub enum Action {
     OpenLogFolder,
     /// Open System Settings at Full Disk Access (on a Mac).
     OpenFullDiskAccess,
+    /// Open the newest release's page in the browser, where a Mac copy
+    /// gets a new version (it cannot install one itself).
+    OpenDownloadPage,
     /// Queue edits, by entry. `MoveInQueue` puts it at a place (a row of
     /// Up next dragged there).
     RemoveFromQueue(u64),
@@ -2354,6 +2357,7 @@ impl App {
                 }
             }
             Action::OpenFullDiskAccess => open_full_disk_access(),
+            Action::OpenDownloadPage => open_link(crate::update::DOWNLOAD_PAGE),
             Action::ShuffleQueue => {
                 self.settings.shuffle = !self.settings.shuffle;
                 if self.settings.shuffle {
@@ -2901,6 +2905,20 @@ fn open_folder(path: &std::path::Path) {
     let _ = std::fs::create_dir_all(path);
     if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
         log::warn!("could not open the folder: {e}");
+    }
+}
+
+/// Opens a web page in the default browser.
+fn open_link(url: &str) {
+    let mut command = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        std::process::Command::new("explorer")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    if let Err(e) = command.arg(url).spawn() {
+        log::warn!("could not open the page: {e}");
     }
 }
 
