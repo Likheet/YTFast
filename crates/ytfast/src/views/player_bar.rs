@@ -183,8 +183,8 @@ fn bar_button(
     if response.hovered() && ui.is_enabled() {
         ui.painter()
             .circle_filled(rect.center(), disc / 2.0, PALETTE.surface_hover);
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    theme::pointing_or_not(ui, &response, ui.is_enabled());
     let color = if ui.is_enabled() {
         color
     } else {

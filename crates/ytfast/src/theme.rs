@@ -1010,6 +1010,7 @@ pub fn round_button(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
     });
+    pointing(ui, &response);
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered() && ui.is_enabled();
         let pressed = response.is_pointer_button_down_on();
@@ -1068,6 +1069,7 @@ pub fn chip(ui: &mut egui::Ui, text: &str, chosen: bool, height: f32) -> Respons
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, text)
     });
+    pointing(ui, &response);
     if ui.is_rect_visible(rect) {
         let (fill, color) = if chosen {
             (PALETTE.text, PALETTE.window)
@@ -1151,6 +1153,7 @@ pub fn pill_sized(
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 36.0), Sense::click());
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), text));
+    pointing(ui, &response);
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         let radius = CornerRadius::same(if premium() { 10 } else { 18 });
@@ -1232,6 +1235,30 @@ pub fn pill_sized(
     response
 }
 
+/// The pointer over something that can be pressed, as YouTube Music
+/// shows it (`cursor: pointer` on its buttons, chips, tabs, switches, the
+/// menu's entries and links): a hand while the pointer is on it and it can
+/// be pressed; the arrow otherwise.
+pub fn pointing(ui: &egui::Ui, response: &Response) {
+    if response.hovered() && ui.is_enabled() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+}
+
+/// [`pointing`], and for what cannot be pressed now YouTube Music's "not
+/// allowed" (its player's buttons and the player page's tabs, when off).
+pub fn pointing_or_not(ui: &egui::Ui, response: &Response, enabled: bool) {
+    if !ui.rect_contains_pointer(response.rect) {
+        return;
+    }
+    let icon = if enabled {
+        egui::CursorIcon::PointingHand
+    } else {
+        egui::CursorIcon::NotAllowed
+    };
+    ui.ctx().set_cursor_icon(icon);
+}
+
 /// Premium's mark of the focused control: a 1 point line in the accent.
 fn focus_ring(ui: &egui::Ui, rect: Rect, corners: CornerRadius) {
     ui.painter().rect_stroke(
@@ -1252,6 +1279,7 @@ pub fn toggle(ui: &mut egui::Ui, on: bool, name: &str) -> Response {
     }
     let (rect, response) = ui.allocate_exact_size(egui::vec2(36.0, 20.0), Sense::click());
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, name));
+    pointing(ui, &response);
     if ui.is_rect_visible(rect) {
         let t = ui.ctx().animate_bool_with_time(response.id, on, 0.08);
         let bar = Rect::from_center_size(rect.center(), egui::vec2(36.0, 14.0));
