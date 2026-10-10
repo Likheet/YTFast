@@ -3391,12 +3391,13 @@ mod tests {
                     })
                     .collect()
             };
-            // Passing over A on the way to B: A is not found.
+            // Passing over A on the way to B: A is not found. B, rested on
+            // for 0.2 s (two frames), is.
             let a = w.find("A", 0);
             w.point(a.center());
             let b = w.find("B", 0);
             w.point(b.center());
-            for _ in 0..6 {
+            for _ in 0..2 {
                 w.frame(Vec::new());
             }
             assert_eq!(warmed(&mut w), ["b"], "{theme:?}");
