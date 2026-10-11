@@ -980,7 +980,7 @@ redraws a second (before the change to fewer). Not yet tested: the new
 redraws measured, Premium and Dynamic Background in the demo (only in the
 tests), any of it with the owner's account, and the Mac.
 
-Then (11 October 2026, not yet released), at the owner's word, after
+Then (11 October 2026, version 1.2.0), at the owner's word, after
 their brother found things moving when the look changed: every look now
 lays the window out as YouTube Music's (the top bar, the menu, the
 player bar, pages, Settings and the player page) and keeps its own
