@@ -145,17 +145,16 @@ once a song plays.
 - Lyrics follow the song: the line being sung lights word by word as it is
   sung. Click any line to jump there. Scroll to read ahead; it starts
   following again a moment later.
-- **Translate**, above the lyrics, shows each line in English under it.
+- **Translate lyrics** (in Settings) shows each line in English under it.
   For a song in another script (Japanese, Korean, Hindi...), it also shows
-  the line in Latin letters. It stays on for the songs after it until you
-  press it again (it is in Settings too).
+  the line in Latin letters.
 - **Song** and **Video** above the cover: **Video** plays the songs in the
   queue as their music videos (the video takes the cover's place), also
   after Next, Previous or a click in Up next. Switching picks up at the
   same music, even when the video has an intro of its own, and the
   lyrics stay in time with the video. A song you start anywhere else
   plays as a song again. A song with no video keeps its cover, with
-  Video greyed out. Videos need the fast way (Settings) to be on.
+  Video greyed out.
 - **Esc**, the back arrow, the ▼ at the player bar's right, or another
   click on the player bar closes it.
 
@@ -235,11 +234,13 @@ Windows volume pop-up, or the Mac's Control Center).
 or the video as large as it fits and Up next, Lyrics and Related beside
 it. F or Esc leaves it, and so does closing the player page.
 
-**Settings** (in your account's menu, at the top right): start songs the
-fast way, keep playing when the queue ends, even out loudness, skip songs
-you dislike (on: disliking the song playing moves on to the next, as
-YouTube Music does), ask before closing while a song plays, translate
-lyrics, sign out, and where problems are noted.
+**Settings** (in your account's menu, at the top right): the look
+(YouTube Music, Premium or Dynamic Background), even out loudness, skip
+songs you dislike (on: disliking the song playing moves on to the next, as
+YouTube Music does), translate lyrics, ask before closing while a song
+plays, updates, sign out, and where problems are noted. **Autoplay**, at
+the end of Up next, keeps playing songs like the last one when the queue
+ends.
 
 **Closing while a song plays** asks first: "Do you really want to close?
 There's a song playing.", with **Do not ask again** ticked. Yes closes
@@ -291,8 +292,7 @@ YTFast says what happened in plain words. Common fixes:
   it keeps happening, send Claude the log (below).
 - **Songs take about ten seconds to start, or fail to start**: the fast way
   did not work (YouTube may have changed something), and YTFast used
-  yt-dlp instead. Send Claude the log (below). If songs fail to start at
-  all, turn off **Start songs the fast way** in Settings.
+  yt-dlp instead. Send Claude the log (below).
 - **"Confirm you're not a bot"**: play any song on music.youtube.com in your
   browser, then try again in YTFast.
 - **A song is skipped**: YouTube does not offer it to your account (removed,
@@ -308,7 +308,7 @@ YTFast says what happened in plain words. Common fixes:
 
 YTFast notes problems in a file called `ytfast.log`, made new each time it
 opens. It has no passwords or cookies in it, and web addresses are cut
-short, so it is safe to send to Claude. **Settings → Open that folder**
+short, so it is safe to send to Claude. **Settings → Open the log's folder**
 opens the folder it is in:
 
 - Mac: `~/Library/Caches/YtFast/ytfast.log`
