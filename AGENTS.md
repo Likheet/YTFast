@@ -1008,7 +1008,7 @@ demo's made-up fan video (in a mix's Up next) shown whole in Up next and
 on the player page, 71 by 40 in the player bar. Not yet tested: a real
 fan's video with the owner's account, and the Mac.
 
-Then (11 October 2026, not yet released), at the owner's word: 1.2.0's
+Then (11 October 2026, version 1.2.1), at the owner's word: 1.2.0's
 Premium looked cramped and worse to them, so Premium has its own layout
 again, as in 1.1.2 (the play buttons in the middle of its floating player
 bar and the song at its left, its sizes, menu, top bar, rows, pages,
