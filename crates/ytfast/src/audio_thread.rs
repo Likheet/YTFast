@@ -394,22 +394,13 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                     }
                 }
             }
-            // A sounding song is followed closely (its position, its end),
-            // as is one about to sound once its jump is made; otherwise a
-            // look now and then is enough (a device that changed). Near its
-            // end, the look comes as the end is heard, so the next song
-            // follows at once.
+            // A song about to sound once its jump is made is followed as
+            // one sounding; its end, once known and not yet told.
             let sounding = entry.is_some() && (!engine.paused() || sound_after_jump);
-            let wait = if !sounding {
-                Duration::from_secs(1)
-            } else if ended_sent {
-                FOLLOW
-            } else {
-                engine
-                    .until_end()
-                    .map_or(FOLLOW, |left| left.clamp(END_LOOK, FOLLOW))
-            };
-            match commands.recv_timeout(wait) {
+            let until_end = (sounding && !ended_sent)
+                .then(|| engine.until_end())
+                .flatten();
+            match commands.recv_timeout(next_look(sounding, until_end)) {
                 Ok(command) => {
                     changed = true;
                     match command {
@@ -605,6 +596,19 @@ const FOLLOW: Duration = Duration::from_millis(100);
 /// The shortest wait for a song's end when it is near.
 const END_LOOK: Duration = Duration::from_millis(5);
 
+/// How long the sound thread waits for a command before it looks at the
+/// song again. A sounding song is followed closely (its position, its end),
+/// and just when its end is due (`until_end`, once known), so the next song
+/// follows at once; otherwise a look now and then is enough (a device that
+/// changed).
+fn next_look(sounding: bool, until_end: Option<Duration>) -> Duration {
+    match (sounding, until_end) {
+        (false, _) => Duration::from_secs(1),
+        (true, Some(left)) => left.clamp(END_LOOK, FOLLOW),
+        (true, None) => FOLLOW,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -661,24 +665,23 @@ mod tests {
         None
     }
 
-    /// A song's end is told as it comes, not up to a tenth of a second
-    /// later (the next look), so the next song follows at once.
+    /// A song's end is looked at just when it is due, not at the next look
+    /// up to a tenth of a second later, so the next song follows at once.
+    /// (Timed for real, this is the device test below: a busy computer, as
+    /// CI's Mac running every test at once, wakes the thread late.)
     #[test]
-    fn the_end_is_told_as_it_comes() {
-        let audio = Audio::start(|| {}, true);
-        let started = Instant::now();
-        audio.send(Command::Play {
-            entry: 3,
-            data: ytfast_core::stream::SongData::complete(Vec::new()),
-            gain: 1.0,
-            length: 0.03,
-            from: 0.0,
-        });
-        let told = seconds_until(&audio, started, |s| s.ended == Some(3)).expect("told");
-        assert!(
-            told < 0.075,
-            "told {told:.3} s after it started, 0.03 s long"
-        );
+    fn the_end_is_looked_at_just_when_it_is_due() {
+        let ms = Duration::from_millis;
+        // Before the end is known, and once it was told: the usual looks.
+        assert_eq!(next_look(true, None), FOLLOW);
+        // Known: just when it is due, but not again at once, nor later
+        // than the usual look.
+        assert_eq!(next_look(true, Some(ms(30))), ms(30));
+        assert_eq!(next_look(true, Some(Duration::ZERO)), END_LOOK);
+        assert_eq!(next_look(true, Some(Duration::from_secs(3))), FOLLOW);
+        // Nothing sounding: now and then.
+        assert_eq!(next_look(false, Some(ms(30))), Duration::from_secs(1));
+        assert_eq!(next_look(false, None), Duration::from_secs(1));
     }
 
     /// With the sound device, at volume 0: a song is told finished once its

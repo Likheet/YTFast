@@ -428,7 +428,11 @@ Paolino), as `audio.rs` does.
   (`Player::prepare_spare`): moving to it takes about 0.01 s. The song is
   given to the stream before the stream starts (`Player::play_song`,
   `Player::seek`): started first, it took its first 0.2 s as silence about
-  every other time, and the song sounded that much later.
+  every other time, and the song sounded that much later. A new stream
+  can hold such silence too: fastframe-audio opens it playing, and now
+  and then the device takes a step from it before YTFast's pause. So the
+  player's first stream is opened again then, and a spare is replaced
+  (`OpenedOutput::holds_silence`).
 - The song's position is what is heard: what the device was given, less
   the latency it reports (`Player::position`). Counting only what it was
   given ran 0.2 s ahead of the sound on the owner's laptop, so the lyrics

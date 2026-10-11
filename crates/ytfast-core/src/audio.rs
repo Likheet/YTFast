@@ -578,6 +578,42 @@ struct OpenedOutput {
     by_name: bool,
 }
 
+impl OpenedOutput {
+    /// The stream holds silence that would play before its first song.
+    /// fastframe-audio opens a stream playing, and YTFast pauses it at
+    /// once, but now and then (a few times in a hundred on the owner's
+    /// laptop) the device first takes a step of sound from it, up to 0.2 s
+    /// on Windows, and keeps it through the pause. Only for a stream not
+    /// resumed since it opened, once its pause has taken effect
+    /// ([`PAUSE_SETTLES`]).
+    fn holds_silence(&self) -> bool {
+        !self.output.clock().played().is_zero()
+    }
+}
+
+/// How long a stream just opened is given for its pause to take effect,
+/// before it is asked whether it holds silence.
+const PAUSE_SETTLES: Duration = Duration::from_millis(30);
+
+/// Opens a stream with `open`, and again (three times in all, at most)
+/// while it holds silence ([`OpenedOutput::holds_silence`]). It waits a
+/// moment for each stream's pause, so it is for a stream nothing waits for
+/// yet: the player's first, opened as YTFast starts.
+fn quietly(
+    mut open: impl FnMut() -> Result<OpenedOutput, AudioError>,
+) -> Result<OpenedOutput, AudioError> {
+    let mut opened = open()?;
+    for _ in 1..3 {
+        std::thread::sleep(PAUSE_SETTLES);
+        if !opened.holds_silence() {
+            break;
+        }
+        log::debug!("audio output: a new stream held silence; opening another");
+        opened = open()?;
+    }
+    Ok(opened)
+}
+
 /// Opens the default output, paused (the device rests until there is a
 /// song to play), the ways [`ways_to_open`] lists, until one works.
 fn open_output() -> Result<OpenedOutput, AudioError> {
@@ -736,7 +772,7 @@ impl Player {
             made,
             mixer,
             by_name,
-        } = open_output()?;
+        } = quietly(open_output)?;
         let sink = rodio::Sink::connect_new(&mixer);
         Ok(Self {
             by_name,
@@ -817,10 +853,16 @@ impl Player {
     }
 
     /// Opens a spare stream for the next song or jump, while a song plays
-    /// and there is none (about 0.15 s; call it when nothing waits). After
-    /// a failure it rests for half a minute.
+    /// and there is none (about 0.15 s; call it when nothing waits), or
+    /// the spare holds silence. After a failure it rests for half a minute.
     pub fn prepare_spare(&mut self) {
         const REST: Duration = Duration::from_secs(30);
+        // A spare that holds silence would play it before the next song.
+        // Asked at every call: just opened, its pause takes a moment.
+        if self.spare.as_ref().is_some_and(OpenedOutput::holds_silence) {
+            log::debug!("audio output: the spare stream held silence; opening another");
+            self.spare = None;
+        }
         let playing = self.song.is_some() && !self.paused;
         let resting = self.spare_failed.is_some_and(|at| at.elapsed() < REST);
         if self.spare.is_some() || !playing || resting {
@@ -1230,8 +1272,8 @@ mod tests {
     }
 
     /// The next song sounds at once: it is given to the stream before the
-    /// stream starts. (Started first, the stream took its first 0.2 s as
-    /// silence about every other time.)
+    /// stream starts, and the spare holds no silence. (Started first, the
+    /// stream took its first 0.2 s as silence about every other time.)
     #[test]
     #[ignore = "needs a sound device"]
     fn the_next_song_sounds_at_once() {
@@ -1239,17 +1281,12 @@ mod tests {
         player.set_volume(0.0);
         player.play_song(SongData::complete(tone()), 1.0).unwrap();
         for _ in 0..6 {
-            // A spare opened while the song plays, as the audio thread does.
-            std::thread::sleep(Duration::from_millis(150));
-            player.prepare_spare();
-            std::thread::sleep(Duration::from_millis(50));
-            // A stream that sounded before it was first paused holds that
-            // silence (about one in 50 opened on the owner's laptop): not
-            // what this is about.
-            let clean = player
-                .spare
-                .as_ref()
-                .is_some_and(|spare| spare.output.clock().played().is_zero());
+            // A spare opened while the song plays, and asked again at the
+            // next looks, as the audio thread does.
+            for _ in 0..3 {
+                std::thread::sleep(Duration::from_millis(100));
+                player.prepare_spare();
+            }
             // As at a song's end, or a song chosen: stop, then the next.
             player.stop();
             let started = Instant::now();
@@ -1257,11 +1294,58 @@ mod tests {
             std::thread::sleep(Duration::from_millis(500));
             let lag = started.elapsed().as_secs_f64() - player.position().as_secs_f64();
             assert!(
-                !clean || lag < 0.1,
+                lag < 0.1,
                 "the next song sounded {lag:.3} s after it was given"
             );
         }
         player.stop();
+    }
+
+    /// A spare that holds silence is not kept: another takes its place.
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn a_spare_that_holds_silence_is_not_kept() {
+        let mut player = Player::open().expect("a sound device");
+        player.set_volume(0.0);
+        player.play_song(SongData::complete(tone()), 1.0).unwrap();
+        player.prepare_spare();
+        // As if the device took a step of sound before its first pause.
+        let spare = player.spare.as_mut().expect("a spare");
+        spare.output.resume();
+        std::thread::sleep(Duration::from_millis(50));
+        spare.output.pause();
+        std::thread::sleep(PAUSE_SETTLES);
+        assert!(spare.holds_silence());
+        // The audio thread's next looks.
+        for _ in 0..3 {
+            player.prepare_spare();
+            std::thread::sleep(PAUSE_SETTLES);
+        }
+        let spare = player.spare.as_ref().expect("another spare");
+        assert!(!spare.holds_silence(), "the spare that held silence stayed");
+        player.stop();
+    }
+
+    /// The player's first stream is opened again when it holds silence.
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn the_first_stream_is_opened_again_when_it_holds_silence() {
+        let mut opens = 0;
+        let opened = quietly(|| {
+            opens += 1;
+            let mut opened = open_output()?;
+            if opens == 1 {
+                // As if the device took a step of sound before its pause.
+                opened.output.resume();
+                std::thread::sleep(Duration::from_millis(50));
+                opened.output.pause();
+            }
+            Ok(opened)
+        })
+        .expect("a sound device");
+        assert!(opens > 1, "it was not opened again");
+        std::thread::sleep(PAUSE_SETTLES);
+        assert!(!opened.holds_silence());
     }
 
     #[test]
