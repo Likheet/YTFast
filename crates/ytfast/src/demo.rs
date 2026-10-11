@@ -7,8 +7,8 @@
 
 use ytfast_core::library::LibraryTab;
 use ytfast_core::read::{
-    Card, CardButton, CardLook, Header, Item, Page, PageKind, Section, Shape, SortMenu, SortOrder,
-    Target, Thumb, TopResult, Track, TrackKind, TrackMore,
+    Card, CardButton, CardLook, Header, Item, Page, PageKind, Rating, Section, Shape, SortMenu,
+    SortOrder, Target, Thumb, TopResult, Track, TrackKind, TrackMore,
 };
 
 use crate::backend::Route;
@@ -85,6 +85,7 @@ fn fan_video(i: usize) -> Track {
         }),
         duration_seconds: Some(length(&video_id) as u32),
         video_id,
+        like: Some(Rating::Indifferent),
         more: None,
         ..song
     }
@@ -116,6 +117,11 @@ fn song(i: usize) -> Track {
         artist_id: Some(id_for(artist, PageKind::Artist)),
         album_id: Some(id_for(album, PageKind::Album)),
         playable: true,
+        like: Some(if liked_song(i) {
+            Rating::Like
+        } else {
+            Rating::Indifferent
+        }),
         // Some made-up songs are explicit, as real ones are.
         more: (i % 5 == 1).then(|| {
             Box::new(TrackMore {
@@ -126,6 +132,12 @@ fn song(i: usize) -> Track {
             })
         }),
     }
+}
+
+/// Whether the demo's listener likes made-up song `i`: every other one,
+/// the songs of its Liked Music.
+fn liked_song(i: usize) -> bool {
+    (i % SONGS.len()).is_multiple_of(2)
 }
 
 fn songs(from: usize, count: usize) -> Vec<Item> {
@@ -409,7 +421,10 @@ fn unsorted(route: &Route) -> Page {
             )],
         },
         Route::Liked => {
-            let liked = songs(0, SONGS.len());
+            let liked: Vec<Item> = (0..SONGS.len())
+                .filter(|&i| liked_song(i))
+                .map(|i| Item::Track(song(i)))
+                .collect();
             Page {
                 sort: None,
                 header: Some(Header {

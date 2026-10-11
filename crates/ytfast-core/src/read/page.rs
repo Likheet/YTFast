@@ -950,6 +950,8 @@ fn top_result(shelf: &Value) -> Option<Item> {
             artist_id: links.artist_id,
             album_id: links.album_id,
             playable: true,
+            // Its own menu: the card holds other songs' rows too.
+            like: shelf.get("menu").and_then(super::song::menu_rating),
             more: None,
         }));
     }
@@ -1249,6 +1251,7 @@ pub fn up_next(reply: &Value) -> Vec<Track> {
             artist_id: links.artist_id,
             album_id: links.album_id,
             playable: true,
+            like: super::song::row_rating(video),
             more: counterpart.map(|counterpart| {
                 Box::new(super::TrackMore {
                     counterpart: Some(counterpart),
@@ -2144,6 +2147,55 @@ mod tests {
         assert_eq!(tracks[0].artist_id.as_deref(), Some("UCartist0001"));
         assert_eq!(tracks[0].album_id.as_deref(), Some("MPREb_album0001"));
         assert_eq!(tracks[0].album.as_deref(), Some("Album One"));
+    }
+
+    /// Up next's rows say whether the account likes each song by their
+    /// menu's "Add to liked songs", on or off, kept as the song's `like`.
+    #[test]
+    fn up_nexts_rows_say_which_songs_are_liked() {
+        let row = |id: &str, toggled: bool| {
+            serde_json::json!({"playlistPanelVideoRenderer": {
+                "videoId": id,
+                "title": {"runs": [{"text": id}]},
+                "menu": {"menuRenderer": {"items": [{"toggleMenuServiceItemRenderer": {
+                    "isToggled": toggled,
+                    "defaultServiceEndpoint": {"likeEndpoint": {"status": "LIKE", "target": {"videoId": id}}},
+                    "toggledServiceEndpoint": {"likeEndpoint": {"status": "INDIFFERENT", "target": {"videoId": id}}}
+                }}]}}
+            }})
+        };
+        let next = serde_json::json!({"playlistPanelRenderer": {"contents": [
+            row("likedSong01", true),
+            row("otherSong01", false)
+        ]}});
+        let likes: Vec<_> = up_next(&next).into_iter().map(|t| t.like).collect();
+        use crate::read::Rating;
+        assert_eq!(likes, [Some(Rating::Like), Some(Rating::Indifferent)]);
+    }
+
+    /// Search's top result, when a song, takes its like from its own menu,
+    /// not from the songs shown beside it.
+    #[test]
+    fn a_top_result_songs_like_is_its_own() {
+        let reply = serde_json::json!({"contents": [{"musicCardShelfRenderer": {
+            "title": {"runs": [{"text": "A song", "navigationEndpoint": {"watchEndpoint": {"videoId": "topSong0001"}}}]},
+            "subtitle": {"runs": [{"text": "Song"}, {"text": " • "}, {"text": "A singer"}]},
+            "menu": {"menuRenderer": {"items": [{"toggleMenuServiceItemRenderer": {
+                "isToggled": false,
+                "defaultServiceEndpoint": {"likeEndpoint": {"status": "LIKE", "target": {"videoId": "topSong0001"}}},
+                "toggledServiceEndpoint": {"likeEndpoint": {"status": "INDIFFERENT", "target": {"videoId": "topSong0001"}}}
+            }}]}},
+            "contents": [{"musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": "besideIt001"},
+                "menu": {"menuRenderer": {"topLevelButtons": [{"likeButtonRenderer": {"likeStatus": "LIKE"}}]}}
+            }}]
+        }}]});
+        match page(&reply).sections[0].items.first() {
+            Some(Item::Track(top)) => {
+                assert_eq!(top.like, Some(crate::read::Rating::Indifferent));
+            }
+            other => panic!("a song, not {other:?}"),
+        }
     }
 
     #[test]

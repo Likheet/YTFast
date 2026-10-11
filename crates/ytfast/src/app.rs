@@ -1170,6 +1170,21 @@ impl App {
         self.images.borrow_mut().failed(url)
     }
 
+    /// What the account thinks of `track`, when known: as chosen in this
+    /// run, or as YouTube said of the song playing ([`Event::Liked`]), on
+    /// top of what its row said (`Track::like`).
+    pub fn known_like(&self, track: &Track) -> Option<LikeState> {
+        self.likes
+            .get(&track.video_id)
+            .copied()
+            .or_else(|| track.like.map(crate::backend::like_state))
+    }
+
+    /// [`App::known_like`], neither liked nor disliked when not known.
+    pub fn like_of(&self, track: &Track) -> LikeState {
+        self.known_like(track).unwrap_or(LikeState::Neutral)
+    }
+
     /// The cover `url` behind an album's or playlist's page, once it has
     /// arrived: its middle band (the rows a wide window shows of a square
     /// cover, a third to two thirds down), shrunk to a few pixels, and when
@@ -3238,7 +3253,7 @@ impl App {
         };
         if let (Some(wanted), Some(entry)) = (rate, &self.playback.entry) {
             let id = entry.track.video_id.clone();
-            let next = if self.likes.get(&id) == Some(&wanted) {
+            let next = if self.like_of(&entry.track) == wanted {
                 LikeState::Neutral
             } else {
                 wanted
@@ -4552,6 +4567,102 @@ mod tests {
         w.click(tick.center());
         assert!(w.h.app.selected.is_empty());
         crate::theme::set(crate::theme::Theme::YouTubeMusic);
+    }
+
+    /// Songs YouTube says are liked keep their filled thumb shown
+    /// ("Liked") in their rows without the pointer, on a playlist's page
+    /// and in Up next, in every look; what is chosen in this run wins over
+    /// what the row said; the menu and the like button start from it.
+    #[test]
+    fn liked_songs_show_their_thumb_in_their_rows() {
+        use crate::theme::Theme;
+        use ytfast_core::read::Rating;
+        let rated = |id: &str, like: Option<Rating>| Track { like, ..song(id) };
+        let tracks = vec![
+            rated("a", Some(Rating::Like)),
+            rated("b", Some(Rating::Indifferent)),
+            rated("c", None),
+            rated("d", Some(Rating::Like)),
+        ];
+        // The rows named `row` hold a "Liked" thumb.
+        let marked = |w: &Window| -> Vec<String> {
+            let mut rows: Vec<String> = w
+                .named
+                .iter()
+                .filter(|(name, rect)| {
+                    name.len() == 1
+                        && w.named
+                            .iter()
+                            .any(|(n, mark)| n == "Liked" && rect.contains_rect(*mark))
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            rows.sort();
+            rows.dedup();
+            rows
+        };
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            let route = Route::browse("VLPLx".into(), None);
+            w.h.act(Action::Navigate(route.clone()));
+            let load =
+                w.h.requests()
+                    .into_iter()
+                    .find_map(|r| match r {
+                        Request::Page { load, .. } => Some(load),
+                        _ => None,
+                    })
+                    .expect("the page is asked for");
+            let page = Page {
+                sections: vec![Section {
+                    items: tracks.iter().cloned().map(Item::Track).collect(),
+                    ..Section::default()
+                }],
+                ..Page::default()
+            };
+            w.h.answer(Event::Page(route, load, Ok(page)));
+            w.point(egui::pos2(5.0, 5.0));
+            w.settle();
+            assert_eq!(marked(&w), ["A", "D"], "{theme:?}");
+            // Chosen in this run: A no longer, B now.
+            w.h.act(Action::Rate("a".into(), LikeState::Neutral));
+            w.h.act(Action::Rate("b".into(), LikeState::Liked));
+            w.settle();
+            assert_eq!(marked(&w), ["B", "D"], "{theme:?}");
+            // D's menu offers to take it out of Liked Music...
+            let d = w.find("D", 0);
+            w.right_click(d.center());
+            assert!(w.shows("Remove from liked songs"), "{theme:?}");
+            // Closed by a click on the empty page under the rows.
+            w.click(egui::pos2(700.0, 640.0));
+            // ...and its like button, under the pointer, takes the like
+            // back.
+            w.point(d.center());
+            w.frame(Vec::new());
+            let like = w.find("Like", 0);
+            assert!(d.contains_rect(like), "{theme:?}: {d:?} {like:?}");
+            w.click(like.center());
+            assert_eq!(w.h.app.likes.get("d"), Some(&LikeState::Neutral));
+
+            // Up next, from the rows as they came.
+            let mut w = Window::new(theme);
+            w.h.act(Action::PlayTracks {
+                tracks: tracks.clone(),
+                start: 1,
+                source: None,
+            });
+            w.h.ready();
+            w.h.app.now_playing = true;
+            w.h.app.np_tab = NpTab::UpNext;
+            w.point(egui::pos2(5.0, 5.0));
+            w.settle();
+            assert_eq!(marked(&w), ["A", "D"], "{theme:?}: Up next");
+            crate::theme::set(Theme::YouTubeMusic);
+        }
     }
 
     /// In every theme, a song the pointer rests on (0.35 s) is found ahead

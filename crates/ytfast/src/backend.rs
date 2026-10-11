@@ -1782,7 +1782,7 @@ async fn video(shared: &Shared, entry: u64, video_id: String) {
     answer(Ok(Some(data)));
 }
 
-fn like_state(rating: Rating) -> crate::app::LikeState {
+pub(crate) fn like_state(rating: Rating) -> crate::app::LikeState {
     match rating {
         Rating::Like => crate::app::LikeState::Liked,
         Rating::Dislike => crate::app::LikeState::Disliked,
