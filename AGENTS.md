@@ -204,9 +204,13 @@ Paolino), as `audio.rs` does.
   average, and text alone cannot do much better), so every
   timed song lights word by word: each word lit from its left as it is
   sung, by the colours of its letters (`views/lyric_lines.rs`, in each
-  look). The window is drawn 25 times a second only while a word lights,
-  else when the next word or line starts (`Lyrics::next_change`): about
-  58% of the frames of the old 30 a second over the demo's songs. The
+  look). The window is drawn 30 times a second only while the lyrics
+  change (a word lighting, the lines gliding, fading or blurring:
+  `WORD_FRAME`, `lyric_lines::ease`, each asked when meant with
+  `theme::repaint_in`), else when the next word or line starts
+  (`Lyrics::next_change`). The 25 a second meant before ran at about 42
+  by egui's timing, and the glides and fades at the screen's 60; each
+  drawn frame costs the processor a few ms whatever it shows. The
   line being sung stays a third of the way down, gliding to each new
   place as a spring settles (`lyric_lines::Follower`); scrolled by hand,
   the lyrics stop following for 4 s, and a line clicked glides into place
@@ -1160,7 +1164,7 @@ swipe reaches YTFast as sideways scrolling; which way goes back follows
 the touchpad's scrolling direction), covers coming back from memory
 with real ones, and the Mac.
 
-Then (12 October 2026, not yet released), at the owner's word: YTFast
+Then (12 October 2026, version 1.2.5), at the owner's word: YTFast
 picks up where it was left (above), and memory and processor use were
 measured, then trimmed where nothing shows. The owner's YTFast (1.2.4,
 16 minutes after starting): 256 MB private memory (the target is about
@@ -1178,18 +1182,20 @@ brings a frame asked for later forward by the time it predicts one takes
 at 20 frames a second where 15 were meant, a new song's colours fading
 in at about 60 where 30 were; both now ask when meant (`theme::repaint_in`):
 measured on Dynamic Background's Home with a song playing, 8.3 to 10.2%
-of one core became 6.0 to 6.3%. The lyrics page asks the same way for
-25 frames a second while a word lights and gets about 42: 20% of one
-core in YouTube Music's look, 33% in Dynamic Background (whose lines
-fade and blur at 60 frames a second at each new line); asking when
-meant would show the lighting less fluid, so it waits for the owner's
-word. Tested: the unit tests (320, among them the queue kept and taken
+of one core became 6.0 to 6.3%. The lyrics page asked the same way for
+25 frames a second while a word lit and got about 42, its glides and
+fades the screen's 60: 21% of one core in YouTube Music's look, 29 to
+32% in Dynamic Background. At the owner's word everything on it that
+moves now draws 30 times a second (above, Lyrics): 9.5 to 12% and 13%,
+at 27 to 28 frames a second (frames further apart cost the driver less
+each). Tested: the unit tests (321, among them the queue kept and taken
 up paused without asking YouTube anything, then played from its second;
 what is kept of a long queue and of a video's moment; saved beside the
 settings, and not in the demo; a frame asked for later scheduled when
-meant), and the demo off the screen (the measurements above). Not yet
-tested: the queue kept with the owner's account, a Mac's media keys, and
-the Mac.
+meant; the lyrics' fades eased at 30 frames a second), and the demo off
+the screen (the measurements above). Not yet tested: the queue kept
+with the owner's account, the lyrics at 30 frames a second by the
+owner's eye, a Mac's media keys, and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
