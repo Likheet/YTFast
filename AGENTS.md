@@ -197,7 +197,10 @@ Paolino), as `audio.rs` does.
   same as YouTube's or LRCLIB's (`lyrics::same_words`: under the English
   title "Idol" it holds YOASOBI's English version of アイドル, the same
   length). Lyrics timed by the line get their words' times estimated, by
-  syllables at the song's own pace (`lyrics::estimate_words`), so every
+  syllables at the song's own pace, the last word held two syllables
+  longer (`lyrics::estimate_words`; tuned against JamendoLyrics, 79 songs
+  whose words people timed: words start 0.335 s from the singing on
+  average, and text alone cannot do much better), so every
   timed song lights word by word: each word lit from its left as it is
   sung, by the colours of its letters (`views/lyric_lines.rs`, in each
   look). The window is drawn 25 times a second only while a word lights,
@@ -423,6 +426,10 @@ Paolino), as `audio.rs` does.
   first. Opening one takes about 0.15 s, which made songs start later, so
   a spare is opened while a song plays and nothing waits
   (`Player::prepare_spare`): moving to it takes about 0.01 s.
+- The song's position is what is heard: what the device was given, less
+  the latency it reports (`Player::position`). Counting only what it was
+  given ran 0.2 s ahead of the sound on the owner's laptop, so the lyrics
+  lit early and the video's pictures came early by as much.
 - The device is Windows' default output, opened by its name, the way
   most programs open a device, and YTFast follows the default itself,
   every 2 s (`Player::follow_default_by_name`). Windows' virtual default
