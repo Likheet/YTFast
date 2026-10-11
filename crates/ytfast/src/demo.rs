@@ -1237,7 +1237,77 @@ pub fn cover(url: &str) -> egui::ColorImage {
     egui::ColorImage::new([SIDE, SIDE], pixels)
 }
 
-/// Made-up, time-synced lyrics.
+/// Made-up lines in Japanese, in Latin letters and in English, for the
+/// songs sung in Japanese ([`sung_in_japanese`]).
+const JAPANESE: [(&str, &str, &str); 8] = [
+    (
+        "夜の街に光がともる",
+        "Yoru no machi ni hikari ga tomoru",
+        "The lights come on in the night town",
+    ),
+    (
+        "君の声が聞こえる",
+        "Kimi no koe ga kikoeru",
+        "I can hear your voice",
+    ),
+    (
+        "風に乗って歌おう",
+        "Kaze ni notte utaou",
+        "Let's sing, riding the wind",
+    ),
+    (
+        "星空の下で踊ろう",
+        "Hoshizora no shita de odorou",
+        "Let's dance under the starry sky",
+    ),
+    (
+        "明日へ走り出す",
+        "Ashita e hashiridasu",
+        "Running toward tomorrow",
+    ),
+    (
+        "忘れないでこの夜",
+        "Wasurenaide kono yoru",
+        "Don't forget this night",
+    ),
+    (
+        "ずっとそばにいて",
+        "Zutto soba ni ite",
+        "Stay by my side forever",
+    ),
+    (
+        "心が叫んでる",
+        "Kokoro ga sakenderu",
+        "My heart is crying out",
+    ),
+];
+
+/// Whether a made-up song is sung in Japanese: about one in five.
+pub fn sung_in_japanese(video_id: &str) -> bool {
+    seed(video_id) % 5 == 1
+}
+
+/// The made-up lyrics translated: the Japanese ones into English and Latin
+/// letters; the English ones need neither.
+pub fn translation(lines: &[String]) -> ytfast_core::translate::Translated {
+    let find = |line: &String| JAPANESE.iter().find(|(words, _, _)| words == line);
+    let japanese = lines.iter().any(|line| find(line).is_some());
+    ytfast_core::translate::Translated {
+        language: Some(if japanese { "ja" } else { "en" }.into()),
+        lines: lines
+            .iter()
+            .map(|line| find(line).map(|(_, _, english)| english.to_string()))
+            .collect(),
+        latin: lines
+            .iter()
+            .map(|line| find(line).map(|(_, latin, _)| latin.to_string()))
+            .collect(),
+        source: "Demo".into(),
+    }
+}
+
+/// Made-up, time-synced lyrics, their words timed as real lyrics timed
+/// by the line are (estimated).
 pub fn lyrics(video_id: &str) -> crate::lyrics::Lyrics {
     const VERSES: [&str; 12] = [
         "Streetlights hum a song we used to know",
@@ -1253,29 +1323,38 @@ pub fn lyrics(video_id: &str) -> crate::lyrics::Lyrics {
         "So turn it up, the chorus coming through",
         "Every road I take comes back to you",
     ];
+    let japanese = sung_in_japanese(video_id);
     let seed = seed(video_id) as usize;
     let length = length(video_id);
-    let mut lines = Vec::new();
+    let mut lines: Vec<ytfast_core::lyrics::LyricLine> = Vec::new();
     let mut at = 6.0;
     let mut i = 0;
     while at < length - 8.0 {
         let text = if i % 9 == 8 {
             "♪".to_string()
+        } else if japanese {
+            JAPANESE[(seed + i) % JAPANESE.len()].0.to_string()
         } else {
             VERSES[(seed + i) % VERSES.len()].to_string()
         };
-        lines.push(crate::lyrics::Line {
-            start: Some(at),
+        let start_ms = Some((at * 1000.0) as u64);
+        if let Some(before) = lines.last_mut() {
+            before.end_ms = start_ms;
+        }
+        lines.push(ytfast_core::lyrics::LyricLine {
+            start_ms,
             text,
+            ..Default::default()
         });
         at += 3.5 + ((seed + i * 7) % 5) as f64 * 0.6;
         i += 1;
     }
-    crate::lyrics::Lyrics {
+    crate::lyrics::Lyrics::from(ytfast_core::lyrics::Lyrics {
         lines,
         synced: true,
         source: "Demo".into(),
-    }
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]

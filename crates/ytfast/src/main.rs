@@ -33,6 +33,8 @@ fn start_log(verbose: bool, demo: bool) {
         } else {
             log::LevelFilter::Warn
         })
+        // Its notes name part of Musixmatch's session token.
+        .filter_module("musixmatch_inofficial", log::LevelFilter::Warn)
         .format(|out, record| {
             let message = ytfast_core::redact::urls(&record.args().to_string());
             writeln!(

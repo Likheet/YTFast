@@ -57,6 +57,15 @@ pub struct Settings {
     /// Download new versions in the background and install them on a
     /// restart (`update`).
     pub auto_update: bool,
+    /// Disliking the song playing moves on to the next, as YouTube Music
+    /// does.
+    pub skip_disliked: bool,
+    /// Closing the window while a song plays asks first
+    /// ([`Dialog::ConfirmClose`]).
+    pub confirm_close: bool,
+    /// Lyrics show each line in English too, and in Latin letters when
+    /// written in another script (the Lyrics tab's Translate).
+    pub translate_lyrics: bool,
 }
 
 impl Settings {
@@ -92,6 +101,9 @@ impl Default for Settings {
             moving_background: true,
             dynamic_background: false,
             auto_update: true,
+            skip_disliked: true,
+            confirm_close: true,
+            translate_lyrics: false,
         }
     }
 }
@@ -241,6 +253,9 @@ pub enum Setting {
     EvenLoudness,
     MovingBackground,
     AutoUpdate,
+    SkipDisliked,
+    ConfirmClose,
+    TranslateLyrics,
 }
 
 /// A small window asking one thing.
@@ -281,6 +296,11 @@ pub enum Dialog {
     /// The update window: the new version, its download, and Restart to
     /// update (as Spotifast's).
     Update,
+    /// "Do you really want to close? There's a song playing.", with "Do
+    /// not ask again" (ticked as it opens).
+    ConfirmClose {
+        dont_ask: bool,
+    },
 }
 
 /// The player page's tabs.
@@ -380,6 +400,11 @@ pub enum Action {
     RestartToUpdate,
     /// Open the update window (the top bar's update badge).
     ShowUpdate,
+    /// Close the window after all (the close question's Yes); with
+    /// `dont_ask`, never ask again (Settings can ask again).
+    ConfirmClose {
+        dont_ask: bool,
+    },
     OpenDialog(Dialog),
     RenamePlaylist {
         playlist_id: String,
@@ -419,6 +444,9 @@ pub enum Action {
     ToggleGuide,
     /// Open or close the player page.
     ToggleNowPlaying,
+    /// The window to the whole screen with the player page, larger (F),
+    /// or back.
+    ToggleFullscreen,
     CloseNowPlaying,
     NowPlayingTab(NpTab),
     /// Like, dislike, or neither.
@@ -498,6 +526,10 @@ pub struct App {
     receipt: Option<fastframe_update::Receipt>,
     /// The window was asked to close for an update.
     restarting: bool,
+    /// The close question was answered Yes: the window closes (once
+    /// `close_now` has asked it to), without asking again.
+    closing: bool,
+    close_now: bool,
     pub settings: Settings,
     pub auth: Auth,
     pub route: Route,
@@ -539,8 +571,17 @@ pub struct App {
     /// The player page drew the video this frame; otherwise its decoding
     /// rests.
     pub video_drawn: std::cell::Cell<bool>,
+    /// The window fills the screen with the player page (F): no top bar or
+    /// menu, the cover or video larger. Leaving the player page leaves it.
+    pub fullscreen: bool,
+    /// Full screen to ask the window for, and when it last was (egui's
+    /// clock): the window's own word on it is believed only a while after.
+    fullscreen_wanted: Option<bool>,
+    fullscreen_asked: f64,
     /// Lyrics and related pages, by song.
     pub lyrics: HashMap<String, crate::lyrics::State>,
+    /// Lyrics translated, by song.
+    pub translations: HashMap<String, crate::lyrics::Translation>,
     pub related: HashMap<String, Loadable>,
     /// What the account thinks of songs, as known.
     pub likes: HashMap<String, LikeState>,
@@ -749,6 +790,8 @@ impl App {
             update_manual: false,
             receipt: None,
             restarting: false,
+            closing: false,
+            close_now: false,
             settings,
             auth,
             route: Route::Home,
@@ -772,7 +815,11 @@ impl App {
             video: None,
             song_videos: HashMap::new(),
             video_drawn: std::cell::Cell::new(false),
+            fullscreen: false,
+            fullscreen_wanted: None,
+            fullscreen_asked: f64::NEG_INFINITY,
             lyrics: HashMap::new(),
+            translations: HashMap::new(),
             related: HashMap::new(),
             likes: HashMap::new(),
             saved: HashMap::new(),
@@ -840,6 +887,39 @@ impl App {
         let actions = std::mem::take(self.actions.get_mut());
         for action in actions {
             self.apply(action);
+        }
+        // Full screen is the player page's: leaving it leaves full screen.
+        if self.fullscreen && !self.now_playing {
+            self.set_fullscreen(false);
+        }
+    }
+
+    /// Full screen on (the player page with it) or off.
+    fn set_fullscreen(&mut self, on: bool) {
+        if on == self.fullscreen {
+            return;
+        }
+        self.fullscreen = on;
+        self.fullscreen_wanted = Some(on);
+        if on {
+            self.now_playing = true;
+            self.notify("Full screen: press F or Esc to leave");
+        }
+    }
+
+    /// Asks the window for full screen when it was chosen; and when the
+    /// window left it by itself (a Mac's own Esc or green button), the
+    /// page is laid out as before.
+    fn sync_fullscreen(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if let Some(on) = self.fullscreen_wanted.take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+            self.fullscreen_asked = now;
+            return;
+        }
+        let actual = ctx.input(|i| i.viewport().fullscreen);
+        if self.fullscreen && actual == Some(false) && now - self.fullscreen_asked > 1.5 {
+            self.fullscreen = false;
         }
     }
 
@@ -923,7 +1003,10 @@ impl App {
     }
 
     /// Asks for what the player page shows of the playing song (lyrics,
-    /// related), once per song, when the page is open.
+    /// related), once per song, when the page is open. Its lyrics are
+    /// asked for whichever tab shows, so Lyrics opens at once. While
+    /// Lyrics shows, the next song's lyrics are asked for too, so they
+    /// show as it starts, and with Translate on, both are translated.
     fn want_song_extras(&mut self) {
         if !self.now_playing {
             return;
@@ -932,49 +1015,80 @@ impl App {
             return;
         };
         let track = &entry.track;
-        match self.np_tab {
-            NpTab::Lyrics if !self.lyrics.contains_key(&track.video_id) => {
-                // The player's length is this song's only once it plays it
-                // (until then it is the last song's), as itself (not its
-                // video, in the video mode).
-                let playing_it = self.audio_status.entry == Some(entry.id)
-                    && self.playback.version.as_deref() == Some(track.video_id.as_str());
-                let duration = if playing_it && self.audio_status.length > 0.0 {
-                    Some(self.audio_status.length)
-                } else {
-                    track.duration_seconds.map(f64::from)
-                };
-                // LRCLIB matches on the length: without one from YouTube,
-                // wait for the song to start.
-                let starting = matches!(
-                    self.playback.state,
-                    PlayState::Preparing | PlayState::Playing
-                );
-                if duration.is_none() && !playing_it && starting {
-                    return;
-                }
-                if self.lyrics.len() > 30 {
-                    self.lyrics.clear();
-                }
-                self.lyrics
-                    .insert(track.video_id.clone(), crate::lyrics::State::Loading);
-                self.backend.send(Request::Lyrics {
-                    video_id: track.video_id.clone(),
-                    title: track.title.clone(),
-                    artist: track.artists.clone(),
-                    album: track.album.clone(),
-                    duration,
-                });
+        let next = self.queue.peek_next().map(|next| &next.track);
+        let lyrics_shown = self.np_tab == NpTab::Lyrics;
+        let mut wanted = Vec::new();
+        if !self.lyrics.contains_key(&track.video_id) {
+            // The player's length is this song's only once it plays it
+            // (until then it is the last song's), as itself (not its
+            // video, in the video mode).
+            let playing_it = self.audio_status.entry == Some(entry.id)
+                && self.playback.version.as_deref() == Some(track.video_id.as_str());
+            let duration = if playing_it && self.audio_status.length > 0.0 {
+                Some(self.audio_status.length)
+            } else {
+                track.duration_seconds.map(f64::from)
+            };
+            // LRCLIB and Musixmatch match on the length: without one from
+            // YouTube, wait for the song to start.
+            let starting = matches!(
+                self.playback.state,
+                PlayState::Preparing | PlayState::Playing
+            );
+            if duration.is_some() || playing_it || !starting {
+                wanted.push(lyrics_request(track, duration));
             }
-            NpTab::Related if !self.related.contains_key(&track.video_id) => {
-                if self.related.len() > 10 {
-                    self.related.clear();
+        } else if lyrics_shown
+            && !matches!(
+                self.lyrics.get(&track.video_id),
+                Some(crate::lyrics::State::Loading)
+            )
+            && let Some(next) = next
+            && !self.lyrics.contains_key(&next.video_id)
+            && let Some(seconds) = next.duration_seconds
+        {
+            wanted.push(lyrics_request(next, Some(f64::from(seconds))));
+        }
+        if lyrics_shown && self.settings.translate_lyrics {
+            let songs = std::iter::once(&track.video_id).chain(next.map(|n| &n.video_id));
+            for video_id in songs {
+                if let Some(crate::lyrics::State::Ready(lyrics)) = self.lyrics.get(video_id)
+                    && !self.translations.contains_key(video_id)
+                {
+                    wanted.push(Request::Translate {
+                        video_id: video_id.clone(),
+                        lines: lyrics.texts(),
+                        musixmatch: lyrics.musixmatch.clone(),
+                    });
                 }
-                self.related
-                    .insert(track.video_id.clone(), Loadable::Loading);
-                self.backend.send(Request::Related(track.video_id.clone()));
             }
-            _ => {}
+        }
+        if self.np_tab == NpTab::Related && !self.related.contains_key(&track.video_id) {
+            wanted.push(Request::Related(track.video_id.clone()));
+        }
+        // What the page shows stays when a store is full.
+        let keep: Vec<String> = std::iter::once(track.video_id.clone())
+            .chain(next.map(|n| n.video_id.clone()))
+            .collect();
+        for request in wanted {
+            match &request {
+                Request::Lyrics { video_id, .. } => {
+                    keep_only(&mut self.lyrics, MAX_LYRICS, &keep);
+                    self.lyrics
+                        .insert(video_id.clone(), crate::lyrics::State::Loading);
+                }
+                Request::Translate { video_id, .. } => {
+                    keep_only(&mut self.translations, MAX_LYRICS, &keep);
+                    self.translations
+                        .insert(video_id.clone(), crate::lyrics::Translation::Loading);
+                }
+                Request::Related(video_id) => {
+                    keep_only(&mut self.related, MAX_RELATED, &keep);
+                    self.related.insert(video_id.clone(), Loadable::Loading);
+                }
+                _ => {}
+            }
+            self.backend.send(request);
         }
     }
 
@@ -1270,6 +1384,13 @@ impl App {
                     };
                     self.lyrics.insert(video_id, state);
                 }
+                Event::Translated(video_id, result) => {
+                    let state = match result {
+                        Ok(translated) => crate::lyrics::Translation::Ready(translated),
+                        Err(_) => crate::lyrics::Translation::Missing,
+                    };
+                    self.translations.insert(video_id, state);
+                }
                 Event::Related(video_id, result) => {
                     let loaded = match result {
                         Ok(page) => Loadable::Ready(page),
@@ -1558,6 +1679,12 @@ impl App {
                 }
                 if matches!(self.related.get(video_id), Some(Loadable::Failed(_))) {
                     self.related.remove(video_id);
+                }
+                if matches!(
+                    self.translations.get(video_id),
+                    Some(crate::lyrics::Translation::Missing)
+                ) {
+                    self.translations.remove(video_id);
                 }
                 let report = PlayReport::new(&ready.info);
                 if let Some(url) = report.started(self.playback.start_at) {
@@ -1891,7 +2018,9 @@ impl App {
     /// (by YouTube's map); `None` while the video shows what the song does
     /// not have (its own intro, a scene between).
     pub fn lyrics_clock(&self) -> Option<f64> {
-        let position = self.audio_status.position;
+        // Carried on between the player's reports (ten a second), so words
+        // light smoothly.
+        let position = self.clock();
         match self.playing_video_map() {
             Some(map) => ytfast_core::read::video_to_song(&map, position),
             None => Some(position),
@@ -2521,6 +2650,7 @@ impl App {
                     self.start(entry);
                 }
             }
+            Action::ToggleFullscreen => self.set_fullscreen(!self.fullscreen),
             Action::VideoMode(on) => self.set_video_mode(on),
             Action::PlayNext(track) | Action::AddToQueue(track) if !track.playable => {
                 self.notify(UNAVAILABLE);
@@ -2608,9 +2738,21 @@ impl App {
                     self.like_before.insert(video_id.clone(), before);
                 }
                 self.likes.insert(video_id.clone(), like);
+                // The song playing, disliked: the next one, as YouTube
+                // Music does (Settings can keep it playing).
+                let skip = like == LikeState::Disliked
+                    && self.settings.skip_disliked
+                    && self
+                        .playback
+                        .entry
+                        .as_ref()
+                        .is_some_and(|e| e.track.video_id == video_id);
                 self.send_edit(Edit::Rate { video_id, like });
                 if like == LikeState::Liked {
                     self.notify("Added to Liked Music");
+                }
+                if skip {
+                    self.next();
                 }
             }
             Action::AddToPlaylist {
@@ -2677,6 +2819,9 @@ impl App {
                     Setting::Autoplay => s.autoplay = !s.autoplay,
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
                     Setting::MovingBackground => s.moving_background = !s.moving_background,
+                    Setting::SkipDisliked => s.skip_disliked = !s.skip_disliked,
+                    Setting::ConfirmClose => s.confirm_close = !s.confirm_close,
+                    Setting::TranslateLyrics => s.translate_lyrics = !s.translate_lyrics,
                     Setting::AutoUpdate => {
                         s.auto_update = !s.auto_update;
                         if let Some(updates) = &self.updates {
@@ -2709,6 +2854,13 @@ impl App {
             Action::OpenDialog(dialog) => {
                 *self.dialog.get_mut() = Some(dialog);
                 self.dialog_fresh.set(true);
+            }
+            Action::ConfirmClose { dont_ask } => {
+                if dont_ask {
+                    self.settings.confirm_close = false;
+                }
+                self.closing = true;
+                self.close_now = true;
             }
             Action::RenamePlaylist {
                 playlist_id,
@@ -2865,7 +3017,15 @@ impl App {
         // are its own. (egui's `egui_wants_keyboard_input` is true for any
         // widget with the focus, a button too.)
         let typing = ctx.text_edit_focused();
-        // Escape closes a dialog (or leaves the search box) first.
+        // Escape closes a dialog (or leaves the search box) first, then
+        // full screen, then the player page.
+        if self.fullscreen
+            && !typing
+            && self.dialog.get_mut().is_none()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.act(Action::ToggleFullscreen);
+        }
         if self.now_playing
             && !typing
             && self.dialog.get_mut().is_none()
@@ -2974,6 +3134,10 @@ impl App {
             self.go_to = Some(now);
             return;
         }
+        // YTFast's own: full screen, with the player page.
+        if pressed(Key::F, Modifiers::NONE) {
+            self.act(Action::ToggleFullscreen);
+        }
 
         let seek = |by: f64| Action::Seek((position + by).max(0.0));
         // One second: Shift+L / Shift+H, Ctrl+Shift+→ / ←.
@@ -3047,6 +3211,29 @@ impl App {
                 wanted
             };
             self.act(Action::Rate(id, next));
+        }
+    }
+
+    /// The window asked to close (its ×, Alt+F4, the taskbar, a Mac's
+    /// red button) while a song plays: it stays, and asks first
+    /// ([`Dialog::ConfirmClose`]), unless Settings says not to, an update
+    /// is closing YTFast, or the question was answered Yes.
+    fn ask_before_closing(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.close_now) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        let sounding = self.playback.state == PlayState::Playing && !self.audio_status.paused;
+        let ask = self.settings.confirm_close && sounding && !self.closing && !self.restarting;
+        if !ask || !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        // Closed from the taskbar while minimised: the question shows.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        if !matches!(*self.dialog.get_mut(), Some(Dialog::ConfirmClose { .. })) {
+            self.apply(Action::OpenDialog(Dialog::ConfirmClose { dont_ask: true }));
         }
     }
 
@@ -3154,6 +3341,16 @@ fn words(event: &Event) -> Vec<&str> {
         Event::Lyrics(_, Some(lyrics)) => {
             words.extend(lyrics.lines.iter().map(|line| line.text.as_str()));
         }
+        Event::Translated(_, Ok(translated)) => {
+            words.extend(
+                translated
+                    .lines
+                    .iter()
+                    .chain(&translated.latin)
+                    .flatten()
+                    .map(String::as_str),
+            );
+        }
         Event::MoreResults { items, .. } => {
             for item in items {
                 match item {
@@ -3205,6 +3402,31 @@ fn add_rows(page: &mut Page, tracks: Vec<Track>) {
 /// loads again.
 const MAX_PAGES: usize = 24;
 
+/// The most songs whose lyrics (and their translations) are kept.
+const MAX_LYRICS: usize = 30;
+/// The most songs whose related pages are kept.
+const MAX_RELATED: usize = 10;
+
+/// A song's lyrics, asked for: its length, as the player or YouTube says,
+/// tells it from other versions.
+fn lyrics_request(track: &Track, duration: Option<f64>) -> Request {
+    Request::Lyrics {
+        video_id: track.video_id.clone(),
+        title: track.title.clone(),
+        artist: track.artists.clone(),
+        album: track.album.clone(),
+        duration,
+    }
+}
+
+/// Makes room in a store of songs' things that holds `most`: when full,
+/// it keeps only those of `keep` (what the page shows).
+fn keep_only<V>(store: &mut HashMap<String, V>, most: usize, keep: &[String]) {
+    if store.len() >= most {
+        store.retain(|video_id, _| keep.contains(video_id));
+    }
+}
+
 /// The most songs whose videos are remembered (see [`App::video_of`]).
 const MAX_SONG_VIDEOS: usize = 500;
 
@@ -3248,6 +3470,7 @@ impl eframe::App for App {
         self.media_controls();
         // A media key pressed while the window is hidden acts at once.
         self.apply_actions();
+        self.ask_before_closing(ctx);
         // Keep the progress bar moving, and hear when the song ends, while
         // a song plays.
         if self.playback.state == PlayState::Playing && !self.audio_status.paused {
@@ -3294,6 +3517,8 @@ impl eframe::App for App {
         }
 
         views::show(self, ui);
+        self.apply_actions();
+        self.sync_fullscreen(&ctx);
         // The player page is closed, or shows no video: its decoding rests.
         if !self.video_drawn.replace(false)
             && let Some(VideoShow {
@@ -3304,7 +3529,6 @@ impl eframe::App for App {
             video.rest();
         }
 
-        self.apply_actions();
         // A notice shows for a few seconds.
         if let Some((_, at)) = &self.notice {
             let left = NOTICE_TIME.saturating_sub(at.elapsed());
@@ -3597,6 +3821,9 @@ mod tests {
         h: Harness,
         time: f64,
         named: Vec<(String, egui::Rect)>,
+        /// Words on screen (egui's labels, which screen readers get as a
+        /// value, not a name).
+        texts: Vec<String>,
         /// What the frames asked of the window (close it, move it...).
         commands: Vec<egui::ViewportCommand>,
         /// The pointer's look after the last frame.
@@ -3617,6 +3844,7 @@ mod tests {
                 h,
                 time: 0.0,
                 named: Vec::new(),
+                texts: Vec::new(),
                 commands: Vec::new(),
                 cursor: egui::CursorIcon::Default,
             }
@@ -3649,9 +3877,13 @@ mod tests {
                     .values()
                     .flat_map(|viewport| viewport.commands.iter().cloned()),
             );
-            self.named = output
-                .platform_output
-                .accesskit_update
+            let update = output.platform_output.accesskit_update;
+            self.texts = update
+                .iter()
+                .flat_map(|update| &update.nodes)
+                .filter_map(|(_, node)| node.value().map(str::to_string))
+                .collect();
+            self.named = update
                 .map(|update| {
                     update
                         .nodes
@@ -3668,6 +3900,86 @@ mod tests {
                 })
                 .unwrap_or_default();
             self.h.app.apply_actions();
+        }
+
+        /// A frame in which the window is asked to close (its ×, Alt+F4),
+        /// as `App::logic` takes it: what the app told the window.
+        fn close_request(&mut self) -> Vec<egui::ViewportCommand> {
+            self.time += 0.1;
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 820.0),
+                )),
+                time: Some(self.time),
+                ..Default::default()
+            };
+            input.viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    events: vec![egui::ViewportEvent::Close],
+                    ..Default::default()
+                },
+            );
+            let app = &mut self.h.app;
+            let mut output = self
+                .h
+                .ctx
+                .run_ui(input, |ui| app.ask_before_closing(ui.ctx()));
+            output.textures_delta.clear();
+            output
+                .viewport_output
+                .values()
+                .flat_map(|viewport| viewport.commands.iter().cloned())
+                .collect()
+        }
+
+        /// `key` pressed, in a frame run as the window runs one: the
+        /// shortcuts, the views, the actions, full screen. What the app
+        /// told the window.
+        fn press(&mut self, key: egui::Key) -> Vec<egui::ViewportCommand> {
+            self.time += 0.1;
+            let down = |pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 820.0),
+                )),
+                time: Some(self.time),
+                events: vec![down(true), down(false)],
+                ..Default::default()
+            };
+            let app = &mut self.h.app;
+            let mut output = self.h.ctx.run_ui(input, |ui| {
+                app.shortcuts(ui.ctx());
+                crate::theme::set(app.settings.theme);
+                views::show(app, ui);
+                app.apply_actions();
+                app.sync_fullscreen(ui.ctx());
+            });
+            output.textures_delta.clear();
+            output
+                .viewport_output
+                .values()
+                .flat_map(|viewport| viewport.commands.iter().cloned())
+                .collect()
+        }
+
+        /// The largest control named `name` (the cover, beside the
+        /// player bar's button of the same name).
+        fn largest(&self, name: &str) -> egui::Rect {
+            self.named
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, rect)| *rect)
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
+                .unwrap_or_else(|| panic!("no {name}"))
         }
 
         /// Frames enough for anything sliding or fading to settle.
@@ -3728,6 +4040,11 @@ mod tests {
 
         fn shows(&self, name: &str) -> bool {
             self.named.iter().any(|(n, _)| n == name)
+        }
+
+        /// Whether these words show (as words, not a control's name).
+        fn says(&self, words: &str) -> bool {
+            self.texts.iter().any(|t| t == words)
         }
 
         /// A frame with the wheel turned (points, as a touchpad's) at `at`.
@@ -5106,6 +5423,346 @@ mod tests {
         w.settle();
         assert_eq!(w.h.entry().1, "l");
         assert!(w.h.app.video_mode, "still on");
+    }
+
+    /// Disliking the song playing moves on to the next, as YouTube Music
+    /// does; another song's dislike, or with the setting off, does not.
+    #[test]
+    fn disliking_the_song_playing_skips_it() {
+        let mut h = Harness::new();
+        h.play(&["a", "b", "c"]);
+        h.act(Action::Rate("b".into(), LikeState::Disliked));
+        assert_eq!(h.entry().1, "a");
+        h.act(Action::Rate("a".into(), LikeState::Disliked));
+        assert_eq!(h.entry().1, "b");
+        assert_eq!(h.app.likes.get("a"), Some(&LikeState::Disliked));
+        h.ready();
+        h.app.settings.skip_disliked = false;
+        h.act(Action::Rate("b".into(), LikeState::Disliked));
+        assert_eq!(h.entry().1, "b");
+        // Liking or taking the dislike back never skips.
+        h.app.settings.skip_disliked = true;
+        h.act(Action::Rate("b".into(), LikeState::Neutral));
+        h.act(Action::Rate("b".into(), LikeState::Liked));
+        assert_eq!(h.entry().1, "b");
+    }
+
+    /// The window asked to close while a song plays: it stays and asks.
+    /// Yes closes it (and, with "Do not ask again" ticked, it never asks
+    /// again); No keeps it. Paused, or for an update, it closes at once.
+    #[test]
+    fn closing_while_a_song_plays_asks_first() {
+        let cancels = |commands: &[egui::ViewportCommand]| {
+            commands.contains(&egui::ViewportCommand::CancelClose)
+        };
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        // Nothing playing: it closes.
+        assert!(!cancels(&w.close_request()));
+        w.h.play(&["a", "b"]);
+        // Paused: it closes.
+        w.h.app.audio.set_status(|s| s.paused = true);
+        w.h.frame();
+        assert!(!cancels(&w.close_request()));
+        w.h.app.audio.set_status(|s| s.paused = false);
+        w.h.frame();
+        // Playing: it stays, and asks, "Do not ask again" ticked.
+        assert!(cancels(&w.close_request()));
+        assert!(matches!(
+            *w.h.app.dialog.borrow(),
+            Some(Dialog::ConfirmClose { dont_ask: true })
+        ));
+        w.settle();
+        assert!(w.shows("Do not ask again"));
+        // No: it stays, and asks next time.
+        let no = w.find("No", 0);
+        w.click(no.center());
+        w.settle();
+        assert!(w.h.app.dialog.borrow().is_none());
+        assert!(w.h.app.settings.confirm_close);
+        assert!(cancels(&w.close_request()));
+        w.settle();
+        // Unticked, then Yes: it closes, and asks again another time.
+        let tick = w.find("Do not ask again", 0);
+        w.click(tick.center());
+        w.settle();
+        let yes = w.find("Yes", 0);
+        w.click(yes.center());
+        w.settle();
+        assert!(w.h.app.settings.confirm_close);
+        assert!(w.close_request().contains(&egui::ViewportCommand::Close));
+        assert!(!cancels(&w.close_request()));
+
+        // Ticked (as it opens), Yes: never asks again.
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["a"]);
+        assert!(cancels(&w.close_request()));
+        w.settle();
+        let yes = w.find("Yes", 0);
+        w.click(yes.center());
+        w.settle();
+        assert!(!w.h.app.settings.confirm_close);
+        assert!(w.close_request().contains(&egui::ViewportCommand::Close));
+        assert!(!cancels(&w.close_request()));
+
+        // An update closing YTFast never asks.
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["a"]);
+        w.h.app.restarting = true;
+        assert!(!cancels(&w.close_request()));
+    }
+
+    /// The close question in each look: drawn, and answered.
+    #[test]
+    fn the_close_question_in_each_look() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a"]);
+            w.close_request();
+            w.settle();
+            for name in ["Yes", "No", "Do not ask again"] {
+                assert!(w.shows(name), "{theme:?}: {name}");
+            }
+            let yes = w.find("Yes", 0);
+            w.click(yes.center());
+            w.settle();
+            assert!(!w.h.app.settings.confirm_close, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// F: the window to the whole screen with the player page, its top
+    /// bar and menu gone and the cover larger, in each look; Esc leaves
+    /// full screen (the player page stays), and so does leaving the
+    /// player page.
+    #[test]
+    fn f_puts_the_player_page_in_full_screen() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a"]);
+            w.h.app.now_playing = true;
+            w.settle();
+            let windowed = w.largest("Pause");
+            assert!(w.shows("Home"), "{theme:?}");
+            let told = w.press(egui::Key::F);
+            assert!(w.h.app.fullscreen && w.h.app.now_playing, "{theme:?}");
+            assert!(
+                told.contains(&egui::ViewportCommand::Fullscreen(true)),
+                "{theme:?} {told:?}"
+            );
+            w.settle();
+            assert!(!w.shows("Home"), "{theme:?}: the menu is gone");
+            let full = w.largest("Pause");
+            assert!(
+                full.width() > windowed.width() * 1.05,
+                "{theme:?}: {windowed:?} then {full:?}"
+            );
+            for name in ["UP NEXT", "Song", "Video"] {
+                assert!(w.shows(name), "{theme:?}: {name}");
+            }
+            // Esc: out of full screen, still on the player page.
+            let told = w.press(egui::Key::Escape);
+            assert!(!w.h.app.fullscreen && w.h.app.now_playing, "{theme:?}");
+            assert!(told.contains(&egui::ViewportCommand::Fullscreen(false)));
+            w.settle();
+            assert!(w.shows("Home"), "{theme:?}");
+            // Leaving the player page leaves full screen.
+            w.press(egui::Key::F);
+            assert!(w.h.app.fullscreen);
+            w.press(egui::Key::Q);
+            assert!(!w.h.app.fullscreen && !w.h.app.now_playing, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// Made-up lyrics timed by the line, as a source sends them: their
+    /// words' times estimated.
+    fn timed_lyrics(lines: &[(u64, &str)]) -> crate::lyrics::Lyrics {
+        use ytfast_core::lyrics as core;
+        let mut found: Vec<core::LyricLine> = lines
+            .iter()
+            .map(|&(start_ms, text)| core::LyricLine {
+                start_ms: Some(start_ms),
+                text: text.into(),
+                ..Default::default()
+            })
+            .collect();
+        for i in 1..found.len() {
+            found[i - 1].end_ms = found[i].start_ms;
+        }
+        crate::lyrics::Lyrics::from(core::Lyrics {
+            lines: found,
+            synced: true,
+            source: "Test".into(),
+            ..Default::default()
+        })
+    }
+
+    /// The player page asks for the playing song's lyrics whatever its tab,
+    /// once. On Lyrics it asks for the next song's too, once the playing
+    /// one's are in, by its length; with Translate on, both are
+    /// translated. A translation that did not come is asked for again when
+    /// the song plays again.
+    #[test]
+    fn lyrics_are_asked_for_ahead_and_translated_when_wanted() {
+        use crate::lyrics::Translation;
+        let lyrics_asked = |requests: &[Request]| -> Vec<String> {
+            requests
+                .iter()
+                .filter_map(|r| match r {
+                    Request::Lyrics { video_id, .. } => Some(video_id.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let translations_asked = |requests: &[Request]| -> Vec<String> {
+            requests
+                .iter()
+                .filter_map(|r| match r {
+                    Request::Translate {
+                        video_id, lines, ..
+                    } => {
+                        assert_eq!(lines.len(), 2);
+                        Some(video_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut h = Harness::new();
+        h.play(&["a", "b", "c"]);
+        h.requests();
+        // The player page closed: nothing.
+        h.app.want_song_extras();
+        assert!(lyrics_asked(&h.requests()).is_empty());
+        // Open on Up next: the playing song's lyrics, once.
+        h.app.now_playing = true;
+        h.app.np_tab = NpTab::UpNext;
+        h.app.want_song_extras();
+        assert_eq!(lyrics_asked(&h.requests()), ["a"]);
+        h.app.want_song_extras();
+        assert!(h.requests().is_empty());
+        // On Lyrics: the next song's once the playing one's are in.
+        h.app.np_tab = NpTab::Lyrics;
+        h.app.want_song_extras();
+        assert!(h.requests().is_empty());
+        let made_up = || timed_lyrics(&[(1_000, "one two"), (3_000, "three")]);
+        h.answer(Event::Lyrics("a".into(), Some(made_up())));
+        h.app.want_song_extras();
+        let asked = h.requests();
+        assert_eq!(lyrics_asked(&asked), ["b"]);
+        assert!(asked.iter().any(
+            |r| matches!(r, Request::Lyrics { video_id, duration: Some(d), .. } if video_id == "b" && *d == 200.0)
+        ));
+        assert!(translations_asked(&asked).is_empty());
+        // Translate on: the playing song's, then the next song's once in.
+        h.act(Action::Toggle(Setting::TranslateLyrics));
+        h.app.want_song_extras();
+        assert_eq!(translations_asked(&h.requests()), ["a"]);
+        h.answer(Event::Lyrics("b".into(), Some(made_up())));
+        h.app.want_song_extras();
+        assert_eq!(translations_asked(&h.requests()), ["b"]);
+        h.app.want_song_extras();
+        assert!(h.requests().is_empty());
+        // Not translated: asked again only when the song plays again.
+        h.answer(Event::Translated("a".into(), Err("no".into())));
+        assert!(matches!(
+            h.app.translations.get("a"),
+            Some(Translation::Missing)
+        ));
+        h.app.want_song_extras();
+        assert!(translations_asked(&h.requests()).is_empty());
+        h.play(&["a", "b"]);
+        assert!(!h.app.translations.contains_key("a"));
+        h.app.want_song_extras();
+        assert_eq!(translations_asked(&h.requests()), ["a"]);
+    }
+
+    /// A full store makes room by keeping only what the page shows.
+    #[test]
+    fn a_full_store_keeps_what_shows() {
+        let mut store: HashMap<String, u8> =
+            (0..MAX_LYRICS).map(|i| (format!("s{i}"), 0)).collect();
+        keep_only(
+            &mut store,
+            MAX_LYRICS,
+            &["s3".to_string(), "new".to_string()],
+        );
+        assert_eq!(store.keys().collect::<Vec<_>>(), ["s3"]);
+        let mut small: HashMap<String, u8> = HashMap::from([("x".to_string(), 0)]);
+        keep_only(&mut small, MAX_LYRICS, &[]);
+        assert_eq!(small.len(), 1);
+    }
+
+    /// In each look: the line being sung lights word by word (drawn without
+    /// fail, partway through a word), the Translate chip turns Translate on,
+    /// and each line then shows its translation under it (the line grows).
+    #[test]
+    fn lyrics_light_word_by_word_and_show_their_translation_in_each_look() {
+        use crate::lyrics::{State, Translation};
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a", "b"]);
+            w.h.app.now_playing = true;
+            w.h.app.np_tab = NpTab::Lyrics;
+            let lyrics = timed_lyrics(&[(1_000, "Paper planes tonight"), (5_000, "Over the town")]);
+            let words = lyrics.lines[0].words.clone();
+            w.h.app.lyrics.insert("a".into(), State::Ready(lyrics));
+            // Partway through the line's second word.
+            w.h.app.audio_status.entry = Some(w.h.entry().0);
+            w.h.app.audio_status.position = (words[1].start + words[1].end) / 2.0;
+            assert_eq!(w.h.app.lyrics_clock(), Some(w.h.app.audio_status.position));
+            w.settle();
+            assert!(w.shows("Paper planes tonight"), "{theme:?}");
+            let before = w.largest("Paper planes tonight");
+            assert!(!w.h.app.settings.translate_lyrics);
+            let chip = w.find("Translate", 0);
+            w.click(chip.center());
+            w.settle();
+            assert!(w.h.app.settings.translate_lyrics, "{theme:?}");
+            w.h.app.translations.insert(
+                "a".into(),
+                Translation::Ready(ytfast_core::translate::Translated {
+                    language: Some("es".into()),
+                    lines: vec![Some("Aviones de papel esta noche".into()), None],
+                    latin: vec![None, None],
+                    source: "Test".into(),
+                }),
+            );
+            w.settle();
+            let after = w.largest("Paper planes tonight");
+            assert!(
+                after.height() > before.height() + 10.0,
+                "{theme:?}: {before:?} then {after:?}"
+            );
+            // An English song: nothing to add, and it says so.
+            w.h.app.translations.insert(
+                "a".into(),
+                Translation::Ready(ytfast_core::translate::Translated {
+                    language: Some("en".into()),
+                    lines: vec![None, None],
+                    latin: vec![None, None],
+                    source: "Test".into(),
+                }),
+            );
+            w.settle();
+            assert!(w.says("Already in English"), "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
     }
 
     #[test]

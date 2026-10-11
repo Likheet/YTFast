@@ -330,18 +330,24 @@ pub fn player_page(app: &App, ui: &mut egui::Ui) {
             .animate_bool_with_time(egui::Id::new("player-page-open"), app.now_playing, 0.3);
     ui.set_opacity(open.max(0.0));
 
-    let (main, panel) = layout(ui.ctx().content_rect().width(), area);
+    // Full screen: the shared places, and no limit but the room's.
+    let (main, panel) = if app.fullscreen {
+        super::now_playing::fullscreen_places(area)
+    } else {
+        layout(ui.ctx().content_rect().width(), area)
+    };
+    let largest = if app.fullscreen { f32::INFINITY } else { 400.0 };
     let corners = CornerRadius::same(dynamic::RADIUS_ART_LG);
     // The Song and Video switch over the cover, or in the video mode over
     // the video in its place (16:9, at most 400 high).
     if video::shown(app) {
-        let (row, place) = video::stack(main, video::size_in(main, f32::INFINITY, 400.0));
+        let (row, place) = video::stack(main, video::size_in(main, f32::INFINITY, largest));
         video::switch(app, ui, row);
         ui.painter().add(SHADOW.as_shape(place, corners));
         video::paint(app, ui, place, corners);
         cover_click(app, ui, place);
     } else {
-        let (row, art) = cover_in(main);
+        let (row, art) = cover_in(main, largest);
         video::switch(app, ui, row);
         ui.painter().add(SHADOW.as_shape(art, corners));
         ui.painter().rect_filled(art, corners, PALETTE.thumb);
@@ -394,12 +400,13 @@ fn layout(window: f32, area: Rect) -> (Rect, Rect) {
 }
 
 /// The Song and Video switch's row and the cover under it, square and at
-/// most 400 (`--album-art-size`), together centred in `main`.
-fn cover_in(main: Rect) -> (Rect, Rect) {
+/// most `largest` (400, `--album-art-size`; any in full screen), together
+/// centred in `main`.
+fn cover_in(main: Rect, largest: f32) -> (Rect, Rect) {
     let length = main
         .width()
         .min(main.height() - video::SWITCH_ROOM)
-        .clamp(0.0, 400.0);
+        .clamp(0.0, largest);
     video::stack(main, Vec2::splat(length))
 }
 
@@ -539,7 +546,10 @@ fn lyrics(app: &App, ui: &mut egui::Ui, entry: &Entry) {
                 );
             });
         }
-        Some(State::Ready(lyrics)) => lines(app, ui, lyrics, &entry.track.video_id),
+        Some(State::Ready(lyrics)) => {
+            super::lyric_lines::translate_bar(app, ui, &entry.track.video_id, 24.0);
+            lines(app, ui, lyrics, &entry.track.video_id);
+        }
     }
 }
 
@@ -550,6 +560,11 @@ const LIT: f32 = 1.0;
 const NEXT: f32 = 0.5;
 const REST: f32 = 0.3;
 const SUNG: f32 = 0.3 * 0.4;
+/// The words of the line being sung not yet sung.
+const UNSUNG: f32 = 0.45;
+/// What is under a line (in Latin letters, in English), as a share of the
+/// line's brightness.
+const UNDER: f32 = 0.7;
 /// The other lines' blur (`$lyrics-blur-amount: 6px`), as a share of the
 /// most this draws.
 const BLURRED: f32 = 1.0;
@@ -559,19 +574,28 @@ const BLURRED: f32 = 1.0;
 /// and 10 at the sides; the line being sung white, the next half lit, the
 /// rest at 30% and blurred (those sung fainter still), each change easing
 /// over 0.6 s (the blur over 0.8 s); the line being sung glows as it
-/// starts. The sung line stays a third of the way down, moving in 0.5 s.
-/// A click on a line jumps there; the pointer on a line lights it.
+/// starts, its words lit one by one as they are sung. The sung line stays
+/// a third of the way down, moving in 0.5 s. A click on a line jumps
+/// there; the pointer on a line lights it. Under each line, with
+/// Translate on, it in Latin letters and in English.
 fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let id = ui.id().with(("lyrics", video_id));
     let now = ui.input(|i| i.time);
     // Timed to the song: while its video plays, by YouTube's map.
-    let current = app
-        .lyrics_clock()
-        .and_then(|position| lyrics.current(position));
+    let clock = app.lyrics_clock();
+    let current = clock.and_then(|position| lyrics.current(position));
+    let translated = super::lyric_lines::translation(app, lyrics, video_id);
     let viewport = ui.available_height();
-    if lyrics.synced && app.audio_status.entry.is_some() && !app.audio_status.paused {
+    // Drawn again when they next look different: often only while a word
+    // lights.
+    if app.audio_status.entry.is_some()
+        && !app.audio_status.paused
+        && let Some(wait) = clock.and_then(|position| lyrics.next_change(position))
+    {
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
+            .request_repaint_after(std::time::Duration::from_secs_f64(
+                wait.max(crate::lyrics::WORD_FRAME),
+            ));
     }
     // Scrolling by hand pauses following for a few seconds, and lifts the
     // blur meanwhile (`blyrics-user-scrolling`).
@@ -618,6 +642,8 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         let width = (ui.available_width() - 24.0).max(0.0);
         let size = (width / 11.25).clamp(24.0, 40.0);
         let font = fastframe_fonts::Weight::SemiBold.font_id(size);
+        let small = fastframe_fonts::Weight::Medium.font_id((size * 0.5).clamp(14.0, 20.0));
+        let feather = size * if lyrics.timed_words { 0.5 } else { 0.9 };
         let (pad_y, pad_x) = (size / 2.0, 10.0);
         let mut new_tops = Vec::with_capacity(lyrics.lines.len());
         for (i, line) in lyrics.lines.iter().enumerate() {
@@ -634,13 +660,26 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
             );
             job.sections[0].format.line_height = Some(size * 1.333);
             let galley = ui.fonts_mut(|f| f.layout_job(job));
+            let inner = (width - 2.0 * pad_x).max(0.0);
+            let under: Vec<_> = super::lyric_lines::under(translated, i)
+                .map(|words| {
+                    super::lyric_lines::layout(ui, words, &small, inner, Some(small.size * 1.3))
+                })
+                .collect();
+            let under_height: f32 = under
+                .iter()
+                .map(|line| super::lyric_lines::UNDER_GAP + line.size().y)
+                .sum();
             let sense = if line.start.is_some() {
                 Sense::click()
             } else {
                 Sense::hover()
             };
-            let (rect, response) =
-                ui.allocate_exact_size(vec2(width, galley.size().y + 2.0 * pad_y), sense);
+            let (rect, response) = ui.allocate_exact_size(
+                vec2(width, galley.size().y + under_height + 2.0 * pad_y),
+                sense,
+            );
+            super::lyric_lines::name(&response, text, line.start.is_some());
             new_tops.push(rect.top() - origin);
             let (bright, blur) = if response.hovered() || !lyrics.synced {
                 (LIT, 0.0)
@@ -662,7 +701,32 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
                 if current == Some(i) && glow > 0.0 {
                     soft_text(ui, at, &galley, glow * 0.35, 1.6);
                 }
-                soft_text(ui, at, &galley, bright, blur);
+                match clock {
+                    // The line being sung, word by word.
+                    Some(position)
+                        if current == Some(i) && !line.words.is_empty() && blur < 0.02 =>
+                    {
+                        let white = |share: f32| {
+                            Color32::from_white_alpha((share.clamp(0.0, 1.0) * 255.0) as u8)
+                        };
+                        let lit = super::lyric_lines::sung(
+                            &galley,
+                            &line.words,
+                            position,
+                            white(bright),
+                            white(bright.min(UNSUNG)),
+                            feather,
+                        );
+                        ui.painter().galley(at, lit, white(bright));
+                    }
+                    _ => soft_text(ui, at, &galley, bright, blur),
+                }
+                let mut y = at.y + galley.size().y;
+                for line in &under {
+                    y += super::lyric_lines::UNDER_GAP;
+                    soft_text(ui, egui::pos2(at.x, y), line, bright * UNDER, blur);
+                    y += line.size().y;
+                }
             }
             if let Some(start) = line.start {
                 if response.hovered() {
@@ -779,7 +843,7 @@ mod tests {
         ] {
             let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(width, height));
             let (main, panel) = layout(window, area);
-            let (row, art) = cover_in(main);
+            let (row, art) = cover_in(main, 400.0);
             assert!(area.contains_rect(art) && area.contains_rect(panel));
             assert!(area.contains_rect(row));
             assert!(art.right() + 24.0 <= panel.left());

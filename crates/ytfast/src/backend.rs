@@ -193,6 +193,13 @@ pub enum Request {
         album: Option<String>,
         duration: Option<f64>,
     },
+    /// A song's lyrics in English and in Latin letters: its lines, and the
+    /// song on Musixmatch (for people's translation) when known.
+    Translate {
+        video_id: String,
+        lines: Vec<String>,
+        musixmatch: Option<ytfast_core::musixmatch::Song>,
+    },
     /// Songs and artists related to a song.
     Related(String),
     /// A song started playing: read what the account thinks of it.
@@ -391,6 +398,8 @@ pub enum Event {
     /// past): it is asked for again when it next shows.
     ImageSkipped(String),
     Lyrics(String, Option<crate::lyrics::Lyrics>),
+    /// A song's lyrics translated ([`Request::Translate`]).
+    Translated(String, Result<ytfast_core::translate::Translated, String>),
     Related(String, Result<Page, String>),
     /// What the account thinks of a song, as YouTube says.
     Liked(String, crate::app::LikeState),
@@ -508,6 +517,8 @@ struct Folders {
     player: PathBuf,
     /// The solver program.
     solver: PathBuf,
+    /// Musixmatch's session (an anonymous token it gives the app).
+    musixmatch: PathBuf,
 }
 
 impl Folders {
@@ -553,6 +564,7 @@ impl Folders {
             yt_dlp_cache: cache.join("yt-dlp"),
             player: cache.join("player"),
             solver: cache.join("solver"),
+            musixmatch: cache.join("musixmatch-session.json"),
             session,
         })
     }
@@ -632,6 +644,12 @@ struct Shared {
     /// Counts sign-ins and sign-outs: a session's renewer reads the
     /// browser again only while its sign-in is the current one.
     sign_ins: Arc<std::sync::atomic::AtomicU64>,
+    /// Lyrics timed word by word, and people's translations (none in the
+    /// demo, or when the client cannot be made).
+    musixmatch: Option<ytfast_core::musixmatch::Musixmatch>,
+    /// Google Translate's client, made the first time lyrics are
+    /// translated (`translate::client`).
+    translator: std::sync::OnceLock<reqwest::Client>,
 }
 
 impl Shared {
@@ -656,6 +674,13 @@ async fn serve(
     folders: Folders,
     demo: bool,
 ) {
+    let musixmatch = if demo {
+        None
+    } else {
+        ytfast_core::musixmatch::Musixmatch::new(folders.musixmatch.clone())
+            .inspect_err(|e| log::warn!("Musixmatch's lyrics are off: {e}"))
+            .ok()
+    };
     let shared = Arc::new(Shared {
         events,
         wake,
@@ -671,6 +696,8 @@ async fn serve(
         more_results: std::sync::Mutex::new(VecDeque::new()),
         pictures_asked: std::sync::atomic::AtomicU64::new(0),
         sign_ins: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        musixmatch,
+        translator: std::sync::OnceLock::new(),
     });
     // Rest the solver when YtFast is not being used.
     {
@@ -778,6 +805,11 @@ async fn serve(
                     album,
                     duration,
                 } => lyrics(&shared, video_id, title, artist, album, duration).await,
+                Request::Translate {
+                    video_id,
+                    lines,
+                    musixmatch,
+                } => translate(&shared, video_id, lines, musixmatch).await,
                 Request::Related(video_id) => related(&shared, video_id).await,
                 Request::Details(video_id) => song_started(&shared, video_id).await,
                 Request::Video { entry, video_id } => video(&shared, entry, video_id).await,
@@ -847,6 +879,7 @@ fn failure_for(request: &Request) -> Option<Event> {
             result: Err(failed()),
         },
         Request::Lyrics { video_id, .. } => Event::Lyrics(video_id.clone(), None),
+        Request::Translate { video_id, .. } => Event::Translated(video_id.clone(), Err(failed())),
         Request::Related(video_id) => Event::Related(video_id.clone(), Err(failed())),
         Request::Image(url) => Event::Image(url.clone(), None),
         Request::Video { entry, .. } => Event::Video {
@@ -1759,9 +1792,65 @@ struct Song<'a> {
     duration: Option<f64>,
 }
 
-/// Lyrics that follow the song when any can be found: YouTube Music's own
-/// timed lyrics, else LRCLIB's, else YouTube Music's plain ones.
+/// How long Musixmatch may take to answer for a song's lyrics (two
+/// requests, and the first time a session of its own). Lyrics come
+/// without it after that.
+const MUSIXMATCH_PATIENCE: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Lyrics that follow the song when any can be found: Musixmatch's, timed
+/// word by word, else YouTube Music's own timed lyrics, else LRCLIB's,
+/// else YouTube Music's plain ones. Musixmatch is asked beside the others,
+/// so it adds no wait unless it is the slowest; the song it finds stays
+/// with whichever lyrics show, for people's translation of them.
 async fn find_lyrics(
+    shared: &Shared,
+    session: &Session,
+    song: &Song<'_>,
+) -> Option<ytfast_core::lyrics::Lyrics> {
+    let musixmatch = async {
+        // Without the song's length, Musixmatch's song could be another
+        // version of it.
+        let (Some(client), Some(duration)) = (&shared.musixmatch, song.duration) else {
+            return None;
+        };
+        let found = client.find(song.title, song.artist, song.album, duration);
+        match tokio::time::timeout(MUSIXMATCH_PATIENCE, found).await {
+            Ok(Ok(found)) => found,
+            Ok(Err(e)) => {
+                log::info!("Musixmatch did not answer: {e}");
+                None
+            }
+            Err(_) => {
+                log::info!("Musixmatch did not answer in time");
+                None
+            }
+        }
+    };
+    let (found, timed_by_line) = tokio::join!(musixmatch, lyrics_by_line(shared, session, song));
+    match found {
+        // Only the song's own words: another version's (another language's)
+        // are left out, with its translations.
+        Some(ytfast_core::musixmatch::Found {
+            lyrics: Some(words),
+            ..
+        }) => match timed_by_line {
+            Some(theirs) if !ytfast_core::lyrics::same_words(&words, &theirs) => {
+                log::info!("Musixmatch's lyrics are another version's; the song's own show");
+                Some(theirs)
+            }
+            _ => Some(words),
+        },
+        Some(found) => timed_by_line.map(|mut lyrics| {
+            lyrics.musixmatch = Some(found.song);
+            lyrics
+        }),
+        None => timed_by_line,
+    }
+}
+
+/// YouTube Music's own timed lyrics, else LRCLIB's, else YouTube Music's
+/// plain ones.
+async fn lyrics_by_line(
     shared: &Shared,
     session: &Session,
     song: &Song<'_>,
@@ -1799,6 +1888,53 @@ async fn find_lyrics(
             youtube
         }
     }
+}
+
+/// A song's lyrics in English, and in Latin letters when written in
+/// another script (`translate.rs`): people's translation and rōmaji from
+/// Musixmatch when it has them, else Google Translate's.
+async fn translate(
+    shared: &Shared,
+    video_id: String,
+    lines: Vec<String>,
+    musixmatch: Option<ytfast_core::musixmatch::Song>,
+) {
+    use crate::lyrics::TRANSLATE_TO;
+    let result = if shared.demo {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        Ok(demo::translation(&lines))
+    } else {
+        let (client, song) = (shared.musixmatch.as_ref(), musixmatch.as_ref());
+        let peoples = |language: &'static str| async move {
+            let (Some(client), Some(song)) = (client, song) else {
+                return None;
+            };
+            // Rōmaji only for Japanese.
+            let wanted = song.may_have(language)
+                && (language != "rj" || song.language.as_deref() == Some("ja"));
+            if !wanted {
+                return None;
+            }
+            client
+                .translation(song.track_id, language)
+                .await
+                .inspect_err(|e| log::info!("Musixmatch's translation did not load: {e}"))
+                .ok()
+                .filter(|pairs| !pairs.is_empty())
+        };
+        let (translation, latin) = tokio::join!(peoples(TRANSLATE_TO), peoples("rj"));
+        let peoples = ytfast_core::translate::Peoples {
+            translation: translation.as_deref(),
+            latin: latin.as_deref(),
+        };
+        let http = shared
+            .translator
+            .get_or_init(ytfast_core::translate::client);
+        ytfast_core::translate::translate(http, &lines, TRANSLATE_TO, peoples)
+            .await
+            .inspect_err(|e| log::info!("lyrics were not translated: {e}"))
+    };
+    shared.send(Event::Translated(video_id, result));
 }
 
 async fn related(shared: &Shared, video_id: String) {

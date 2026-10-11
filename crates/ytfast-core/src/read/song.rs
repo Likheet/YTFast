@@ -217,6 +217,7 @@ fn timed_lyrics(reply: &Value) -> Option<Lyrics> {
                 start_ms: time("startTimeMilliseconds"),
                 end_ms: time("endTimeMilliseconds"),
                 text,
+                words: Vec::new(),
             })
         })
         .collect();
@@ -241,6 +242,7 @@ fn timed_lyrics(reply: &Value) -> Option<Lyrics> {
         lines,
         synced,
         source: source(data.get("sourceMessage")),
+        ..Lyrics::default()
     })
 }
 
@@ -261,6 +263,7 @@ fn plain_lyrics(reply: &Value) -> Option<Lyrics> {
         lines,
         synced: false,
         source: source(shelf.get("footer")),
+        ..Lyrics::default()
     })
 }
 
@@ -489,7 +492,8 @@ mod tests {
             LyricLine {
                 start_ms: Some(9200),
                 end_ms: Some(10630),
-                text: "I was a liar".into()
+                text: "I was a liar".into(),
+                words: Vec::new(),
             }
         );
         // No end given: it ends when the next line starts.

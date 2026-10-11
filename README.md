@@ -42,7 +42,9 @@ YouTube Music **Premium** accounts, on **Mac (Apple Silicon)** and **Windows**.
 - **Search as you type**, with suggestions, pictures, past searches and
   YouTube Music's own filters.
 - **The player page**: the cover beside **Up next** (drag songs into any
-  order), **lyrics that follow the song** line by line, and **Related**.
+  order), **lyrics that light word by word** as they are sung, and
+  **Related**. **Translate** shows each line in English, and in Latin
+  letters for Japanese, Korean, Hindi and other scripts.
 - **Music videos**: the player page's Song and Video switch plays your
   queue's songs as their music videos, joining each at the same music and
   keeping the lyrics in time.
@@ -113,8 +115,10 @@ Mac build comes from the same code but has been tried less.
   yt-dlp's challenge solver kept running in Deno, and plays while it
   downloads. If that fails, yt-dlp itself finds the song. YTFast downloads
   yt-dlp and Deno and checks both against their published fingerprints.
-- **Lyrics** come from YouTube Music, or from [LRCLIB](https://lrclib.net)
-  (a free lyrics database) when YouTube Music has none that follow the song.
+- **Lyrics** come from Musixmatch (timed word by word), YouTube Music or
+  [LRCLIB](https://lrclib.net) (a free lyrics database). The next song's
+  lyrics load while the current one plays. Translations come from
+  Musixmatch (written by people) or Google Translate.
 - **Videos** are YouTube's own, decoded by YTFast itself (H.264, up to
   720p), and only while the player page shows them.
 - **Playing** happens in YTFast itself, through the same audio code as
@@ -148,7 +152,9 @@ Plus theme (recreated without its code), and its Dynamic Background look
 recreates chengggit's
 [Dynamic Background](https://github.com/chengggit/YouTube-Music-Dynamic-Theme)
 theme for Better Lyrics (MIT). Lyrics come partly from
-[LRCLIB](https://lrclib.net). Music videos are decoded by
+[LRCLIB](https://lrclib.net), and from Musixmatch through ThetaDev's
+[musixmatch-inofficial](https://codeberg.org/ThetaDev/musixmatch-inofficial)
+(MIT). Music videos are decoded by
 [rusty_h264](https://github.com/remade-with-rust/rusty_h264) (BSD
 2-Clause), with SIMD kernels from
 [OpenH264](https://github.com/cisco/openh264) (BSD 2-Clause). Icons are Google's
