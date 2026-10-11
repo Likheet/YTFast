@@ -132,6 +132,8 @@ once a song plays.
 **Playing**
 
 - **Click a song** to play it. The songs after it in that list play next.
+- When you open YTFast, the queue and song from last time are there,
+  paused where you left off: press Play to carry on.
 - A song you liked shows a filled thumb in its row, in every list and in
   Up next.
 - Songs start in about a second. A song you rest the pointer on, and the top

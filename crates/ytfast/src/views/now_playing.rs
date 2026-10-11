@@ -591,10 +591,10 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         && !app.audio_status.paused
         && let Some(wait) = clock.and_then(|position| lyrics.next_change(position))
     {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_secs_f64(
-                wait.max(crate::lyrics::WORD_FRAME),
-            ));
+        theme::repaint_in(
+            ui.ctx(),
+            std::time::Duration::from_secs_f64(wait.max(crate::lyrics::WORD_FRAME)),
+        );
     }
     // Scrolling by hand pauses following for a few seconds. Read before
     // the scroll area below takes the wheel's movement for itself.
@@ -661,9 +661,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
                 _ if lyrics.synced => COMING,
                 _ => 1.0,
             };
-            let bright = ui
-                .ctx()
-                .animate_value_with_time(id.with(("line", i)), goal, 0.35);
+            let bright = lyric_lines::ease(ui.ctx(), id.with(("line", i)), goal, 0.35);
             let text = if line.text.trim().is_empty() {
                 if lyrics.synced { "♪" } else { " " }
             } else {

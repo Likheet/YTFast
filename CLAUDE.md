@@ -154,6 +154,11 @@ nothing then), so whatever keeps the music going belongs there, not in
   while a song plays. Views ask with `request_repaint_after` and a reason to
   stop (typing pause, synced lyrics following). An unconditional repaint
   makes an idle window use CPU; two such loops have been fixed already.
+  egui brings a frame asked for later forward by the time it predicts one
+  takes (16.7 ms at 60 Hz): a steady animation asked with
+  `request_repaint_after` runs faster than meant (66 ms became 49). Use
+  `theme::repaint_in` for one; each drawn frame costs the processor a few
+  ms in painting and the driver, whatever it shows.
 - **Playlist IDs come in two forms.** A playlist's page is `VL` plus its ID
   (Liked Music is `VLLM`); changes to it take the ID without `VL`
   (`library::bare`). `Route::browse` turns `VLLM` into `Route::Liked`, so

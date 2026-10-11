@@ -11,9 +11,13 @@ const WORD_LEAD: f64 = 0.05;
 /// How much earlier a line lights: a little, so it lights as it is sung,
 /// not after.
 const LINE_LEAD: f64 = 0.2;
-/// How often the lyrics are drawn while a word lights (25 times a second,
-/// as a video's pictures).
-pub const WORD_FRAME: f64 = 0.04;
+/// How often the lyrics are drawn while they change: a word lighting, the
+/// lines gliding to a new place, fading or blurring (30 times a second, as
+/// a video's pictures; the owner's choice, 12 October 2026). Each drawn
+/// frame costs the processor a few ms whatever it shows; the 25 meant
+/// before ran at about 42 by egui's timing (`theme::repaint_in`), and the
+/// glides and fades at the screen's 60.
+pub const WORD_FRAME: f64 = 1.0 / 30.0;
 
 /// One line of lyrics. `start` (seconds into the song) when the lyrics are
 /// time-synced.

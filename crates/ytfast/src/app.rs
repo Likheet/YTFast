@@ -150,7 +150,37 @@ pub enum PlayState {
     /// The queue ran out; waiting for more songs (radio).
     WaitingForMore,
     Failed(String),
+    /// The song playing when YTFast was last closed ([`LeftOff`]), kept
+    /// at its second (`Playback::start_at`): nothing is asked of YouTube
+    /// until Play starts it there.
+    LeftOff,
 }
+
+/// The queue as YTFast was last closed (the owner's word, 11 October
+/// 2026): its songs around the one playing (at most [`LEFT_OFF_BEFORE`]
+/// before it and [`LEFT_OFF_AFTER`] after), which of them played, and the
+/// second it was at. Saved by eframe beside the settings, under
+/// [`LEFT_OFF_KEY`] (not in the demo), and taken up at the first sign-in,
+/// paused there ([`PlayState::LeftOff`]).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LeftOff {
+    pub tracks: Vec<Track>,
+    /// Which of `tracks` played.
+    pub current: usize,
+    /// Where in it, in seconds of the song (a video's moment is saved as
+    /// its song's).
+    pub at: f64,
+    /// What Up next says it plays from, and where more songs come from.
+    pub title: Option<String>,
+    pub source: Option<String>,
+}
+
+/// The key the queue is saved under, beside the settings' "ytfast".
+const LEFT_OFF_KEY: &str = "ytfast-queue";
+/// The most songs kept before the one playing, and after it.
+const LEFT_OFF_BEFORE: usize = 20;
+const LEFT_OFF_AFTER: usize = 200;
 
 /// The song being prepared or played.
 pub struct Playback {
@@ -513,6 +543,9 @@ pub struct App {
     pub scrolling: fastframe_scroll::Scrolling,
     /// A sideways swipe going Back or Forward (`swipe.rs`).
     pub swipe: RefCell<crate::swipe::Swipe>,
+    /// The queue saved when YTFast was last closed, until it is taken up
+    /// at the first sign-in ([`LeftOff`]).
+    pub left_off: Option<LeftOff>,
     pub controls: Option<now_playing::NowPlaying>,
     pub demo: bool,
     /// The updater (none in the demo).
@@ -736,6 +769,14 @@ impl App {
             ))
         };
         let mut app = Self::with(backend, audio, controls, script_fonts, settings, demo);
+        // Where the music was when YTFast was last closed: taken up once
+        // signed in.
+        if !demo {
+            app.left_off = cc
+                .storage
+                .and_then(|s| eframe::get_value::<Option<LeftOff>>(s, LEFT_OFF_KEY))
+                .flatten();
+        }
         app.updates = updates;
         app.receipt = startup.receipt;
         if let Some(error) = startup.update_error {
@@ -788,6 +829,7 @@ impl App {
             images: RefCell::new(Images::default()),
             scrolling: fastframe_scroll::Scrolling::default(),
             swipe: RefCell::default(),
+            left_off: None,
             controls,
             demo,
             updates: None,
@@ -1157,10 +1199,94 @@ impl App {
     /// Where the song playing is, for the seek line and the time: a jump
     /// asked for shows at once, before the player gets there.
     pub fn shown_position(&self) -> f64 {
+        if self.playback.state == PlayState::LeftOff {
+            return self.playback.start_at;
+        }
         match self.seeking {
             Some((entry, to, _)) if self.audio_status.entry == Some(entry) => to,
             _ => self.audio_status.position,
         }
+    }
+
+    /// The song's length for the player bar: the player's, or before it
+    /// plays (where YTFast was last closed) its row's.
+    pub fn shown_length(&self) -> f64 {
+        match (&self.playback.state, &self.playback.entry) {
+            (PlayState::LeftOff, Some(entry)) => {
+                entry.track.duration_seconds.map_or(0.0, f64::from)
+            }
+            _ => self.audio_status.length,
+        }
+    }
+
+    /// What to save of the queue ([`LeftOff`]): the songs around the one
+    /// playing, and where it is, a video's moment as its song's. `None`
+    /// with nothing in the queue.
+    pub fn left_off(&self) -> Option<LeftOff> {
+        let entries = self.queue.entries();
+        let current = self.queue.current_index()?;
+        let at = match self.playback.state {
+            PlayState::Playing => self.shown_position(),
+            PlayState::Idle | PlayState::WaitingForMore => 0.0,
+            _ => self.playback.start_at,
+        };
+        let at = match &self.playback.entry {
+            Some(entry) if self.playing_video_map().is_some() => {
+                self.moment_in(entry, at, &entry.track.video_id)
+            }
+            _ => at,
+        };
+        let from = current.saturating_sub(LEFT_OFF_BEFORE);
+        let to = (current + LEFT_OFF_AFTER + 1).min(entries.len());
+        // Each with what the account thinks of it now (this run's choices
+        // too), so it shows the same next time.
+        let kept = |entry: &Entry| Track {
+            like: self.known_like(&entry.track).map(crate::backend::rating),
+            ..entry.track.clone()
+        };
+        Some(LeftOff {
+            tracks: entries[from..to].iter().map(kept).collect(),
+            current: current - from,
+            at: at.max(0.0),
+            title: self.queue.title.clone(),
+            source: self.queue.source.clone(),
+        })
+    }
+
+    /// Takes up the queue saved when YTFast was last closed ([`LeftOff`]),
+    /// once, while nothing plays: paused at its second, nothing asked of
+    /// YouTube until Play.
+    fn pick_up(&mut self) {
+        let Some(left) = self.left_off.take() else {
+            return;
+        };
+        if left.tracks.is_empty() || self.playback.entry.is_some() || self.queue.current().is_some()
+        {
+            return;
+        }
+        let current = left.current.min(left.tracks.len() - 1);
+        let Some(entry) = self
+            .queue
+            .replace(left.tracks, current, left.source)
+            .cloned()
+        else {
+            return;
+        };
+        self.queue.title = left.title;
+        let at = left.at.max(0.0);
+        // A Mac's media keys reach only an app that has played since it
+        // started: this one claims them for the song kept (nothing
+        // elsewhere).
+        if let Some(controls) = &mut self.controls {
+            controls.claim(&entry.id.to_string(), Duration::from_secs_f64(at));
+        }
+        self.playback = Playback {
+            entry: Some(entry),
+            state: PlayState::LeftOff,
+            start_at: at,
+            listening_from: at,
+            ..Playback::default()
+        };
     }
 
     /// The cover texture for a picture address, when it has arrived.
@@ -1343,6 +1469,8 @@ impl App {
                     self.load(Route::Library);
                     // The page that was open (after signing in again).
                     self.show_current();
+                    // Where the music was when YTFast was last closed.
+                    self.pick_up();
                 }
                 Event::SignInFailed(message) => {
                     let browser = match &self.auth {
@@ -2441,6 +2569,13 @@ impl App {
                     self.start(entry);
                 }
             }
+            // The song from where YTFast was last closed: it starts there.
+            PlayState::LeftOff => {
+                if let Some(entry) = self.playback.entry.clone() {
+                    let at = self.playback.start_at;
+                    self.start_from(entry, at);
+                }
+            }
             // The queue ran out and nothing more came: Play starts its last
             // song again.
             PlayState::WaitingForMore => {
@@ -2674,6 +2809,9 @@ impl App {
             Action::TogglePause => self.toggle_pause(),
             Action::Next => self.next(),
             Action::Previous => self.previous(),
+            Action::Seek(to) if self.playback.state == PlayState::LeftOff => {
+                self.playback.start_at = to.max(0.0);
+            }
             Action::Seek(to) => {
                 self.jump(to);
                 if let Some(controls) = &self.controls {
@@ -3615,6 +3753,10 @@ impl eframe::App for App {
         // What is changed in the demo is not kept: it is for trying things.
         if !self.demo {
             eframe::set_value(storage, "ytfast", self.settings.for_saving());
+            // Where the music is, for the next run; one not yet taken up
+            // (before signing in) is kept as it was.
+            let left_off = self.left_off.clone().or_else(|| self.left_off());
+            eframe::set_value(storage, LEFT_OFF_KEY, &left_off);
         }
     }
 
@@ -4988,6 +5130,163 @@ mod tests {
         assert_eq!(plays(&h.commands()), 1);
         h.ready();
         assert_eq!(plays(&h.commands()), 0);
+    }
+
+    /// The queue is kept for the next run (the owner's word, 11 October
+    /// 2026): its songs around the one playing, and where it was. Taken up
+    /// at the first sign-in, paused there, without asking YouTube
+    /// anything; a jump before Play moves where it starts; Play starts it
+    /// there.
+    #[test]
+    fn the_queue_is_kept_for_the_next_run() {
+        let mut h = Harness::new();
+        h.act(Action::PlayTracks {
+            tracks: ["a", "b", "c"].map(song).to_vec(),
+            start: 1,
+            source: Some("PLx".into()),
+        });
+        h.ready();
+        h.app.audio_status.entry = Some(h.entry().0);
+        h.app.audio_status.position = 83.0;
+        // C liked in this run: kept so.
+        h.act(Action::Rate("c".into(), LikeState::Liked));
+        let saved = h.app.left_off().expect("a queue");
+        let ids: Vec<&str> = saved.tracks.iter().map(|t| t.video_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        assert_eq!(saved.tracks[2].like, Some(ytfast_core::read::Rating::Like));
+        assert_eq!((saved.current, saved.at), (1, 83.0));
+        assert_eq!(saved.source.as_deref(), Some("PLx"));
+
+        // The next run: nothing until signed in, then B paused at 83 s.
+        let mut h = Harness::new();
+        h.app.left_off = Some(saved);
+        assert!(h.app.playback.entry.is_none());
+        h.answer(Event::SignedIn {
+            name: "Listener".into(),
+            handle: None,
+            photo: None,
+        });
+        assert_eq!(h.entry().1, "b");
+        assert_eq!(h.app.playback.state, PlayState::LeftOff);
+        assert_eq!(
+            (h.app.shown_position(), h.app.shown_length()),
+            (83.0, 200.0)
+        );
+        let asked = h.requests();
+        assert!(
+            !asked.iter().any(|r| matches!(
+                r,
+                Request::Prepare { .. } | Request::Warm(_) | Request::Details(_)
+            )),
+            "nothing is asked for the song"
+        );
+        assert_eq!(plays(&h.commands()), 0);
+        // A jump before Play moves where it starts.
+        h.act(Action::Seek(90.0));
+        assert_eq!(h.app.shown_position(), 90.0);
+        // Play: B is got ready, and plays from there.
+        h.act(Action::TogglePause);
+        let asked = h.requests();
+        assert!(
+            asked.iter().any(
+                |r| matches!(r, Request::Prepare { video_id, play: true, .. } if video_id == "b")
+            ),
+            "B is got ready"
+        );
+        h.ready();
+        let started = h.commands().into_iter().find_map(|c| match c {
+            Command::Play { from, paused, .. } => Some((from, paused)),
+            _ => None,
+        });
+        assert_eq!(started, Some((90.0, false)));
+    }
+
+    /// Of a long queue, the songs around the one playing are kept; in the
+    /// video mode, the video's moment is kept as its song's.
+    #[test]
+    fn what_is_kept_of_the_queue() {
+        use ytfast_core::read::{Segment, TrackMore};
+        let mut h = Harness::new();
+        let ids: Vec<String> = (0..300).map(|n| format!("s{n}")).collect();
+        h.act(Action::PlayTracks {
+            tracks: ids.iter().map(|id| song(id)).collect(),
+            start: 50,
+            source: None,
+        });
+        let saved = h.app.left_off().expect("a queue");
+        assert_eq!(saved.tracks.len(), LEFT_OFF_BEFORE + 1 + LEFT_OFF_AFTER);
+        assert_eq!(saved.current, LEFT_OFF_BEFORE);
+        assert_eq!(saved.tracks[saved.current].video_id, "s50");
+
+        // Its music video starts the song 21 s in: 51 s into the video is
+        // 30 s into the song.
+        let mut h = Harness::new();
+        let mut track = song("a");
+        track.more = Some(Box::new(TrackMore {
+            counterpart: Some("avideo00001".into()),
+            segments: vec![Segment {
+                song_ms: 0,
+                video_ms: 21_000,
+                length_ms: 180_000,
+            }],
+            ..TrackMore::default()
+        }));
+        h.act(Action::PlayTracks {
+            tracks: vec![track],
+            start: 0,
+            source: None,
+        });
+        h.ready();
+        h.app.playback.version = Some("avideo00001".into());
+        h.app.audio_status.entry = Some(h.entry().0);
+        h.app.audio_status.position = 51.0;
+        assert_eq!(h.app.left_off().map(|l| l.at), Some(30.0));
+    }
+
+    /// eframe's storage, in memory.
+    #[derive(Default)]
+    struct Stored(HashMap<String, String>);
+
+    impl eframe::Storage for Stored {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_string(), value);
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+        fn flush(&mut self) {}
+    }
+
+    /// The queue is saved beside the settings and read back as it was; one
+    /// saved but not yet taken up (before signing in) is saved again as it
+    /// was; the demo saves none.
+    #[test]
+    fn the_queue_is_saved_beside_the_settings() {
+        use eframe::App as _;
+        let mut h = Harness::new();
+        h.play(&["a", "b"]);
+        let mut stored = Stored::default();
+        h.app.save(&mut stored);
+        let read = eframe::get_value::<Option<LeftOff>>(&stored, LEFT_OFF_KEY).flatten();
+        assert_eq!(read, h.app.left_off());
+        assert_eq!(read.as_ref().map(|l| l.tracks.len()), Some(2));
+        // Not yet taken up: saved again as it was.
+        let mut later = Harness::new();
+        later.app.left_off = read.clone();
+        let mut again = Stored::default();
+        later.app.save(&mut again);
+        assert_eq!(
+            eframe::get_value::<Option<LeftOff>>(&again, LEFT_OFF_KEY).flatten(),
+            read
+        );
+        // The demo keeps nothing.
+        h.app.demo = true;
+        let mut demo = Stored::default();
+        h.app.save(&mut demo);
+        assert!(demo.0.is_empty());
     }
 
     #[test]

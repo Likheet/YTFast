@@ -191,10 +191,54 @@ pub(super) fn follow(
     let mut follower: Follower = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     let offset = follower.step(now, target, follow);
     if follower.moving() {
-        ui.ctx().request_repaint();
+        crate::theme::repaint_in(ui.ctx(), lyric_frame());
     }
     ui.data_mut(|d| d.insert_temp(id, follower));
     offset
+}
+
+/// The time between the lyrics' frames while they change.
+pub(super) fn lyric_frame() -> std::time::Duration {
+    std::time::Duration::from_secs_f64(crate::lyrics::WORD_FRAME)
+}
+
+/// A value easing to `target` over `seconds` as egui's
+/// `animate_value_with_time` does (from where it was, in a straight line),
+/// drawn at the lyrics' frame rate: egui's own asks for every frame the
+/// screen shows (60 a second) while it moves. The first value is `target`
+/// at once.
+pub(super) fn ease(ctx: &egui::Context, id: egui::Id, target: f32, seconds: f32) -> f32 {
+    /// Where an ease started, where it goes, and when it started.
+    #[derive(Clone, Copy)]
+    struct Ease {
+        from: f32,
+        to: f32,
+        since: f64,
+    }
+    let now = ctx.input(|i| i.time);
+    let at = |ease: Ease| {
+        let t = ((now - ease.since) as f32 / seconds.max(f32::EPSILON)).clamp(0.0, 1.0);
+        ease.from + (ease.to - ease.from) * t
+    };
+    let ease = match ctx.data(|d| d.get_temp::<Ease>(id)) {
+        None => Ease {
+            from: target,
+            to: target,
+            since: now,
+        },
+        Some(ease) if ease.to != target => Ease {
+            from: at(ease),
+            to: target,
+            since: now,
+        },
+        Some(ease) => ease,
+    };
+    ctx.data_mut(|d| d.insert_temp(id, ease));
+    let value = at(ease);
+    if value != target {
+        crate::theme::repaint_in(ctx, lyric_frame());
+    }
+    value
 }
 
 /// Where the scroll area drew the lyrics `id` this frame: its offset.
@@ -262,6 +306,42 @@ mod tests {
     use super::*;
 
     const FRAME: f64 = 1.0 / 60.0;
+
+    /// The lyrics' fades start where they are, ease in a straight line as
+    /// egui's do, and ask for the next frame a 30th of a second on (not
+    /// the screen's every frame), until done.
+    #[test]
+    fn lyrics_fades_ease_at_thirty_frames_a_second() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("fade");
+        // One frame at `time` that eases toward `target`: its value, and
+        // when the next frame was asked for.
+        let frame = |time: f64, target: f32| {
+            let input = egui::RawInput {
+                time: Some(time),
+                predicted_dt: 1.0 / 60.0,
+                ..Default::default()
+            };
+            let mut value = 0.0;
+            let mut output = ctx.run_ui(input, |ui| value = ease(ui.ctx(), id, target, 0.35));
+            output.textures_delta.clear();
+            let next = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            (value, next)
+        };
+        // The first value is the target at once.
+        for time in [0.0, 0.1, 0.2, 0.3] {
+            assert_eq!(frame(time, 1.0).0, 1.0);
+        }
+        // Then to 0: halfway in half its time, the next frame a 30th on.
+        assert_eq!(frame(1.0, 0.0).0, 1.0);
+        let (half, next) = frame(1.175, 0.0);
+        assert!((half - 0.5).abs() < 0.01, "{half}");
+        assert!((next.as_secs_f64() - 1.0 / 30.0).abs() < 0.001, "{next:?}");
+        // Done: no frame asked for.
+        let (done, next) = frame(1.4, 0.0);
+        assert_eq!(done, 0.0);
+        assert!(next > std::time::Duration::from_secs(1), "{next:?}");
+    }
 
     /// Steps `follower` a frame at a time toward `target`, drawn where it
     /// says (or at `drawn` when given, as a scroll area that cannot go

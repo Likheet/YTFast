@@ -101,7 +101,7 @@ pub fn account(reply: &Value) -> Option<Account> {
 /// What kind of video a row plays. YouTube Music's "songs" are audio tracks
 /// (`ATV`); music videos and user uploads play the same way without the
 /// picture.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TrackKind {
     Song,
     MusicVideo,
@@ -122,7 +122,10 @@ impl TrackKind {
 }
 
 /// A song's row from a list (a playlist, Liked songs, History, search).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Saved with the queue between runs (the app's `LeftOff`): what is not
+/// in what was saved takes its default.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Track {
     pub video_id: String,
     /// This row's own ID within a playlist. Two copies of a song in one
@@ -154,7 +157,8 @@ pub struct Track {
 /// What a song's row says beyond its artists, album and length, when it
 /// says more: its place in a chart, and its plays or views. Kept apart,
 /// as most rows say neither.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct TrackMore {
     /// Its place in a chart ("1"), as Explore's Trending numbers its rows.
     pub rank: Option<String>,
@@ -175,7 +179,7 @@ pub struct TrackMore {
 /// video from `video_ms`, for `length_ms`. A video with an intro of its
 /// own starts its first stretch later; one with a scene in the middle has
 /// several stretches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Segment {
     pub song_ms: u64,
     pub video_ms: u64,

@@ -528,10 +528,10 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         && !app.audio_status.paused
         && let Some(wait) = clock.and_then(|position| lyrics.next_change(position))
     {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_secs_f64(
-                wait.max(crate::lyrics::WORD_FRAME),
-            ));
+        theme::repaint_in(
+            ui.ctx(),
+            std::time::Duration::from_secs_f64(wait.max(crate::lyrics::WORD_FRAME)),
+        );
     }
     // Scrolling by hand pauses following for a few seconds, and lifts the
     // blur meanwhile (`blyrics-user-scrolling`).
@@ -560,7 +560,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     };
     let glow = (1.0 - (now - lit_at) as f32 / 1.0).clamp(0.0, 1.0);
     if glow > 0.0 {
-        ui.ctx().request_repaint();
+        theme::repaint_in(ui.ctx(), super::lyric_lines::lyric_frame());
     }
 
     let mut area = egui::ScrollArea::vertical()
@@ -629,8 +629,8 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
             };
             let blur = if manual { 0.0 } else { blur };
             let ctx = ui.ctx();
-            let bright = ctx.animate_value_with_time(id.with(("bright", i)), bright, 0.6);
-            let blur = ctx.animate_value_with_time(id.with(("blur", i)), blur, 0.8);
+            let bright = super::lyric_lines::ease(ctx, id.with(("bright", i)), bright, 0.6);
+            let blur = super::lyric_lines::ease(ctx, id.with(("blur", i)), blur, 0.8);
             if ui.is_rect_visible(rect) {
                 let at = rect.min + vec2(pad_x, pad_y);
                 if current == Some(i) && glow > 0.0 {

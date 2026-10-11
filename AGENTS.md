@@ -204,9 +204,13 @@ Paolino), as `audio.rs` does.
   average, and text alone cannot do much better), so every
   timed song lights word by word: each word lit from its left as it is
   sung, by the colours of its letters (`views/lyric_lines.rs`, in each
-  look). The window is drawn 25 times a second only while a word lights,
-  else when the next word or line starts (`Lyrics::next_change`): about
-  58% of the frames of the old 30 a second over the demo's songs. The
+  look). The window is drawn 30 times a second only while the lyrics
+  change (a word lighting, the lines gliding, fading or blurring:
+  `WORD_FRAME`, `lyric_lines::ease`, each asked when meant with
+  `theme::repaint_in`), else when the next word or line starts
+  (`Lyrics::next_change`). The 25 a second meant before ran at about 42
+  by egui's timing, and the glides and fades at the screen's 60; each
+  drawn frame costs the processor a few ms whatever it shows. The
   line being sung stays a third of the way down, gliding to each new
   place as a spring settles (`lyric_lines::Follower`); scrolled by hand,
   the lyrics stop following for 4 s, and a line clicked glides into place
@@ -285,6 +289,16 @@ Paolino), as `audio.rs` does.
   swipes under the player page or a dialog never go. Windows says
   nothing when the fingers lift, so a pause of 0.2 s ends a gesture
   there; a Mac's lift goes at once, and its glide is ignored.
+- The queue is kept for the next run (`LeftOff`): saved with the
+  settings (eframe's storage, key `ytfast-queue`; not in the demo), its
+  songs around the one playing (20 before, 200 after), which played, and
+  the second it was at (a music video's moment as its song's, each song
+  with its like as it stands). At the first sign-in it is taken up paused
+  there (`PlayState::LeftOff`): the player bar shows the song, its time
+  and length, Up next the queue, and a Mac's media keys reach YTFast
+  (fastframe-now-playing's `claim`); nothing is asked of YouTube until
+  Play, which gets the song ready and starts it at that second. A jump
+  before Play moves where it starts.
 - Closing the window while a song plays (its ×, Alt+F4, the taskbar, a
   Mac's red button: one close request, `App::ask_before_closing`) keeps
   it open and asks first ("Do you really want to close? There's a song
@@ -1149,6 +1163,39 @@ and the swipe with the owner's touchpad (a Windows touchpad's sideways
 swipe reaches YTFast as sideways scrolling; which way goes back follows
 the touchpad's scrolling direction), covers coming back from memory
 with real ones, and the Mac.
+
+Then (12 October 2026, version 1.2.5), at the owner's word: YTFast
+picks up where it was left (above), and memory and processor use were
+measured, then trimmed where nothing shows. The owner's YTFast (1.2.4,
+16 minutes after starting): 256 MB private memory (the target is about
+200), 0.16% of one core idle, 8.8% on average since it started; the
+solver (Deno) 45 MB more. In the demo at the owner's window: 113 MB at
+start; the fonts for other scripts, read when Japanese first shows, 63 MB
+more (fastframe-fonts reads one installed face for each of about 25
+scripts whole into memory; only fastframe could read fewer, or map them);
+egui's text atlas 2 MB. Each drawn frame costs the processor about 1 ms
+on Home and 4 to 6 ms on the lyrics page, mostly in egui's painting and
+the graphics driver whatever it shows (YTFast's own part under 1 ms; the
+graphics card 2% busy), so drawing fewer frames is what saves. egui
+brings a frame asked for later forward by the time it predicts one takes
+(16.7 ms on a 60 Hz screen): Dynamic Background's moving background ran
+at 20 frames a second where 15 were meant, a new song's colours fading
+in at about 60 where 30 were; both now ask when meant (`theme::repaint_in`):
+measured on Dynamic Background's Home with a song playing, 8.3 to 10.2%
+of one core became 6.0 to 6.3%. The lyrics page asked the same way for
+25 frames a second while a word lit and got about 42, its glides and
+fades the screen's 60: 21% of one core in YouTube Music's look, 29 to
+32% in Dynamic Background. At the owner's word everything on it that
+moves now draws 30 times a second (above, Lyrics): 9.5 to 12% and 13%,
+at 27 to 28 frames a second (frames further apart cost the driver less
+each). Tested: the unit tests (321, among them the queue kept and taken
+up paused without asking YouTube anything, then played from its second;
+what is kept of a long queue and of a video's moment; saved beside the
+settings, and not in the demo; a frame asked for later scheduled when
+meant; the lyrics' fades eased at 30 frames a second), and the demo off
+the screen (the measurements above). Not yet tested: the queue kept
+with the owner's account, the lyrics at 30 frames a second by the
+owner's eye, a Mac's media keys, and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

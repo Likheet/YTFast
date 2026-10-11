@@ -180,7 +180,7 @@ pub fn paint(app: &App, ui: &egui::Ui) {
     if fade >= 1.0 {
         state.previous = None;
     } else {
-        ctx.request_repaint_after(FRAME);
+        theme::repaint_in(ctx, FRAME);
     }
 
     // The waves move only while a song sounds; paused, they stay where
@@ -190,7 +190,7 @@ pub fn paint(app: &App, ui: &egui::Ui) {
     state.last = Some(now);
     if sounding && app.settings.moving_background {
         state.clock += elapsed;
-        ctx.request_repaint_after(MOVING_FRAME);
+        theme::repaint_in(ctx, MOVING_FRAME);
     }
 
     let shown = Shown {

@@ -1790,7 +1790,7 @@ pub(crate) fn like_state(rating: Rating) -> crate::app::LikeState {
     }
 }
 
-fn rating(like: crate::app::LikeState) -> Rating {
+pub(crate) fn rating(like: crate::app::LikeState) -> Rating {
     match like {
         crate::app::LikeState::Liked => Rating::Like,
         crate::app::LikeState::Disliked => Rating::Dislike,

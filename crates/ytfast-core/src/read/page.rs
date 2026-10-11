@@ -15,7 +15,7 @@ use super::{
 
 /// The largest picture YouTube offered. [`Thumb::sized`] asks for another
 /// size where YouTube allows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Thumb {
     pub url: String,
     pub width: u32,
