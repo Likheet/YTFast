@@ -206,8 +206,6 @@ pub enum Request {
     Details(String),
     /// A change to the account: likes, playlists, the library.
     Edit(Edit),
-    /// Whether to start songs the website's way (else always yt-dlp).
-    FastWay(bool),
     /// A History report (see `playreport`).
     Report(String),
     /// The last History report as the window closes: told on `done` once
@@ -228,7 +226,7 @@ pub struct Picture {
 }
 
 impl Picture {
-    fn new(image: egui::ColorImage) -> Self {
+    pub(crate) fn new(image: egui::ColorImage) -> Self {
         Self {
             summary: colors::summarize(&image),
             soft: colors::shrink(&image, crate::dynamic::SOFT),
@@ -627,8 +625,6 @@ struct Shared {
     prepared: Mutex<(HashMap<String, PreparedCell>, VecDeque<String>)>,
     images: Semaphore,
     download: reqwest::Client,
-    /// Start songs the website's way (see [`Request::FastWay`]).
-    fast_way: std::sync::atomic::AtomicBool,
     /// What YouTube said about songs played (likes, lyrics, related),
     /// asked once per song.
     details: Mutex<HashMap<String, Arc<OnceCell<SongDetails>>>>,
@@ -659,11 +655,7 @@ impl Shared {
     }
 
     async fn preparer(&self) -> Option<Preparer> {
-        let mut preparer = self.signed_in.read().await.clone()?;
-        if !self.fast_way.load(std::sync::atomic::Ordering::Relaxed) {
-            preparer.direct = None;
-        }
-        Some(preparer)
+        self.signed_in.read().await.clone()
     }
 }
 
@@ -690,7 +682,6 @@ async fn serve(
         prepared: Mutex::new((HashMap::new(), VecDeque::new())),
         images: Semaphore::new(6),
         download: net::download_client(),
-        fast_way: std::sync::atomic::AtomicBool::new(true),
         details: Mutex::new(HashMap::new()),
         loads: std::sync::Mutex::new(HashMap::new()),
         more_results: std::sync::Mutex::new(VecDeque::new()),
@@ -815,9 +806,6 @@ async fn serve(
                 Request::Video { entry, video_id } => video(&shared, entry, video_id).await,
                 // Queued above, in order.
                 Request::Edit(_) => {}
-                Request::FastWay(on) => shared
-                    .fast_way
-                    .store(on, std::sync::atomic::Ordering::Relaxed),
                 Request::Report(url) => report(&shared, url).await,
                 Request::LastReport(url, done) => {
                     report(&shared, url).await;

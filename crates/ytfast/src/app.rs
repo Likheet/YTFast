@@ -29,8 +29,6 @@ pub struct Settings {
     pub browser: Option<String>,
     pub volume: f32,
     pub repeat: Repeat,
-    /// Start songs the website's way (off: always through yt-dlp).
-    pub fast_way: bool,
     /// When the queue ends, carry on with songs like the last one.
     pub autoplay: bool,
     /// Turn loud songs down, as YouTube Music does.
@@ -91,7 +89,6 @@ impl Default for Settings {
             browser: None,
             volume: 0.8,
             repeat: Repeat::Off,
-            fast_way: true,
             autoplay: true,
             even_loudness: true,
             mini_guide: false,
@@ -253,7 +250,6 @@ pub enum QueueMode {
 /// A switch on the Settings page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Setting {
-    FastWay,
     Autoplay,
     EvenLoudness,
     MovingBackground,
@@ -757,7 +753,6 @@ impl App {
         demo: bool,
     ) -> Self {
         audio.send(Command::Volume(settings.volume));
-        backend.send(Request::FastWay(settings.fast_way));
 
         let remembered = settings.browser.as_deref().and_then(Browser::parse);
         let auth = match (demo, remembered) {
@@ -1298,7 +1293,7 @@ impl App {
 
     // ---- Events from the backend and the audio thread ----
 
-    fn handle_events(&mut self, ctx: &egui::Context) {
+    fn handle_events(&mut self) {
         while let Some(event) = self.backend.try_recv() {
             for word in words(&event) {
                 self.script_fonts.want_for(word);
@@ -1599,7 +1594,7 @@ impl App {
                         }
                     };
                 }
-                Event::Image(url, picture) => self.images.borrow_mut().arrived(ctx, url, picture),
+                Event::Image(url, picture) => self.images.borrow_mut().arrived(url, picture),
                 Event::ImageSkipped(url) => self.images.borrow_mut().skipped(&url),
             }
         }
@@ -2854,10 +2849,6 @@ impl App {
             Action::Toggle(which) => {
                 let s = &mut self.settings;
                 match which {
-                    Setting::FastWay => {
-                        s.fast_way = !s.fast_way;
-                        self.backend.send(Request::FastWay(s.fast_way));
-                    }
                     Setting::Autoplay => s.autoplay = !s.autoplay,
                     Setting::EvenLoudness => s.even_loudness = !s.even_loudness,
                     Setting::MovingBackground => s.moving_background = !s.moving_background,
@@ -3507,7 +3498,7 @@ impl eframe::App for App {
     /// next song, the media keys) must not wait for the window to show.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.script_fonts.add_when_read();
-        self.handle_events(ctx);
+        self.handle_events();
         self.watch_updates();
         self.media_controls();
         // A media key pressed while the window is hidden acts at once.
@@ -3550,7 +3541,7 @@ impl eframe::App for App {
         self.scrolling.apply(&ctx);
         self.mend_window_size(&ctx);
         self.script_fonts.check();
-        self.images.get_mut().begin_frame();
+        self.images.get_mut().begin_frame(&ctx);
         self.shortcuts(&ctx);
         self.want_song_extras();
         // Dynamic Background: the song's cover behind everything.
@@ -3702,7 +3693,7 @@ mod tests {
 
         /// The start of a frame: answers and the player's news are taken in.
         fn frame(&mut self) {
-            self.app.handle_events(&self.ctx);
+            self.app.handle_events();
         }
 
         fn act(&mut self, action: Action) {
@@ -4111,7 +4102,7 @@ mod tests {
         }
     }
 
-    /// Home ten shelves long, shown in a test window, and its loading.
+    /// Home twenty shelves long, shown in a test window, and its loading.
     fn long_home(w: &mut Window) -> u64 {
         w.h.act(Action::Navigate(Route::Home));
         w.h.app.load(Route::Home);
@@ -4128,7 +4119,7 @@ mod tests {
                 })
                 .last()
                 .expect("Home is asked for");
-        let shelves = (0..10)
+        let shelves = (0..20)
             .map(|n| Section {
                 title: format!("Shelf {n}"),
                 items: (0..3)
@@ -4163,8 +4154,8 @@ mod tests {
             .count()
     }
 
-    /// Home's next shelves are asked for a screen and a half before its
-    /// end comes into view, not at its top.
+    /// Home's next shelves are asked for three screens before its end
+    /// comes into view, not at its top.
     #[test]
     fn home_asks_for_more_before_its_end_shows() {
         let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
@@ -4215,7 +4206,7 @@ mod tests {
         w.h.answer(Event::MoreSections {
             route: Route::Home,
             load,
-            sections: (10..13)
+            sections: (20..23)
                 .map(|n| Section {
                     title: format!("Shelf {n}"),
                     items: (0..3)
@@ -4229,29 +4220,23 @@ mod tests {
         end
     }
 
-    /// A scroll that reaches Home's end stops there; a glide dying away (a
-    /// touchpad's, after the fingers lift) does not carry the page on by
-    /// itself into shelves that arrive meanwhile. After a pause, scrolling
-    /// goes on into them.
+    /// A fast flick that reached Home's end before its next shelves came
+    /// glides on into them once they arrive, as a long document scrolls on
+    /// (the owner found it pausing at each batch, then going on).
     #[test]
-    fn a_glide_stops_at_homes_end_until_the_scrolling_pauses() {
+    fn a_glide_goes_on_into_shelves_that_arrived() {
         let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
         let end = home_at_its_end_then_more(&mut w);
         let at = egui::pos2(700.0, 400.0);
-        // Each movement smaller than the one before.
+        // A glide dying away: each movement smaller than the one before.
         for dy in [-90.0, -70.0, -50.0, -35.0, -20.0, -12.0, -6.0] {
             w.wheel(at, dy);
         }
         assert!(
-            (w.h.app.page_offset.get() - end).abs() < 1.0,
-            "held at the end"
+            w.h.app.page_offset.get() > end + 100.0,
+            "glided on from {end} to {}",
+            w.h.app.page_offset.get()
         );
-        w.frame(Vec::new());
-        w.frame(Vec::new());
-        for _ in 0..3 {
-            w.wheel(at, -120.0);
-        }
-        assert!(w.h.app.page_offset.get() > end + 100.0, "scrolled on");
     }
 
     /// Scrolling on without a pause (the wheel turned on, fingers moving on
@@ -6159,6 +6144,18 @@ mod tests {
         parts
     }
 
+    /// Whether a part of Settings is the line under the looks, which says
+    /// what the look worn is, or is Dynamic Background's own switch: it
+    /// differs by design between the looks (and is as tall in each).
+    fn says_which_look(name: &str) -> bool {
+        use crate::theme::Theme;
+        Theme::ALL
+            .iter()
+            .any(|look| name == format!("{}.", look.words().1))
+            || name == "Moving background"
+            || name == "The song's colours drift slowly while it plays."
+    }
+
     /// The parts by role, name and how many of the same came before
     /// (from the top left).
     fn keyed(
@@ -6212,9 +6209,20 @@ mod tests {
             egui::vec2(1000.0, 700.0),
         ] {
             for screen in screens {
-                let reference = keyed(parts_of(Theme::YouTubeMusic, screen, size, false));
+                let without_look_line = |parts: Vec<(String, String, egui::Rect)>| {
+                    parts
+                        .into_iter()
+                        .filter(|part| !says_which_look(&part.1))
+                        .collect()
+                };
+                let reference = keyed(without_look_line(parts_of(
+                    Theme::YouTubeMusic,
+                    screen,
+                    size,
+                    false,
+                )));
                 for theme in [Theme::DynamicBackground] {
-                    let other = keyed(parts_of(theme, screen, size, false));
+                    let other = keyed(without_look_line(parts_of(theme, screen, size, false)));
                     for (key, a) in &reference {
                         let Some(b) = other.get(key) else {
                             wrong.push(format!("{size:?} {screen} {theme:?}: no {key:?}"));
@@ -6265,7 +6273,7 @@ mod tests {
                     keyed(
                         parts
                             .into_iter()
-                            .filter(|part| part.0 != "TextRun")
+                            .filter(|part| part.0 != "TextRun" && !says_which_look(&part.1))
                             .collect(),
                     )
                 };

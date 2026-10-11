@@ -1,7 +1,7 @@
 //! Covers on screen: asked for once, kept as textures, and let go when
 //! not drawn for a while so memory stays small.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use egui::TextureHandle;
@@ -35,7 +35,15 @@ pub struct Images {
     frame: u64,
     /// All textures' size in memory.
     bytes: usize,
+    /// Pictures arrived but not yet handed to the graphics card: a little
+    /// each frame ([`UPLOAD_PER_FRAME`]), so a page's covers arriving
+    /// together do not hold one frame up (a pause in scrolling).
+    waiting: VecDeque<(String, crate::backend::Picture)>,
 }
+
+/// How much picture goes to the graphics card in one frame, in bytes:
+/// about two cards' covers, or a screen of rows'. A larger one goes alone.
+const UPLOAD_PER_FRAME: usize = 1024 * 1024;
 
 /// The most memory covers may take (on the graphics card, and on a Mac in
 /// the app's own memory). A full-size cover (544 by 544) is about 1.2 MB;
@@ -45,10 +53,12 @@ const BUDGET: usize = 32 * 1024 * 1024;
 const MAX_ENTRIES: usize = 2000;
 
 impl Images {
-    /// Call once per frame, before drawing. Over budget, the covers drawn
-    /// longest ago go first; those drawn last frame (on screen) stay.
-    pub fn begin_frame(&mut self) {
+    /// Call once per frame, before drawing: pictures that arrived go to
+    /// the graphics card, a little at a time; then, over budget, the covers
+    /// drawn longest ago go; those drawn last frame (on screen) stay.
+    pub fn begin_frame(&mut self, ctx: &egui::Context) {
         self.frame += 1;
+        self.upload(ctx);
         if self.within_limits() {
             return;
         }
@@ -139,25 +149,104 @@ impl Images {
         }
     }
 
-    /// A picture arrived from the backend.
-    pub fn arrived(
-        &mut self,
-        ctx: &egui::Context,
-        url: String,
-        picture: Option<crate::backend::Picture>,
-    ) {
-        let (slot, bytes) = match picture {
-            Some(picture) => {
-                let bytes = picture.image.size[0] * picture.image.size[1] * 4;
-                let texture = ctx.load_texture(&url, picture.image, egui::TextureOptions::LINEAR);
-                (Slot::Ready(texture, picture.summary, picture.soft), bytes)
+    /// A picture arrived from the backend: it waits for the next frame
+    /// ([`Images::begin_frame`]).
+    pub fn arrived(&mut self, url: String, picture: Option<crate::backend::Picture>) {
+        match picture {
+            Some(picture) => self.waiting.push_back((url, picture)),
+            None => {
+                let used = self.frame;
+                let failed = Cached {
+                    slot: Slot::Failed(Instant::now()),
+                    used,
+                    bytes: 0,
+                };
+                if let Some(old) = self.cache.insert(url, failed) {
+                    self.bytes -= old.bytes;
+                }
             }
-            None => (Slot::Failed(Instant::now()), 0),
-        };
-        let used = self.frame;
-        if let Some(old) = self.cache.insert(url, Cached { slot, used, bytes }) {
-            self.bytes -= old.bytes;
         }
-        self.bytes += bytes;
+    }
+
+    /// Hands waiting pictures to the graphics card, up to
+    /// [`UPLOAD_PER_FRAME`] (at least one); the rest next frame. One let go
+    /// meanwhile (scrolled past, or dropped for room) is dropped.
+    fn upload(&mut self, ctx: &egui::Context) {
+        let mut sent = 0;
+        while let Some((_, picture)) = self.waiting.front() {
+            let bytes = picture.image.size[0] * picture.image.size[1] * 4;
+            if sent > 0 && sent + bytes > UPLOAD_PER_FRAME {
+                break;
+            }
+            let Some((url, picture)) = self.waiting.pop_front() else {
+                break;
+            };
+            let Some(cached) = self.cache.get_mut(&url) else {
+                continue;
+            };
+            sent += bytes;
+            let texture = ctx.load_texture(&url, picture.image, egui::TextureOptions::LINEAR);
+            cached.slot = Slot::Ready(texture, picture.summary, picture.soft);
+            self.bytes = self.bytes - cached.bytes + bytes;
+            cached.bytes = bytes;
+        }
+        if !self.waiting.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Covers that arrive together reach the graphics card a little each
+    /// frame (a megabyte at most, one at least), so none holds a frame up
+    /// (a pause in scrolling); one let go meanwhile is dropped.
+    #[test]
+    fn covers_arriving_together_go_up_a_few_each_frame() {
+        let ctx = egui::Context::default();
+        let (backend, _requests, _events) = Backend::for_tests();
+        let mut images = Images::default();
+        let cover = || {
+            crate::backend::Picture::new(egui::ColorImage::new(
+                [339, 339],
+                vec![egui::Color32::GRAY; 339 * 339],
+            ))
+        };
+        for n in 0..10 {
+            assert!(images.get(&format!("c{n}"), &backend).is_none());
+        }
+        for n in 0..10 {
+            images.arrived(format!("c{n}"), Some(cover()));
+        }
+        // Scrolled past before it went up: let go.
+        images.skipped("c9");
+        let ready = |images: &Images| {
+            images
+                .cache
+                .values()
+                .filter(|c| matches!(c.slot, Slot::Ready(..)))
+                .count()
+        };
+        let mut shown = Vec::new();
+        for _ in 0..6 {
+            images.begin_frame(&ctx);
+            shown.push(ready(&images));
+        }
+        // 460 KB each: two a frame.
+        assert_eq!(shown, [2, 4, 6, 8, 9, 9]);
+        assert!(images.waiting.is_empty());
+        // A cover larger than a frame's share still goes, alone.
+        assert!(images.get("big", &backend).is_none());
+        images.arrived(
+            "big".into(),
+            Some(crate::backend::Picture::new(egui::ColorImage::new(
+                [800, 800],
+                vec![egui::Color32::GRAY; 800 * 800],
+            ))),
+        );
+        images.begin_frame(&ctx);
+        assert_eq!(ready(&images), 10);
     }
 }
