@@ -932,7 +932,7 @@ known: a guess (cpal leaving one of Windows' threads in the wrong COM
 mode) did not reproduce on that laptop. Not yet tested: a real move
 between two outputs (only the user's computer has the problem).
 
-Then, at the owner's word (10 and 11 October 2026, not yet released):
+Then, at the owner's word (10 and 11 October 2026, version 1.1.0):
 disliking the song playing skips it (Settings, on by default); closing
 YTFast while a song plays asks first, with "Do not ask again" ticked; F
 puts the player page in full screen in every look. And the lyrics, after
