@@ -988,10 +988,12 @@ colours, corners, glass and fonts; Dynamic Background's Inter takes
 Roboto's line heights; the Song and Video switch stays at one height at
 the top of the player page's picture; and a fan's video shows its 16:9
 still whole (rows, Up next, the player page, from its whole frame
-there), 71 by 40 in the player bar. Tested: the unit tests (286, among
+there), 71 by 40 in the player bar. Tested: the unit tests (287, among
 them every named part of nine screens at three window sizes in the same
-place in each look, Settings unmoved by Dynamic Background's font,
-Inter's lines as tall as Roboto's at every size and weight, the switch at
+place in each look, Settings unmoved by Dynamic Background's font at
+screens of 100, 150 and 200%, and a Mac's own words in it too (CI's Mac
+build found its longer updates line taking a line more in Inter; it was
+shortened), Inter's lines as tall as Roboto's at every size and weight, the switch at
 one height, pictures' shapes read from real replies, and the whole frame
 asked for, then the row's still when the video has none), and the demo off
 the screen on the owner's laptop (its screen asleep, so the pictures were

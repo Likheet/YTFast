@@ -247,18 +247,20 @@ fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
 /// The updates switch, what the updater is doing, and the button that
 /// fits it: look now, install the version found, or restart to install
 /// the one downloaded.
+/// What "Download updates automatically" says, on Windows and on a Mac
+/// (where only a copy in Applications installs its updates).
+const UPDATES_ABOUT: [&str; 2] = [
+    "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it.",
+    "YTFast looks for a new version once a day and downloads it. The Update button at the top then shows it; Restart to update installs it. Keep YTFast in Applications for this.",
+];
+
 fn updates(app: &App, ui: &mut egui::Ui) {
     use crate::update::State;
-    let about = if cfg!(target_os = "macos") {
-        "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it. Keep YTFast in Applications for this."
-    } else {
-        "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it."
-    };
     switch(
         app,
         ui,
         "Download updates automatically",
-        about,
+        UPDATES_ABOUT[usize::from(cfg!(target_os = "macos"))],
         app.settings.auto_update,
         Setting::AutoUpdate,
     );
@@ -302,6 +304,54 @@ fn updates(app: &App, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         if theme::pill_button(ui, label, primary).clicked() {
             app.act(action);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How many lines a setting's explanation takes (13, in the 570 the
+    /// column leaves it beside its switch), in Roboto or in Dynamic
+    /// Background's Inter, on a screen of `pixels_per_point`.
+    fn lines(text: &str, inter: bool, pixels_per_point: f32) -> usize {
+        let ctx = egui::Context::default();
+        let mut fonts = theme::install(&ctx);
+        fonts.set_inter_first(inter);
+        ctx.set_pixels_per_point(pixels_per_point);
+        let mut count = 0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            count = ui
+                .fonts_mut(|f| {
+                    f.layout(
+                        text.to_string(),
+                        theme::regular(13.0),
+                        PALETTE.secondary,
+                        570.0,
+                    )
+                })
+                .rows
+                .len();
+        });
+        output.textures_delta.clear();
+        count
+    }
+
+    /// The explanation of updates takes as many lines in Dynamic
+    /// Background's font as in Roboto, on Windows and on a Mac (whose words
+    /// are longer), at the owner's screens' scales: so choosing that look
+    /// moves no setting under it (on the Mac it once took a line more).
+    #[test]
+    fn the_updates_explanation_takes_the_same_lines_in_every_look() {
+        for text in UPDATES_ABOUT {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                assert_eq!(
+                    lines(text, true, scale),
+                    lines(text, false, scale),
+                    "{scale}: {text}"
+                );
+            }
         }
     }
 }
