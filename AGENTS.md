@@ -1040,6 +1040,21 @@ moment, and the sound thread waiting silent until Play). Not yet tested:
 the owner's touchpad and mouse on Home, a real video switched while
 paused, and the Mac.
 
+Then (11 October 2026, version 1.2.2), at the owner's word: the end of
+every song was cut off. The device holds about 0.2 s of sound, and a song
+counted as finished once the last of it reached the device, so the next
+song, on a fresh stream, lost 0.1 to 0.2 s of it. Now silence follows
+each song while the device plays out the last of it, and the sound thread
+looks just when the end is due (above, under Playing). And about every
+other song started 0.2 s late: the device was started before it was given
+the song. Now and then a new stream also held such silence from before
+its first pause. Tested on the owner's Windows laptop at volume 0: the
+unit tests (298) and the tests with the sound device (a song finished
+0.02 s after its end was heard, where before it was 0.21 s before; the
+next song sounding 0.075 to 0.087 s after the end; every start 0.04 s
+after the song was given; the old position test failing 2 of 30 runs
+before, 0 of 30 after). Not yet tested: by ear, Bluetooth, and the Mac.
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
