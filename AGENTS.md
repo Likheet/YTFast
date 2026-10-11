@@ -411,11 +411,21 @@ Paolino), as `audio.rs` does.
   (`Player::empty_the_device`); otherwise the end of the old sound plays
   first. Opening one takes about 0.15 s, which made songs start later, so
   a spare is opened while a song plays and nothing waits
-  (`Player::prepare_spare`): moving to it takes about 0.01 s.
+  (`Player::prepare_spare`): moving to it takes about 0.01 s. The song is
+  given to the stream before the stream starts (`Player::play_song`,
+  `Player::seek`): started first, it took its first 0.2 s as silence about
+  every other time, and the song sounded that much later.
 - The song's position is what is heard: what the device was given, less
   the latency it reports (`Player::position`). Counting only what it was
   given ran 0.2 s ahead of the sound on the owner's laptop, so the lyrics
   lit early and the video's pictures came early by as much.
+- A song that plays to its end is finished only once its end has been
+  heard: silence follows it for the latency the device reports, and 20 ms
+  more (`Playing` in `audio.rs`), so the fresh stream for the next song
+  cuts nothing off. Before, the next song started while the device still
+  held the last 0.2 s of the song, and that was lost. The sound thread
+  looks just when the end is due (`Player::until_end`), not at its next
+  look up to 0.1 s later, so the next song does not wait for it.
 - The device is Windows' default output, opened by its name, the way
   most programs open a device, and YTFast follows the default itself,
   every 2 s (`Player::follow_default_by_name`). Windows' virtual default
