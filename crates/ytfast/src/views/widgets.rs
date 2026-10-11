@@ -8,7 +8,8 @@ use crate::app::{Action, App, PlayState};
 use crate::theme::{self, Icon, PALETTE};
 
 /// Draws a cover in `rect`: the picture when it has arrived, a quiet
-/// placeholder until then. Round for artists.
+/// placeholder until then. Round for artists. A picture of another shape
+/// shows whole ([`picture`]).
 pub fn cover(app: &App, ui: &egui::Ui, rect: Rect, thumb: Option<&Thumb>, round: bool) {
     cover_with(app, ui, rect, thumb, cover_radius(rect.width(), round));
 }
@@ -37,15 +38,57 @@ pub fn cover_with(
     thumb: Option<&Thumb>,
     radius: CornerRadius,
 ) {
-    if !picture(app, ui, rect, thumb, radius) {
-        ui.painter().rect_filled(rect, radius, PALETTE.surface);
-        let icon = rect.width() * 0.35;
-        theme::paint_icon(ui, Icon::Music, rect, icon, PALETTE.faint);
+    cover_fitted(app, ui, rect, thumb, radius, Fit::Whole);
+}
+
+/// [`cover_with`] for a card: a picture of another shape fills `rect`, its
+/// middle kept, as YouTube Music's cards do (`ASPECT_FILL`).
+pub fn cover_filled(
+    app: &App,
+    ui: &egui::Ui,
+    rect: Rect,
+    thumb: Option<&Thumb>,
+    radius: CornerRadius,
+) {
+    cover_fitted(app, ui, rect, thumb, radius, Fit::Fill);
+}
+
+/// The cover, or until it arrives a placeholder in its shape (so nothing
+/// moves when it does).
+fn cover_fitted(
+    app: &App,
+    ui: &egui::Ui,
+    rect: Rect,
+    thumb: Option<&Thumb>,
+    radius: CornerRadius,
+    fit: Fit,
+) {
+    if !picture_fitted(app, ui, rect, thumb, radius, fit) {
+        let place = match fit {
+            Fit::Whole => shape_in(rect, thumb),
+            Fit::Fill => rect,
+        };
+        ui.painter().rect_filled(place, radius, PALETTE.surface);
+        let icon = place.width().min(place.height()) * 0.35;
+        theme::paint_icon(ui, Icon::Music, place, icon, PALETTE.faint);
     }
 }
 
+/// How a picture of another shape than its place shows there, as YouTube
+/// Music's replies say (`thumbnailScale`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    /// Whole, as large as fits, centred (`ASPECT_FIT`): a song's row, the
+    /// player. A fan's video, which has only its 16:9 still, shows it so
+    /// in the square.
+    Whole,
+    /// Filling the place, its middle kept (`ASPECT_FILL`): a card.
+    Fill,
+}
+
 /// The picture `thumb` in `rect`, once it has arrived (nothing before);
-/// whether it was drawn.
+/// whether it was drawn. A picture of another shape (a video's 16:9 still
+/// in a square) shows whole, centred, its corners rounded.
 pub fn picture(
     app: &App,
     ui: &egui::Ui,
@@ -53,19 +96,102 @@ pub fn picture(
     thumb: Option<&Thumb>,
     radius: CornerRadius,
 ) -> bool {
+    picture_fitted(app, ui, rect, thumb, radius, Fit::Whole)
+}
+
+fn picture_fitted(
+    app: &App,
+    ui: &egui::Ui,
+    rect: Rect,
+    thumb: Option<&Thumb>,
+    radius: CornerRadius,
+    fit: Fit,
+) -> bool {
+    let Some(thumb) = thumb else {
+        return false;
+    };
     let pixels = (rect.width() * ui.ctx().pixels_per_point()).ceil() as u32;
     // Ask for a size the server makes, not every size drawn.
     let size = [60, 120, 226, 360, 544]
         .into_iter()
         .find(|s| *s >= pixels)
         .unwrap_or(544);
-    let Some(texture) = thumb.and_then(|t| app.picture(&t.sized(size))) else {
+    picture_at(app, ui, rect, &thumb.sized(size), radius, fit)
+}
+
+/// The picture at `url` in `rect`, once it has arrived; whether it was
+/// drawn.
+fn picture_at(
+    app: &App,
+    ui: &egui::Ui,
+    rect: Rect,
+    url: &str,
+    radius: CornerRadius,
+    fit: Fit,
+) -> bool {
+    let Some(texture) = app.picture(url) else {
         return false;
     };
-    egui::Image::new((texture.id(), rect.size()))
-        .corner_radius(radius)
-        .paint_at(ui, rect);
+    let [width, height] = texture.size();
+    let aspect = width as f32 / height.max(1) as f32;
+    let image = egui::Image::new((texture.id(), rect.size())).corner_radius(radius);
+    match fit {
+        Fit::Whole => image.paint_at(ui, contain(rect, aspect)),
+        Fit::Fill => image
+            .uv(fill_uv(aspect, rect.aspect_ratio()))
+            .paint_at(ui, rect),
+    }
     true
+}
+
+/// The playing song's picture on the player page, whole in `rect`: a
+/// video's still as its whole frame, large ([`Thumb::whole_frame`]: the
+/// still a row gives may be its middle, zoomed), else (and when the video
+/// has no such frame) the picture as rows draw it. Whether it was drawn.
+pub fn big_picture(
+    app: &App,
+    ui: &egui::Ui,
+    rect: Rect,
+    thumb: Option<&Thumb>,
+    radius: CornerRadius,
+) -> bool {
+    match thumb.and_then(Thumb::whole_frame) {
+        Some(url) if !app.picture_failed(&url) => {
+            picture_at(app, ui, rect, &url, radius, Fit::Whole)
+        }
+        _ => picture(app, ui, rect, thumb, radius),
+    }
+}
+
+/// Where a picture of `thumb`'s shape shows whole in `rect`, as YouTube
+/// said it is: for its placeholder, before it arrives.
+pub fn shape_in(rect: Rect, thumb: Option<&Thumb>) -> Rect {
+    thumb.map_or(rect, |thumb| contain(rect, thumb.aspect()))
+}
+
+/// The largest place of `aspect` (width over height) inside `rect`,
+/// centred; `rect` itself when its shape is within 2% of that (a
+/// picture's size in pixels is rounded).
+pub fn contain(rect: Rect, aspect: f32) -> Rect {
+    if aspect <= 0.0 || (rect.aspect_ratio() / aspect - 1.0).abs() <= 0.02 {
+        return rect;
+    }
+    let width = rect.width().min(rect.height() * aspect);
+    Rect::from_center_size(rect.center(), vec2(width, width / aspect))
+}
+
+/// The part of a picture of `aspect` (width over height) that fills a
+/// place of `place` (its middle kept), in the texture's coordinates.
+fn fill_uv(aspect: f32, place: f32) -> Rect {
+    if aspect <= 0.0 || place <= 0.0 {
+        return Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    }
+    let (width, height) = if aspect > place {
+        (place / aspect, 1.0)
+    } else {
+        (1.0, aspect / place)
+    };
+    Rect::from_center_size(pos2(0.5, 0.5), vec2(width, height))
 }
 
 /// How a song row is drawn. The sizes are YouTube Music's.
@@ -150,9 +276,10 @@ pub enum Under {
 }
 
 impl Row {
-    /// The same rows in the Premium theme: corners 8 and no hairlines
-    /// between them; an album's and a playlist's songs closer together and
-    /// lit under the pointer; a shelf's songs taller and apart.
+    /// The same rows in the theme being drawn, every one the same size and
+    /// in the same place as YouTube Music's (only how they look differs).
+    /// Premium: corners 8 (Up next's covers 6) and no hairlines between
+    /// rows; an album's and a playlist's songs lit under the pointer.
     pub fn themed(self) -> Self {
         if theme::dynamic() {
             return super::dynamic::row(self);
@@ -161,33 +288,12 @@ impl Row {
             return self;
         }
         let mut row = Self {
-            corner: 8,
+            corner: if self == Self::QUEUE { 6 } else { 8 },
             line: false,
             ..self
         };
-        // Up next: the covers larger (48, r 6), the rows 64 high.
-        if self == Self::QUEUE {
-            row = Self {
-                height: 64.0,
-                gap: 2.0,
-                art: 48.0,
-                corner: 6,
-                art_gap: 14.0,
-                ..row
-            };
-        }
         if self == Self::LIST || self == Self::PLAYLIST {
-            row.text_gap = 4.0;
             row.hover = ROW_HOVER;
-        } else if self == Self::SHELF {
-            row = Self {
-                height: 60.0,
-                gap: 4.0,
-                art: 40.0,
-                art_gap: 16.0,
-                line: false,
-                ..row
-            };
         }
         row
     }
@@ -1260,7 +1366,7 @@ pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text
     } else {
         CornerRadius::same(8)
     };
-    cover_with(app, ui, art, card.thumbnail.as_ref(), radius);
+    cover_filled(app, ui, art, card.thumbnail.as_ref(), radius);
     // Hovered by where the pointer is, not by which widget is on top: the
     // buttons over the cover must not make the card think the pointer
     // left (that made it flicker).
@@ -1748,4 +1854,57 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
         mix(a.b(), b.b()),
         mix(a.a(), b.a()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A video's 16:9 still shows whole in a square (as in a song's row or
+    /// on the player page), centred; a picture of its place's shape fills
+    /// it (a rounded size in pixels too); a card's fill keeps the middle.
+    #[test]
+    fn a_picture_of_another_shape_shows_whole_or_fills() {
+        let square = Rect::from_min_size(pos2(10.0, 20.0), Vec2::splat(64.0));
+        let whole = contain(square, 16.0 / 9.0);
+        assert_eq!(whole.center(), square.center());
+        assert_eq!(whole.width(), 64.0);
+        assert!((whole.height() - 36.0).abs() < 0.01, "{whole:?}");
+        // A cover in a square, and a 544 by 306 still in a 16:9 place.
+        assert_eq!(contain(square, 1.0), square);
+        let wide = Rect::from_min_size(pos2(0.0, 0.0), vec2(71.0, 40.0));
+        assert_eq!(contain(wide, 544.0 / 306.0), wide);
+        // A square cover in a wide place: as high as it, centred.
+        let tall = contain(wide, 1.0);
+        assert_eq!((tall.width(), tall.height()), (40.0, 40.0));
+        assert_eq!(tall.center(), wide.center());
+
+        // Filling a square with a 16:9 still: its middle 9/16 across.
+        let uv = fill_uv(16.0 / 9.0, 1.0);
+        assert!((uv.width() - 9.0 / 16.0).abs() < 0.001, "{uv:?}");
+        assert_eq!((uv.top(), uv.bottom()), (0.0, 1.0));
+        assert!((uv.center().x - 0.5).abs() < 0.001);
+        // A square in a 16:9 place: its middle 9/16 down.
+        let uv = fill_uv(1.0, 16.0 / 9.0);
+        assert!((uv.height() - 9.0 / 16.0).abs() < 0.001, "{uv:?}");
+        assert_eq!(
+            fill_uv(1.0, 1.0),
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
+        );
+    }
+
+    /// The placeholder before a picture arrives takes the shape YouTube said
+    /// it has, so nothing moves when it arrives.
+    #[test]
+    fn a_placeholder_has_the_pictures_shape() {
+        let square = Rect::from_min_size(pos2(0.0, 0.0), Vec2::splat(32.0));
+        let still = Thumb {
+            url: "https://i.ytimg.com/vi/abc/sddefault.jpg?sqp=x".into(),
+            width: 400,
+            height: 225,
+        };
+        let place = shape_in(square, Some(&still));
+        assert!((place.height() - 18.0).abs() < 0.01, "{place:?}");
+        assert_eq!(shape_in(square, None), square);
+    }
 }

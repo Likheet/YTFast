@@ -425,13 +425,37 @@ only matter if that changes.
   place (YouTube Music's `ytmusic-av-toggle` and video mode). **Done:** 10
   Oct 2026, not measured (it shows only while a song plays, which would
   add to the account's history): a capsule 36 high (white@0.10; Premium:
-  clear glass) with halves 88 wide, the chosen one white@0.20, 16 above
-  the cover or the video; Video greyed out ("not allowed") for a song
-  without one; the video 16:9, as large as the cover's room allows,
-  square-cornered as YouTube Music's player in video mode (its 800 and
-  r 8 are for the cover only, CSS `:not([video-mode])`); Premium and
-  Dynamic Background keep their own corners, Dynamic Background at most
-  400 high. Tested: the demo in each look (`views/video.rs`).
+  clear glass) with halves 88 wide, the chosen one white@0.20; Video
+  greyed out ("not allowed") for a song without one; the video 16:9, as
+  large as the cover's room allows, square-cornered as YouTube Music's
+  player in video mode (its 800 and r 8 are for the cover only, CSS
+  `:not([video-mode])`); Premium and Dynamic Background keep their own
+  corners. Tested: the demo in each look (`views/video.rs`). Since 11 Oct
+  2026, at the owner's word (it moved with the picture's size, as on
+  YouTube Music it does not): the switch stays at one height, at the top
+  of the room left of the panel, and the cover or the video is centred
+  under it, in every look (`now_playing::places`). Tested:
+  `the_switch_stays_at_the_top_and_the_picture_is_centred_under_it`.
+
+- [x] **A fan's video shows its still whole.** YouTube Music: a fan's
+  video (`MUSIC_VIDEO_TYPE_UGC`) has no cover, only its video's 16:9
+  still. Its replies say how each picture fits (`thumbnailScale`): song
+  rows and Up next `ASPECT_FIT` (the still whole in the square, centred,
+  as the owner's pictures show), cards and the top result `ASPECT_FILL`
+  (cut to fill). The player bar's picture is 40 high and as wide as its
+  shape (71 for a still, reference.md); the player page shows the still
+  whole in the cover's square. YTFast: every picture stretched over its
+  place, nearly always a square; the player page used the row's still,
+  often the frame's middle two thirds, zoomed (its `sqp`). **Done:** 11
+  Oct 2026: `Thumb` keeps YouTube's height (`Thumb::aspect`);
+  `widgets::Fit` draws a picture whole or filled, as the reply's scale
+  says; a placeholder takes the picture's shape; the player bar 71 by 40;
+  the player page asks for the whole frame (`hq720.jpg`) and takes the
+  row's still when the video has none. Not measured on YouTube Music:
+  where the corners go on a still shown whole on the player page (YTFast
+  rounds the picture itself). Tested: the unit tests (the shapes read
+  from real replies; the whole frame asked for, then the row's still),
+  and the demo (its made-up fan video, in a mix's Up next).
 
 ### 4. Player page tabs (`tp-yt-paper-tabs.ytmusic-player-page`)
 
@@ -596,7 +620,9 @@ Matches already: cards 24 apart from 1150; no scroll bar on shelves; shelves cut
 
 - [x] **Trending's second line keeps the views.** YouTube Music: measured "the artist and views" (the reply's second column: "Daddy Yankee • 28M views"). YTFast: Row::GRID shows "Artist • Album" (widgets.rs:445 `described`); the reader's byline drops "28M views" (read/mod.rs:349-356 `is_count_or_year`) and Trending has no album, so it shows "Daddy Yankee" only. Change: in sideways song columns show the reply's second column as YouTube wrote it (keep it on `Track`, e.g. a `byline` string). Size: small. **Done:** 8 Oct 2026: `TrackMore.count`; "Artist • album", else "Artist • 28M views"; search rows and the top result's songs also show the plays. Tested: the same test, and the demo.
 
-- [x] **"New music videos" (and an artist's "Videos") as 16:9 cards.** YouTube Music: CSS: width = card × 16/9 (`[aspect-ratio=MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_RECTANGLE_16_9]{width:calc(var(--ytmusic-carousel-item-base-width)*16/9)}`, line 6581), picture height 56.25 % of that (line 6813), so 260.27×146.4 at 1280 menu open (320×180 closed): the same height as the square covers; r 8 (line 6815). The reply's play button for these is centred, 48 with a 48 icon and no disc (`MUSIC_PLAY_BUTTON_SIZE_HUGE`, `CONTENT_POSITION_CENTERED`, `DISPLAY_STYLE_PERSISTENT`; CSS line 5965). YTFast: every card is square (widgets.rs:564 `card`), and a video still (i.ytimg.com, 400×225) is not resizable (read/page.rs:48-55), so it is drawn stretched into the square (widgets.rs:46 paints the whole picture into the rect). Change: give `Card` its aspect ratio; draw 16:9 cards card × 16/9 wide and card high, picture cropped to fill if needed, r 8, title and subtitle as other cards; play button as above (see "Needs measuring" for whether it shows without the pointer). Data: in the reply (`musicTwoRowItemRenderer.aspectRatio`), not read (read/page.rs:494-505). Size: medium. **Done:** 8 Oct 2026: `CardLook.wide`; card × 16/9 wide, as tall; the play icon 48 in the middle under the pointer (whether it shows without the pointer is still to measure). A non-16:9 picture is stretched, not cropped. Demo only.
+- [x] **"New music videos" (and an artist's "Videos") as 16:9 cards.** YouTube Music: CSS: width = card × 16/9 (`[aspect-ratio=MUSIC_TWO_ROW_ITEM_THUMBNAIL_ASPECT_RATIO_RECTANGLE_16_9]{width:calc(var(--ytmusic-carousel-item-base-width)*16/9)}`, line 6581), picture height 56.25 % of that (line 6813), so 260.27×146.4 at 1280 menu open (320×180 closed): the same height as the square covers; r 8 (line 6815). The reply's play button for these is centred, 48 with a 48 icon and no disc (`MUSIC_PLAY_BUTTON_SIZE_HUGE`, `CONTENT_POSITION_CENTERED`, `DISPLAY_STYLE_PERSISTENT`; CSS line 5965). YTFast: every card is square (widgets.rs:564 `card`), and a video still (i.ytimg.com, 400×225) is not resizable (read/page.rs:48-55), so it is drawn stretched into the square (widgets.rs:46 paints the whole picture into the rect). Change: give `Card` its aspect ratio; draw 16:9 cards card × 16/9 wide and card high, picture cropped to fill if needed, r 8, title and subtitle as other cards; play button as above (see "Needs measuring" for whether it shows without the pointer). Data: in the reply (`musicTwoRowItemRenderer.aspectRatio`), not read (read/page.rs:494-505). Size: medium. **Done:** 8 Oct 2026: `CardLook.wide`; card × 16/9 wide, as tall; the play icon 48 in the middle under the pointer (whether it shows without the pointer is still to measure). A non-16:9 picture is stretched, not cropped. Demo only. Since 11 Oct
+  2026 a picture of another shape fills the card, its middle kept
+  (`ASPECT_FILL`, `widgets::cover_filled`).
 
 - [x] **"Popular episodes" rows.** YouTube Music: the reply makes it a sideways shelf of 3 rows per column (`numItemsPerColumn: 3`), each a `musicMultiRowListItemRenderer` (`DISPLAY_STYLE_EXPANDED`); CSS: columns 420 + 16 wide (line 6573), rows 120 high with a 120 picture (r 4) and 16 after it, title 14/500 up to 2 lines, subtitle 14/400/19.6 `#aaaaaa`, description `#ffffff@0.70` (lines 5893-5911; not measured). YTFast: read as cards with pictures and drawn as square cards (read/page.rs:468-479, page.rs:834-840). Change: depends on the owner's answer (see questions); if kept, draw as rows as above, then measure. Size: medium. **Decided:** 9 Oct 2026: not shown on the owner's Explore (signed in, 1707 wide), so left as it is.
 

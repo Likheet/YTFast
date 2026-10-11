@@ -186,19 +186,24 @@ const YOUTUBE_MUSIC: Palette = Palette {
     button: Color32::from_rgb(0xf1, 0xf1, 0xf1),
 };
 
-/// The bar across the top: 64 (Premium 72).
+// Every look lays the window out as YouTube Music does: the looks differ
+// in colours, corners, glass and fonts, never in where things are, so
+// nothing moves when the look changes (the owner's word, 11 October 2026).
+// The sizes below are therefore the same in every look.
+
+/// The bar across the top: 64.
 pub fn top_bar_height() -> f32 {
-    if premium() { 72.0 } else { 64.0 }
+    64.0
 }
 
-/// The player bar: 72 (Premium 96, floating inside it).
+/// The player bar: 72.
 pub fn player_bar_height() -> f32 {
-    if premium() { 96.0 } else { 72.0 }
+    72.0
 }
 
-/// The menu on the left, open (240, Premium 220) and closed.
+/// The menu on the left, open (240) and closed.
 pub fn guide_width() -> f32 {
-    if premium() { 220.0 } else { 240.0 }
+    240.0
 }
 pub const GUIDE_MINI_WIDTH: f32 = 72.0;
 
@@ -225,19 +230,6 @@ impl Grid {
     /// For a window `window` wide whose page area (the window less the
     /// menu) is `area` wide.
     pub fn new(window: f32, area: f32) -> Self {
-        // Premium: even margins (56 from a window 1364 wide, 40 from 1150,
-        // else 24), at most 1440 wide.
-        if premium() {
-            let margin = if window >= 1364.0 {
-                56.0
-            } else if window >= 1150.0 {
-                40.0
-            } else {
-                24.0
-            };
-            let width = (area - margin * 2.0 - SCROLL_BAR).min(1440.0);
-            return Self::centred(window, area, width);
-        }
         let width = if window >= 1150.0 {
             (area - 200.0 - SCROLL_BAR).min(1478.0)
         } else if window >= 616.0 {
@@ -258,9 +250,7 @@ impl Grid {
         } else {
             560.0
         };
-        let width = if premium() {
-            most.min(Self::new(window, area).width)
-        } else if window >= 616.0 {
+        let width = if window >= 616.0 {
             most.min(area - 112.0 - SCROLL_BAR)
         } else {
             window - 32.0
@@ -289,12 +279,6 @@ impl Grid {
         if beside_header {
             return (160.0, if self.window >= 1364.0 { 24.0 } else { 16.0 });
         }
-        // Premium: covers near 180-220, as many whole ones as fit, 20 apart.
-        if premium() {
-            let gap = 20.0;
-            let across = ((width + gap) / 200.0).floor().clamp(1.0, 7.0);
-            return ((width - (across - 1.0) * gap) / across, gap);
-        }
         let across: f32 = if self.window >= 1364.0 {
             6.0
         } else if self.window >= 1150.0 {
@@ -311,17 +295,6 @@ impl Grid {
     /// (Quick picks, Trending), with its padding of 8 each side: 436 under
     /// 1364 (measured at 1280), else a third of the shelf.
     pub fn song_column(&self, width: f32) -> f32 {
-        // Premium: one, two or three columns, by the room there is.
-        if premium() {
-            let across = if width >= 1100.0 {
-                3.0
-            } else if width >= 650.0 {
-                2.0
-            } else {
-                1.0
-            };
-            return ((width - (across - 1.0) * 24.0) / across).max(0.0);
-        }
         if self.window >= 1364.0 {
             (width - 96.0) / 3.0 + 16.0
         } else if self.window >= 616.0 {
@@ -338,46 +311,26 @@ impl Grid {
 
     /// The space above a shelf's title (`--ytmusic-header-padding`).
     pub fn above_title(&self) -> f32 {
-        if premium() {
-            24.0
-        } else if self.window >= 1150.0 {
-            32.0
-        } else {
-            16.0
-        }
+        if self.window >= 1150.0 { 32.0 } else { 16.0 }
     }
 
     /// The space after each shelf but the last
     /// (`--ytmusic-divider-height`).
     pub fn between_shelves(&self) -> f32 {
-        if premium() {
-            32.0
-        } else if self.window >= 616.0 {
-            24.0
-        } else {
-            16.0
-        }
+        if self.window >= 616.0 { 24.0 } else { 16.0 }
     }
 }
 
-/// The space under a page's last row (`--ytmusic-base-page-padding-bottom`;
-/// Premium 48).
+/// The space under a page's last row (`--ytmusic-base-page-padding-bottom`).
 pub fn page_foot() -> f32 {
-    if premium() { 48.0 } else { 112.0 }
+    112.0
 }
 
 /// YouTube Music's `--ytmusic-responsive-font-size`: 14, and 16 from a
-/// window 1364 wide (Premium: 15 from 1150). Cards, song rows, Up next,
-/// the player bar's song and the suggestions take it; their lines are 1.2
-/// times as tall.
+/// window 1364 wide. Cards, song rows, Up next, the player bar's song and
+/// the suggestions take it; their lines are 1.2 times as tall.
 pub fn responsive(window: f32) -> f32 {
-    if premium() {
-        if window >= 1150.0 { 15.0 } else { 14.0 }
-    } else if window >= 1364.0 {
-        16.0
-    } else {
-        14.0
-    }
+    if window >= 1364.0 { 16.0 } else { 14.0 }
 }
 
 /// [`responsive`] for the window `ui` is in.
@@ -387,12 +340,8 @@ pub fn text_size(ui: &egui::Ui) -> f32 {
 
 /// YouTube Music's large titles (`display-1`: shelves, pages, an album's
 /// or an artist's name) in a window `window` wide: 24 under 1150, 28 to
-/// 1363 (measured at 1280), 34 to 1577, 45 from 1578 (Premium: 28, 36
-/// from 1150).
+/// 1363 (measured at 1280), 34 to 1577, 45 from 1578.
 pub fn display1(window: f32) -> f32 {
-    if premium() {
-        return if window >= 1150.0 { 36.0 } else { 28.0 };
-    }
     if window >= 1578.0 {
         45.0
     } else if window >= 1364.0 {
@@ -407,8 +356,7 @@ pub fn display1(window: f32) -> f32 {
 /// Its smaller titles (`display-2`: lists such as Top songs, the top
 /// result's name, dialogs): 20 under 1150, 24 from.
 pub fn display2(window: f32) -> f32 {
-    let wide = if premium() { 22.0 } else { 24.0 };
-    if window >= 1150.0 { wide } else { 20.0 }
+    if window >= 1150.0 { 24.0 } else { 20.0 }
 }
 
 fastframe_icons::icons! {
@@ -563,7 +511,7 @@ pub fn install(ctx: &egui::Context) -> ScriptFonts {
 /// Inter at every weight and egui's own fonts (emoji among them), and with
 /// `scripts` the computer's fonts for the scripts Inter does not draw.
 /// Roboto goes in front of Inter unless `inter_first` (the Dynamic
-/// Background theme sets everything in Inter).
+/// Background theme sets everything in Inter, on Roboto's lines).
 fn font_definitions(
     rendering: fastframe_text::TextRendering,
     scripts: bool,
@@ -572,11 +520,102 @@ fn font_definitions(
     let mut fonts = fastframe_fonts::FontSetup::default()
         .system_fallbacks(scripts)
         .definitions();
-    if !inter_first {
+    if inter_first {
+        on_robotos_lines(&mut fonts);
+    } else {
         roboto(&mut fonts);
     }
     rendering.apply_to(&mut fonts);
     fonts
+}
+
+/// Roboto, YouTube Music's font, at its regular weight.
+static ROBOTO_REGULAR: &[u8] = include_bytes!("../assets/fonts/Roboto-Regular.ttf");
+
+/// Inter on Roboto's lines, for the Dynamic Background theme: the same
+/// letters, with Roboto's ascent, descent and line gap written into its
+/// tables, so every line of text is as tall, and sits on the same
+/// baseline, as in the other looks. Inter's own lines are a little taller
+/// (1.21 of the size, Roboto's 1.17), which moved Settings' rows down by
+/// up to 26 as the look changed. A web page does the same: its styles set
+/// the line height, whatever the font. Made once, the first time it is
+/// worn (Inter's 880 KB, copied).
+fn on_robotos_lines(fonts: &mut egui::FontDefinitions) {
+    static INTER: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+    let Some(inter) = INTER
+        .get_or_init(|| with_line_box_of(fastframe_fonts::INTER, ROBOTO_REGULAR))
+        .as_deref()
+    else {
+        log::warn!("Inter's tables could not be read; its own line heights stay");
+        return;
+    };
+    for weight in fastframe_fonts::Weight::ALL {
+        if let Some(data) = fonts.font_data.get_mut(weight.name()) {
+            Arc::make_mut(data).font = std::borrow::Cow::Borrowed(inter);
+        }
+    }
+}
+
+/// `font` (a TrueType or OpenType file) with the line box of `like`: the
+/// ascent, descent and line gap egui reads, written in `font`'s units into
+/// both places a font keeps them (`hhea`, and `OS/2`'s typographic ones,
+/// which a font may ask to be read instead). None when a table is missing.
+fn with_line_box_of(font: &[u8], like: &[u8]) -> Option<Vec<u8>> {
+    let units = f32::from(units_per_em(font)?);
+    let values = line_box(like)?.map(|em| ((em * units).round() as i16).to_be_bytes());
+    let mut font = font.to_vec();
+    for (tag, at) in [(*b"hhea", 4), (*b"OS/2", 68)] {
+        let start = table(&font, tag)?.start + at;
+        for (n, value) in values.iter().enumerate() {
+            font.get_mut(start + 2 * n..start + 2 * n + 2)?
+                .copy_from_slice(value);
+        }
+    }
+    Some(font)
+}
+
+/// The ascent, descent and line gap egui reads from `font`, in ems:
+/// `OS/2`'s typographic ones when the font asks for them (bit 7 of its
+/// fsSelection), else `hhea`'s.
+fn line_box(font: &[u8]) -> Option<[f32; 3]> {
+    let units = f32::from(units_per_em(font)?);
+    let os2 = table(font, *b"OS/2");
+    let typographic = os2
+        .as_ref()
+        .and_then(|os2| big_endian_u16(font, os2.start + 62))
+        .is_some_and(|flags| flags & 0x80 != 0);
+    let start = match os2 {
+        Some(os2) if typographic => os2.start + 68,
+        _ => table(font, *b"hhea")?.start + 4,
+    };
+    let value = |n: usize| {
+        let bytes = font.get(start + 2 * n..start + 2 * n + 2)?;
+        Some(f32::from(i16::from_be_bytes([bytes[0], bytes[1]])) / units)
+    };
+    Some([value(0)?, value(1)?, value(2)?])
+}
+
+/// A font's units per em (its `head` table).
+fn units_per_em(font: &[u8]) -> Option<u16> {
+    big_endian_u16(font, table(font, *b"head")?.start + 18)
+}
+
+/// Where the table `tag` sits in `font`, from the file's table directory.
+fn table(font: &[u8], tag: [u8; 4]) -> Option<std::ops::Range<usize>> {
+    let count = usize::from(big_endian_u16(font, 4)?);
+    (0..count).find_map(|n| {
+        let record = font.get(12 + 16 * n..28 + 16 * n)?;
+        let number = |at: usize| {
+            u32::from_be_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]])
+                as usize
+        };
+        (record[..4] == tag).then(|| number(8)..number(8) + number(12))
+    })
+}
+
+fn big_endian_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    let pair = bytes.get(at..at + 2)?;
+    Some(u16::from_be_bytes([pair[0], pair[1]]))
 }
 
 /// YouTube Music's font, Roboto, first at each weight; Inter (and the
@@ -587,11 +626,7 @@ fn font_definitions(
 fn roboto(fonts: &mut egui::FontDefinitions) {
     use fastframe_fonts::Weight;
     for (name, bytes, weight) in [
-        (
-            "roboto",
-            include_bytes!("../assets/fonts/Roboto-Regular.ttf").as_slice(),
-            Weight::Regular,
-        ),
+        ("roboto", ROBOTO_REGULAR, Weight::Regular),
         (
             "roboto-medium",
             include_bytes!("../assets/fonts/Roboto-Medium.ttf").as_slice(),
@@ -777,7 +812,8 @@ pub fn menu_edge() -> Color32 {
 
 /// YouTube Music's menu frame: `#212121`, a 1 point white@0.10 border,
 /// corners 2, 16 above and below the entries, and no shadow.
-/// Premium: the menu colour, corners 12, 6 all round.
+/// Premium: the menu colour, corners 12, the entries where YouTube Music's
+/// are.
 pub fn menu_frame() -> egui::Frame {
     if dynamic() {
         return crate::dynamic::menu_frame();
@@ -787,7 +823,7 @@ pub fn menu_frame() -> egui::Frame {
             .fill(PALETTE.menu)
             .stroke(Stroke::new(1.0, menu_edge()))
             .corner_radius(CornerRadius::same(12))
-            .inner_margin(egui::Margin::same(6));
+            .inner_margin(egui::Margin::symmetric(0, 16));
     }
     egui::Frame::new()
         .fill(PALETTE.panel)
@@ -1389,27 +1425,35 @@ mod tests {
         assert_eq!(grid.cards(546.0, true), (160.0, 16.0));
     }
 
+    /// Every look lays pages out on YouTube Music's grid, with its bars:
+    /// the same margins, cards and columns at every window width, the menu
+    /// open or closed.
     #[test]
-    fn premium_content_and_cards_fit_open_and_closed_menus() {
-        set(Theme::Premium);
+    fn every_look_lays_pages_on_youtube_musics_grid() {
+        let laid_out = |theme, window: f32, menu: f32| {
+            set(theme);
+            let grid = Grid::new(window, window - menu);
+            let search = Grid::search(window, window - menu);
+            (
+                (grid.left, grid.width, grid.cards(grid.width, false)),
+                (grid.song_column(grid.width), search.left, search.width),
+                (
+                    top_bar_height(),
+                    player_bar_height(),
+                    guide_width(),
+                    page_foot(),
+                ),
+            )
+        };
         for window in [780.0, 960.0, 1150.0, 1280.0, 1707.0, 1920.0] {
-            for menu in [guide_width(), GUIDE_MINI_WIDTH] {
-                let area = window - menu;
-                let grid = Grid::new(window, area);
-                assert!(grid.left >= 24.0);
-                assert!(grid.left + grid.width + SCROLL_BAR <= area);
-                assert!(grid.width <= 1440.0);
-                let search = Grid::search(window, area);
-                assert!(search.width <= grid.width);
-                let (card, gap) = grid.cards(grid.width, false);
-                assert!((160.0..=240.0).contains(&card));
-                let across = ((grid.width + gap) / (card + gap)).round();
-                assert!((across * card + (across - 1.0) * gap - grid.width).abs() < 0.01);
-                assert!(grid.song_column(grid.width) <= grid.width);
+            for menu in [240.0, GUIDE_MINI_WIDTH] {
+                let youtube = laid_out(Theme::YouTubeMusic, window, menu);
+                for theme in [Theme::Premium, Theme::DynamicBackground] {
+                    assert_eq!(laid_out(theme, window, menu), youtube, "{theme:?} {window}");
+                }
             }
         }
         set(Theme::YouTubeMusic);
-        assert_eq!(top_bar_height(), 64.0);
     }
 
     #[test]
@@ -1421,6 +1465,60 @@ mod tests {
         };
         assert_eq!(first(false), "roboto");
         assert_eq!(first(true), fastframe_fonts::INTER_REGULAR);
+    }
+
+    /// Dynamic Background's Inter keeps its letters but takes Roboto's
+    /// lines: at every size and weight, a line of text is as tall as in the
+    /// other looks (so switching looks moves no words up or down), and as
+    /// wide as Inter's own.
+    #[test]
+    fn inter_sits_on_robotos_lines() {
+        let rendering = fastframe_text::detect();
+        let measure = |fonts: egui::FontDefinitions| {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(fonts);
+            let mut lines = Vec::new();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.fonts_mut(|f| {
+                    for size in [11.0, 12.0, 13.0, 14.0, 15.5, 16.0, 20.0, 24.0, 30.0, 45.0] {
+                        for font in [regular(size), medium(size), bold(size)] {
+                            let words = f.layout_no_wrap(
+                                "Featured playlists".into(),
+                                font.clone(),
+                                Color32::WHITE,
+                            );
+                            lines.push((f.row_height(&font), words.size().x));
+                        }
+                    }
+                });
+            });
+            output.textures_delta.clear();
+            lines
+        };
+        let roboto = measure(font_definitions(rendering, false, false));
+        let inter = measure(font_definitions(rendering, false, true));
+        let mut own = fastframe_fonts::FontSetup::default()
+            .system_fallbacks(false)
+            .definitions();
+        rendering.apply_to(&mut own);
+        let inters_own = measure(own);
+        for ((roboto, inter), own) in roboto.iter().zip(&inter).zip(&inters_own) {
+            assert_eq!(inter.0, roboto.0, "as tall as Roboto's");
+            assert_eq!(inter.1, own.1, "Inter's own letters");
+        }
+        // Inter's own lines are taller, and its words wider than Roboto's.
+        assert!(
+            inters_own
+                .iter()
+                .zip(&roboto)
+                .all(|(own, roboto)| own.0 > roboto.0)
+        );
+        assert!(
+            inter
+                .iter()
+                .zip(&roboto)
+                .all(|(inter, roboto)| inter.1 > roboto.1)
+        );
     }
 
     #[test]

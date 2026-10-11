@@ -217,8 +217,9 @@ Paolino), as `audio.rs` does.
   letters: people's translation and rōmaji from Musixmatch when they fit
   the lines (`translate::lay_over`), else Google Translate's free address
   (`translate.rs`; over HTTP/1.1, as it answers HTTP/2 from apps with 429).
-- The video mode, YouTube Music's Song and Video switch over the cover on
-  the player page: while it says Video, the queue's songs play as their
+- The video mode, YouTube Music's Song and Video switch at the top of the
+  player page's picture, always at the same height whatever is shown
+  (`now_playing::places`): while it says Video, the queue's songs play as their
   music videos, sound and picture. Next, Previous, a song ending and Up
   next keep it; a song started anywhere else (a page, search, Related)
   plays as a song and turns it off (`App::play_tracks`). A song's video
@@ -274,9 +275,22 @@ Paolino), as `audio.rs` does.
   default), Premium (charcoal, rounder, a warm accent;
   `docs/look/premium.md`) and Dynamic Background (the playing song's
   colours behind everything, under glass;
-  `docs/look/dynamic-background.md`). Each frame draws in the chosen one
-  (`theme::set`, `theme::premium()`, `theme::dynamic()`); `PALETTE` and
-  the sizes that differ follow it.
+  `docs/look/dynamic-background.md`). All three lay the window out as
+  YouTube Music does, every part in the same place and at the same size,
+  and differ only in colours, corners, glass and fonts, so switching moves
+  nothing (`every_look_puts_things_in_the_same_places`). Dynamic
+  Background sets everything in Inter on Roboto's line heights
+  (`theme::on_robotos_lines`). Each frame draws in the chosen one
+  (`theme::set`, `theme::premium()`, `theme::dynamic()`); `PALETTE`
+  follows it.
+- A picture keeps its shape (`Thumb::aspect`, from the height YouTube
+  gives). A fan's video has no cover, only its video's 16:9 still: song
+  rows, Up next and the player page show it whole in their square
+  (`widgets::Fit::Whole`, YouTube Music's `ASPECT_FIT`), the player bar
+  71 by 40, and cards fill their place, cut at the sides (`Fit::Fill`,
+  `ASPECT_FILL`). The player page asks for the video's whole frame
+  (`hq720.jpg`, `Thumb::whole_frame`), as a row's still is often its
+  middle, zoomed, and takes the row's still when the video has none.
 - The interface font is Roboto, YouTube Music's own (Roboto Bold stands
   in for YouTube Sans, which may not be shipped), with Inter behind it for
   any letter Roboto lacks. The computer's fonts for other scripts
@@ -965,6 +979,27 @@ by word, Translate's rōmaji and English, 20% of one core with the old 30
 redraws a second (before the change to fewer). Not yet tested: the new
 redraws measured, Premium and Dynamic Background in the demo (only in the
 tests), any of it with the owner's account, and the Mac.
+
+Then (11 October 2026, version 1.2.0), at the owner's word, after
+their brother found things moving when the look changed: every look now
+lays the window out as YouTube Music's (the top bar, the menu, the
+player bar, pages, Settings and the player page) and keeps its own
+colours, corners, glass and fonts; Dynamic Background's Inter takes
+Roboto's line heights; the Song and Video switch stays at one height at
+the top of the player page's picture; and a fan's video shows its 16:9
+still whole (rows, Up next, the player page, from its whole frame
+there), 71 by 40 in the player bar. Tested: the unit tests (286, among
+them every named part of nine screens at three window sizes in the same
+place in each look, Settings unmoved by Dynamic Background's font,
+Inter's lines as tall as Roboto's at every size and weight, the switch at
+one height, pictures' shapes read from real replies, and the whole frame
+asked for, then the row's still when the video has none), and the demo off
+the screen on the owner's laptop (its screen asleep, so the pictures were
+taken by the app itself, with a hook not committed): Home, Settings and
+the player page in each look, everything in the same place, and the
+demo's made-up fan video (in a mix's Up next) shown whole in Up next and
+on the player page, 71 by 40 in the player bar. Not yet tested: a real
+fan's video with the owner's account, and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
