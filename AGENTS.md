@@ -203,6 +203,10 @@ Paolino), as `audio.rs` does.
   look). The window is drawn 25 times a second only while a word lights,
   else when the next word or line starts (`Lyrics::next_change`): about
   58% of the frames of the old 30 a second over the demo's songs. The
+  line being sung stays a third of the way down, gliding to each new
+  place as a spring settles (`lyric_lines::Follower`); scrolled by hand,
+  the lyrics stop following for 4 s, and a line clicked glides into place
+  from where they were, never first back to the line that was sung. The
   playing song's lyrics are asked for when the player page opens
   (whatever its tab), and with Lyrics showing, the next song's too, so
   they show as it starts. Translate (the chip above the lyrics, and

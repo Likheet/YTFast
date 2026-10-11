@@ -5765,6 +5765,89 @@ mod tests {
         crate::theme::set(Theme::YouTubeMusic);
     }
 
+    /// In each look: lyrics scrolled by hand, then a line clicked further
+    /// down. The song jumps to it, and the lyrics glide from where they
+    /// were to put it a third of the way down, never first back to the
+    /// line that was being sung (which they once did, then slid to the
+    /// line clicked).
+    #[test]
+    fn a_lyric_clicked_after_scrolling_glides_there_from_where_it_was() {
+        use crate::lyrics::State;
+        use crate::theme::Theme;
+        let texts: Vec<String> = (0..40).map(|n| format!("Line number {n}")).collect();
+        let timed: Vec<(u64, &str)> = texts
+            .iter()
+            .enumerate()
+            .map(|(n, text)| (n as u64 * 4_000 + 1_000, text.as_str()))
+            .collect();
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a", "b"]);
+            w.h.app.now_playing = true;
+            w.h.app.np_tab = NpTab::Lyrics;
+            w.h.app
+                .lyrics
+                .insert("a".into(), State::Ready(timed_lyrics(&timed)));
+            // The sixth line being sung (a third of the way down), paused.
+            w.h.app.audio_status.entry = Some(w.h.entry().0);
+            w.h.app.audio_status.position = 21.5;
+            // The player page risen, and at rest.
+            for _ in 0..4 {
+                w.settle();
+            }
+            let sung = w.find("Line number 5", 0);
+            // Scrolled by hand, a long way down.
+            for _ in 0..5 {
+                w.wheel(sung.center(), -200.0);
+            }
+            w.frame(Vec::new());
+            w.frame(Vec::new());
+            // A line further down, on screen.
+            let (name, before) = (8..40)
+                .map(|n| format!("Line number {n}"))
+                .map(|name| {
+                    let rect = w.find(&name, 0);
+                    (name, rect)
+                })
+                .find(|(_, rect)| rect.center().y > sung.center().y + 40.0 && rect.bottom() < 760.0)
+                .unwrap_or_else(|| panic!("{theme:?}: no line further down on screen"));
+            w.click(before.center());
+            assert!(
+                w.h.commands()
+                    .iter()
+                    .any(|c| matches!(c, Command::Seek(to) if *to > 21.5)),
+                "{theme:?}: the song jumps to the line"
+            );
+            // The frame after the click, then until the lyrics rest.
+            let mut path = vec![w.find(&name, 0).center().y];
+            for _ in 0..40 {
+                w.frame(Vec::new());
+                path.push(w.find(&name, 0).center().y);
+            }
+            let rest = *path.last().unwrap();
+            assert!(
+                (rest - sung.center().y).abs() < 2.0,
+                "{theme:?}: the line clicked rests where the sung one was: {rest} and {}",
+                sung.center().y
+            );
+            assert!(
+                path[0] <= before.center().y + 1.0,
+                "{theme:?}: no jump back first: {} then {path:?}",
+                before.center().y
+            );
+            assert!(
+                path.windows(2)
+                    .all(|w| w[1] <= w[0] + 0.5 && w[1] >= rest - 0.5),
+                "{theme:?}: only toward its place: {path:?}"
+            );
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
     #[test]
     fn pages_kept_are_limited_but_the_sidebars_stay() {
         let mut h = Harness::new();

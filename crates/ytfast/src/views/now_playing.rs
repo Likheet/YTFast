@@ -562,21 +562,20 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let tops: Vec<f32> = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     let manual_until: f64 = ui.data(|d| d.get_temp(id.with("manual"))).unwrap_or(0.0);
     let follow = lyrics.synced && now > manual_until;
-    let target = current
-        .and_then(|i| tops.get(i))
-        .map_or(0.0, |top| (top - viewport * 0.3).max(0.0));
-    let offset = ui
-        .ctx()
-        .animate_value_with_time(id.with("scroll"), target, 0.55);
+    let target = match current {
+        Some(i) => tops.get(i).map(|top| (top - viewport * 0.3).max(0.0)),
+        None => Some(0.0),
+    };
+    let offset = lyric_lines::follow(ui, id.with("scroll"), target, follow);
 
     let mut area = egui::ScrollArea::vertical()
         .id_salt(id)
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-    if follow {
+    if let Some(offset) = offset {
         area = area.vertical_scroll_offset(offset);
     }
-    area.show(ui, |ui| {
+    let drawn = area.show(ui, |ui| {
         let origin = ui.min_rect().top();
         let clip = ui.clip_rect();
         ui.add_space(8.0);
@@ -707,6 +706,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         ui.add_space(if lyrics.synced { viewport * 0.6 } else { 32.0 });
         ui.data_mut(|d| d.insert_temp(id, new_tops));
     });
+    lyric_lines::drawn(ui, id.with("scroll"), drawn.state.offset.y);
 }
 
 fn related(app: &App, ui: &mut egui::Ui, entry: &Entry) {
