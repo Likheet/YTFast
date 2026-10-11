@@ -5905,7 +5905,21 @@ mod tests {
         size: egui::Vec2,
         own_font: bool,
     ) -> Vec<(String, String, egui::Rect)> {
+        parts_at(theme, screen, size, own_font, 1.0)
+    }
+
+    /// [`parts_of`] on a screen of `pixels_per_point` (1.5 on the owner's
+    /// Windows laptop, 2 on their Mac), where words may break at other
+    /// places.
+    fn parts_at(
+        theme: crate::theme::Theme,
+        screen: &str,
+        size: egui::Vec2,
+        own_font: bool,
+        pixels_per_point: f32,
+    ) -> Vec<(String, String, egui::Rect)> {
         let mut h = Harness::new();
+        h.ctx.set_pixels_per_point(pixels_per_point);
         h.ctx.enable_accesskit();
         h.app.settings.theme = theme;
         h.app
@@ -6094,34 +6108,37 @@ mod tests {
     /// Choosing Dynamic Background in Settings moves no setting, in its own
     /// font: Inter, on Roboto's lines, keeps every row as tall and where it
     /// was (its words are a little wider, so a paragraph may break at
-    /// another word, but onto no more lines).
+    /// another word, but onto no more lines), on screens of every scale the
+    /// owner uses. (A Mac's own words are checked in `views::settings`.)
     #[test]
     fn choosing_dynamic_background_moves_no_setting() {
         use crate::theme::Theme;
-        for size in [
-            egui::vec2(1280.0, 820.0),
-            egui::vec2(1707.0, 1019.0),
-            egui::vec2(1000.0, 700.0),
-        ] {
-            let at = |theme| {
-                let parts = parts_of(theme, "settings", size, true);
-                keyed(
-                    parts
-                        .into_iter()
-                        .filter(|part| part.0 != "TextRun")
-                        .collect(),
-                )
-            };
-            let (youtube, dynamic) = (at(Theme::YouTubeMusic), at(Theme::DynamicBackground));
-            assert_eq!(youtube.len(), dynamic.len(), "{size:?}");
-            for (key, a) in &youtube {
-                let b = dynamic
-                    .get(key)
-                    .unwrap_or_else(|| panic!("{size:?}: no {key:?}"));
-                assert!(
-                    (a.top() - b.top()).abs() <= 1.0 && (a.height() - b.height()).abs() <= 1.0,
-                    "{size:?} {key:?}: {a:?} in YouTube Music, {b:?} in Dynamic Background"
-                );
+        for scale in [1.0, 1.5, 2.0] {
+            for size in [
+                egui::vec2(1280.0, 820.0),
+                egui::vec2(1707.0, 1019.0),
+                egui::vec2(1000.0, 700.0),
+            ] {
+                let at = |theme| {
+                    let parts = parts_at(theme, "settings", size, true, scale);
+                    keyed(
+                        parts
+                            .into_iter()
+                            .filter(|part| part.0 != "TextRun")
+                            .collect(),
+                    )
+                };
+                let (youtube, dynamic) = (at(Theme::YouTubeMusic), at(Theme::DynamicBackground));
+                assert_eq!(youtube.len(), dynamic.len(), "{scale} {size:?}");
+                for (key, a) in &youtube {
+                    let b = dynamic
+                        .get(key)
+                        .unwrap_or_else(|| panic!("{scale} {size:?}: no {key:?}"));
+                    assert!(
+                        (a.top() - b.top()).abs() <= 1.0 && (a.height() - b.height()).abs() <= 1.0,
+                        "{scale} {size:?} {key:?}: {a:?} in YouTube Music, {b:?} in Dynamic Background"
+                    );
+                }
             }
         }
     }
