@@ -1,12 +1,13 @@
 //! Updates: YTFast looks at its GitHub releases a minute after it starts
-//! and once a day, downloads a newer version in the background (with
-//! "Install updates automatically" on), checks it (the release's checksums,
-//! signed with the publisher key this build carries, and the program's own
-//! `--version`), and installs it when the listener restarts. The work is
-//! fastframe-update's, as in Spotifast: a helper swaps the program while
-//! YTFast is closed, starts the new one, and puts the old one back if the
-//! new one does not start. Releases are made with `ytfast-release`
-//! (docs/releasing.md).
+//! and once a day by the calendar (`Schedule`: soon after the computer
+//! wakes, when a day has gone by), downloads a newer version in the
+//! background (with "Install updates automatically" on), checks it (the
+//! release's checksums, signed with the publisher key this build carries,
+//! and the program's own `--version`), and installs it when the listener
+//! restarts. The work is fastframe-update's, as in Spotifast: a helper
+//! swaps the program while YTFast is closed, starts the new one, and puts
+//! the old one back if the new one does not start. Releases are made with
+//! `ytfast-release` (docs/releasing.md).
 //!
 //! On Windows any copy can update itself: the `ytfast-portable.txt` marker
 //! beside the program says so, and YTFast writes it there. On a Mac,
@@ -17,7 +18,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use fastframe_update::{MacConfig, MacTarget, Prepared, Release, UpdateConfig, Updater};
 
@@ -43,6 +44,47 @@ pub const DOWNLOAD_PAGE: &str = "https://github.com/Likheet/YTFast/releases/late
 
 /// The first look after starting: not while the window opens.
 const FIRST_LOOK: Duration = Duration::from_secs(60);
+
+/// The next look after one that failed: an hour, not a day, as a look just
+/// after the computer wakes often finds the network not back yet. A failed
+/// download still waits a day, so a broken release is not fetched hourly.
+const AFTER_FAILURE: Duration = Duration::from_secs(60 * 60);
+
+/// How often the thread reads the clock while it waits for the next look.
+/// A wait stops while the computer sleeps (on a Mac at least), so a look
+/// due by the calendar is found by reading the clock, at most this long
+/// after the computer wakes. Reading it sends nothing.
+const GLANCE: Duration = Duration::from_secs(5 * 60);
+
+/// When the next look is due, by the computer's clock rather than by the
+/// time YTFast was awake: counted in time awake, a day can take two or
+/// three for a laptop asleep every night.
+struct Schedule {
+    next: SystemTime,
+}
+
+impl Schedule {
+    fn after(wait: Duration, now: SystemTime) -> Self {
+        Self { next: now + wait }
+    }
+
+    fn due(&self, now: SystemTime) -> bool {
+        now >= self.next
+    }
+
+    /// How long to wait before reading the clock again (nothing when the
+    /// look is due).
+    fn wait(&mut self, now: SystemTime) -> Duration {
+        let Ok(left) = self.next.duration_since(now) else {
+            return Duration::ZERO;
+        };
+        // The clock was put back: still at most a day from now.
+        if left > fastframe_update::CHECK_INTERVAL {
+            self.next = now + fastframe_update::CHECK_INTERVAL;
+        }
+        left.min(GLANCE)
+    }
+}
 
 /// What the updater is doing, for Settings and the banner.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -191,17 +233,17 @@ fn run(
     };
     let mut found: Option<Release> = None;
     let mut prepared: Option<Pending> = None;
-    let mut next_look = Instant::now() + FIRST_LOOK;
+    let mut next_look = Schedule::after(FIRST_LOOK, SystemTime::now());
     loop {
-        let command =
-            match commands.recv_timeout(next_look.saturating_duration_since(Instant::now())) {
-                Ok(command) => Some(command),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
-            };
+        let command = match commands.recv_timeout(next_look.wait(SystemTime::now())) {
+            Ok(command) => Some(command),
+            Err(RecvTimeoutError::Timeout) if next_look.due(SystemTime::now()) => None,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             None | Some(Command::Check) => {
-                next_look = Instant::now() + fastframe_update::CHECK_INTERVAL;
+                next_look = Schedule::after(fastframe_update::CHECK_INTERVAL, SystemTime::now());
                 // A version waiting for a restart is not looked for again.
                 if prepared.is_some() {
                     continue;
@@ -232,8 +274,10 @@ fn run(
                     }
                     Err(e) => {
                         log::warn!("updates: could not look: {e:#}");
+                        next_look = Schedule::after(AFTER_FAILURE, SystemTime::now());
                         set(State::Failed(
-                            "Could not look for a new version. YTFast tries again tomorrow.".into(),
+                            "Could not look for a new version. YTFast tries again in an hour."
+                                .into(),
                         ));
                     }
                 }
@@ -469,5 +513,34 @@ mod tests {
     fn the_update_settings_are_valid() {
         CONFIG.validate().unwrap();
         assert_eq!(CONFIG.current_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    const HOUR: Duration = Duration::from_secs(60 * 60);
+
+    #[test]
+    fn the_next_look_is_due_a_day_later_by_the_clock() {
+        let looked = SystemTime::UNIX_EPOCH + 1000 * 24 * HOUR;
+        let mut next = Schedule::after(fastframe_update::CHECK_INTERVAL, looked);
+        // Never a wait longer than a glance: the clock is read again soon
+        // after a sleep, however long the sleep was.
+        assert_eq!(next.wait(looked), GLANCE);
+        assert!(!next.due(looked + 23 * HOUR));
+        assert_eq!(next.wait(looked + 24 * HOUR - HOUR / 60), HOUR / 60);
+        // A day by the clock, with no time awake counted: the computer
+        // slept through it.
+        assert!(next.due(looked + 24 * HOUR));
+        assert_eq!(next.wait(looked + 24 * HOUR), Duration::ZERO);
+        assert!(next.due(looked + 72 * HOUR));
+        assert_eq!(next.wait(looked + 72 * HOUR), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_clock_put_back_waits_no_more_than_a_day() {
+        let looked = SystemTime::UNIX_EPOCH + 1000 * 24 * HOUR;
+        let mut next = Schedule::after(fastframe_update::CHECK_INTERVAL, looked);
+        let put_back = looked - 365 * 24 * HOUR;
+        assert_eq!(next.wait(put_back), GLANCE);
+        assert!(!next.due(put_back + 23 * HOUR));
+        assert!(next.due(put_back + 24 * HOUR));
     }
 }
