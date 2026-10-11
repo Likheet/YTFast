@@ -1,7 +1,7 @@
 //! Updates: YTFast looks at its GitHub releases a minute after it starts
 //! and once a day by the calendar (`Schedule`: soon after the computer
 //! wakes, when a day has gone by), downloads a newer version in the
-//! background (with "Install updates automatically" on), checks it (the
+//! background (with "Download updates automatically" on), checks it (the
 //! release's checksums, signed with the publisher key this build carries,
 //! and the program's own `--version`), and installs it when the listener
 //! restarts. The work is fastframe-update's, as in Spotifast: a helper

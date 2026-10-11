@@ -334,7 +334,7 @@ Paolino), as `audio.rs` does.
   it wakes (`update::Schedule`; a Mac's waits stop in sleep, so a day of
   time awake can take two or three for a laptop asleep at night); a failed look
   tries again in an hour, a failed download the next day. It downloads a
-  newer version in the background (Settings, "Install updates automatically", on by
+  newer version in the background (Settings, "Download updates automatically", on by
   default), checks the release's `checksums.txt` signature against the
   publisher key built in, and installs it when the listener restarts. As
   in Spotifast: a toast says a version is out, an Update badge stays in the
@@ -1066,7 +1066,7 @@ next song sounding 0.075 to 0.087 s after the end; every start 0.04 s
 after the song was given; the old position test failing 2 of 30 runs
 before, 0 of 30 after). Not yet tested: by ear, Bluetooth, and the Mac.
 
-Then (11 October 2026, not yet released), at the owner's word: scrolling
+Then (11 October 2026, version 1.2.3), at the owner's word: scrolling
 still paused wherever more was loading (Home's shelves, a search's
 results), slowing and then going on, where a long document scrolls on.
 The next part was asked for a screen and a half ahead, which a fast
@@ -1080,7 +1080,7 @@ window left the taskbar's strip black under the player bar on Windows
 buttons, shorter words (one line each), the account's and the log's
 buttons beside their words, and fewer switches: "Start songs the fast
 way" is gone, and "Keep playing when the queue ends" is left to Up next's
-Autoplay switch, as on YouTube Music. Tested: the unit tests (301, among
+Autoplay switch, as on YouTube Music. Tested: the unit tests (303, among
 them a glide going on into shelves that arrived, where the old test held
 it; covers sent a few each frame; full screen from a maximized window
 leaving maximized first and maximized again after; no Translate chip;
@@ -1089,7 +1089,9 @@ log's words on one line in either font at 100 to 200%; Settings' parts in
 the same place in YouTube Music's look and Dynamic Background), and the
 demo off the screen: Settings in each look, the looks chosen by name. Not
 yet tested: scrolling with the owner's touchpad and mouse, full screen on
-the owner's screen, and the Mac.
+the owner's screen, and the Mac. 1.2.3 also carries the daily look for
+updates by the computer's clock (above, under Updates;
+Likheet/YTFast#44).
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
