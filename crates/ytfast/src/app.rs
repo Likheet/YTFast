@@ -6292,6 +6292,32 @@ mod tests {
         }
     }
 
+    /// Settings, touched up (the owner's word, 11 October 2026): the looks
+    /// as three buttons, with what the look worn is under them, or Dynamic
+    /// Background's own switch; no switch for the fast way (always tried
+    /// first) or for autoplay (Up next has it).
+    #[test]
+    fn settings_shows_the_looks_as_buttons_and_fewer_switches() {
+        use crate::theme::Theme;
+        let mut w = Window::new(Theme::YouTubeMusic);
+        w.h.act(Action::Navigate(Route::Settings));
+        w.settle();
+        for name in ["YouTube Music", "Premium", "Dynamic Background"] {
+            assert!(w.shows(name), "{name}");
+        }
+        assert!(w.says("YouTube Music's own look."));
+        assert!(w.shows("Even out loudness"));
+        assert!(!w.shows("Start songs the fast way"));
+        assert!(!w.shows("Keep playing when the queue ends"));
+        assert!(!w.shows("Moving background"));
+        let dynamic = w.find("Dynamic Background", 0);
+        w.click(dynamic.center());
+        w.settle();
+        assert_eq!(w.h.app.settings.theme, Theme::DynamicBackground);
+        assert!(w.shows("Moving background"));
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
     /// A fan's video has only its still: the player page asks for its
     /// whole frame (`hq720.jpg`, the row's still being often its middle,
     /// zoomed) and, when the video has none, takes the still its row gave.
