@@ -410,8 +410,8 @@ mod tests {
         };
         let words = [word(0.0, 0, 3), word(1.0, 4, 7), word(2.0, 8, 11)];
         let (lit, unsung) = (Color32::WHITE, Color32::from_white_alpha(100));
-        // Half way through "two" (the lead is a tenth of a second).
-        let sung = sung(&galley, &words, 1.4, lit, unsung, 4.0);
+        // Half way through "two" (the lead is 0.05 s).
+        let sung = sung(&galley, &words, 1.45, lit, unsung, 4.0);
         let row = &sung.rows[0];
         let colors_of = |k: usize| -> Vec<Color32> {
             let from = row.glyphs[k].first_vertex as usize;

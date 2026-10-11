@@ -827,11 +827,15 @@ impl Player {
         to.is_zero() || self.song.as_ref().is_none_or(|s| s.data.is_complete())
     }
 
-    /// How far into the song playback is. Silence played while the download
-    /// caught up does not count.
+    /// How far into the song playback is, as heard: what the device has
+    /// been given, less what it holds before it plays (the latency it
+    /// reports: about 0.2 s on Windows), so the time, the lyrics and the
+    /// video's pictures are where the sound is, not that far ahead.
+    /// Silence played while the download caught up does not count.
     pub fn position(&self) -> Duration {
         let silent = self.feed.as_ref().map_or(Duration::ZERO, |f| f.silence());
-        self.offset + self.sink.get_pos().saturating_sub(silent)
+        let given = self.sink.get_pos().saturating_sub(silent);
+        self.offset + given.saturating_sub(self.output.clock().latency())
     }
 
     /// The current song has stopped sounding: played to its end, or broken
@@ -1036,6 +1040,28 @@ mod tests {
         }
         // Without a name, only as the default.
         assert_eq!(ways_to_open(None), [Device::Default]);
+    }
+
+    /// The position is what has been heard, not what the device was given
+    /// (on Windows that ran about 0.2 s ahead of the sound, and the lyrics
+    /// lit early by as much).
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn the_position_is_what_is_heard() {
+        let mut player = Player::open().expect("a sound device");
+        player.set_volume(0.0);
+        let started = Instant::now();
+        player.play_song(SongData::complete(tone()), 1.0).unwrap();
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(150));
+            let ahead = player.position().as_secs_f64() - started.elapsed().as_secs_f64();
+            assert!(
+                ahead.abs() < 0.06,
+                "{ahead:+.3} s from the time it has played"
+            );
+        }
+        assert!(player.output.clock().latency() > Duration::ZERO);
+        player.stop();
     }
 
     #[test]
