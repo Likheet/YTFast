@@ -15,6 +15,7 @@ mod dynamic;
 mod images;
 mod lyrics;
 mod queue;
+mod swipe;
 mod theme;
 mod update;
 mod update_mac;

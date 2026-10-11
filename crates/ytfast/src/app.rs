@@ -511,6 +511,8 @@ pub struct App {
     styled: Option<crate::theme::Theme>,
     pub images: RefCell<Images>,
     pub scrolling: fastframe_scroll::Scrolling,
+    /// A sideways swipe going Back or Forward (`swipe.rs`).
+    pub swipe: RefCell<crate::swipe::Swipe>,
     pub controls: Option<now_playing::NowPlaying>,
     pub demo: bool,
     /// The updater (none in the demo).
@@ -785,6 +787,7 @@ impl App {
             audio,
             images: RefCell::new(Images::default()),
             scrolling: fastframe_scroll::Scrolling::default(),
+            swipe: RefCell::default(),
             controls,
             demo,
             updates: None,
@@ -4105,11 +4108,17 @@ mod tests {
 
         /// A frame with the wheel turned (points, as a touchpad's) at `at`.
         fn wheel(&mut self, at: egui::Pos2, dy: f32) {
+            self.wheel_by(at, egui::vec2(0.0, dy));
+        }
+
+        /// A frame with a touchpad's two fingers moved by `delta` (points;
+        /// sideways too) at `at`.
+        fn wheel_by(&mut self, at: egui::Pos2, delta: egui::Vec2) {
             self.frame(vec![
                 egui::Event::PointerMoved(at),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, dy),
+                    delta,
                     phase: egui::TouchPhase::Move,
                     modifiers: egui::Modifiers::NONE,
                 },
@@ -4312,6 +4321,138 @@ mod tests {
         // ...and none was asked for twice.
         let again = asked.values().filter(|n| **n > 1).count();
         assert_eq!(again, 0, "{again} of {covers} covers asked for again");
+    }
+
+    /// A sideways swipe of two fingers on a touchpad goes Back (swiped
+    /// right) and Forward (swiped left), as in a browser, once let go
+    /// full, an arrow showing how far meanwhile; a wheel turned sideways by
+    /// Shift goes nowhere.
+    #[test]
+    fn a_sideways_swipe_goes_back_and_forward() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        long_home(&mut w);
+        w.settle();
+        let route = Route::browse("VLPLx".into(), None);
+        w.h.act(Action::Navigate(route.clone()));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("the page is asked for");
+        let page = Page {
+            sections: vec![Section {
+                items: ["a", "b", "c"].map(|v| Item::Track(song(v))).to_vec(),
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(route.clone(), load, Ok(page)));
+        w.settle();
+        let at = egui::pos2(700.0, 400.0);
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(60.0, 0.0));
+        }
+        // Not while the fingers are on the pad: the arrow shows how far.
+        assert_eq!(w.h.app.route, route);
+        assert!(w.shows("Swiping back"));
+        // Let go: Back.
+        w.settle();
+        assert_eq!(w.h.app.route, Route::Home);
+        assert!(!w.shows("Swiping back"));
+        // Swiped left: Forward again.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(-60.0, 0.0));
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, route);
+        // The wheel turned sideways by Shift: nowhere.
+        for _ in 0..6 {
+            w.frame(vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 60.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::SHIFT,
+                },
+            ]);
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, route);
+    }
+
+    /// A swipe that starts over a shelf that can scroll that way is the
+    /// shelf's: it scrolls, and the page stays. At the shelf's end, a new
+    /// swipe goes on to the page, as in a browser.
+    #[test]
+    fn a_swipe_over_a_shelf_scrolls_the_shelf() {
+        use ytfast_core::read::{Card, CardLook, Shape, Thumb};
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        long_home(&mut w);
+        w.settle();
+        w.h.act(Action::Navigate(Route::Explore));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("Explore is asked for");
+        let cards = (0..12)
+            .map(|i| {
+                Item::Card(Card {
+                    title: format!("Card {i}"),
+                    subtitle: "Album".into(),
+                    // Albums' covers (without, they are Explore's buttons).
+                    thumbnail: Some(Thumb {
+                        url: format!("https://example.com/c{i}.jpg"),
+                        width: 226,
+                        height: 226,
+                    }),
+                    round: false,
+                    open: None,
+                    play: None,
+                    podcast: None,
+                    look: CardLook::default(),
+                })
+            })
+            .collect();
+        let page = Page {
+            sections: vec![Section {
+                title: "A shelf".into(),
+                shape: Shape::Carousel,
+                items: cards,
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(Route::Explore, load, Ok(page)));
+        w.settle();
+        let card = w.find("Card 3", 0);
+        let at = card.center();
+        // Swiped left over the shelf: it scrolls on.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(-60.0, 0.0));
+        }
+        w.settle();
+        assert!(w.find("Card 3", 0).left() < card.left() - 200.0);
+        // Swiped right over it: it scrolls back, and the page stays.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(60.0, 0.0));
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, Route::Explore);
+        assert!((w.find("Card 3", 0).left() - card.left()).abs() < 1.0);
+        // At its start now, a new swipe right goes Back.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(60.0, 0.0));
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, Route::Home);
     }
 
     /// Home's next shelves are asked for three screens before its end

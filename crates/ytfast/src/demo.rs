@@ -1439,7 +1439,10 @@ mod tests {
 
     #[test]
     fn play_buttons_play_the_page_songs() {
-        assert_eq!(playlist_songs("LM").len(), SONGS.len());
+        // Liked Music: the songs liked, every other one.
+        let liked = (0..SONGS.len()).filter(|&i| liked_song(i)).count();
+        assert_eq!(playlist_songs("LM").len(), liked);
+        assert!(playlist_songs("LM").iter().all(|t| t.like == Some(Rating::Like)));
         let album = playlist_songs("demo-album-Postcards");
         assert_eq!(album.len(), 3);
         assert!(
