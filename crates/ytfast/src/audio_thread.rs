@@ -257,6 +257,17 @@ impl Engine {
         }
     }
 
+    /// How long until the song playing is heard to its end, once that is
+    /// known.
+    fn until_end(&self) -> Option<Duration> {
+        match self {
+            Self::Real(player) => player.until_end(),
+            Self::Silent(s) => s
+                .started
+                .map(|_| Duration::from_secs_f64((s.length - s.position()).max(0.0))),
+        }
+    }
+
     /// Why a finished song stopped before its end, if it did.
     fn broke_off(&self) -> Option<String> {
         match self {
@@ -386,12 +397,13 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                     }
                 }
             }
-            // A sounding song is followed closely (its position, its end),
-            // as is one about to sound once its jump is made; otherwise a
-            // look now and then is enough (a device that changed).
+            // A song about to sound once its jump is made is followed as
+            // one sounding; its end, once known and not yet told.
             let sounding = entry.is_some() && (!engine.paused() || sound_after_jump);
-            let wait = Duration::from_millis(if sounding { 100 } else { 1000 });
-            match commands.recv_timeout(wait) {
+            let until_end = (sounding && !ended_sent)
+                .then(|| engine.until_end())
+                .flatten();
+            match commands.recv_timeout(next_look(sounding, until_end)) {
                 Ok(command) => {
                     changed = true;
                     match command {
@@ -586,6 +598,23 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
 
 /// How often a device that failed is tried again.
 const RECOVER_EVERY: Duration = Duration::from_secs(2);
+/// How often a sounding song is looked at: its position, its end.
+const FOLLOW: Duration = Duration::from_millis(100);
+/// The shortest wait for a song's end when it is near.
+const END_LOOK: Duration = Duration::from_millis(5);
+
+/// How long the sound thread waits for a command before it looks at the
+/// song again. A sounding song is followed closely (its position, its end),
+/// and just when its end is due (`until_end`, once known), so the next song
+/// follows at once; otherwise a look now and then is enough (a device that
+/// changed).
+fn next_look(sounding: bool, until_end: Option<Duration>) -> Duration {
+    match (sounding, until_end) {
+        (false, _) => Duration::from_secs(1),
+        (true, Some(left)) => left.clamp(END_LOOK, FOLLOW),
+        (true, None) => FOLLOW,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -652,5 +681,113 @@ mod tests {
         audio.send(Command::Resume);
         let playing = status_when(&audio, |s| s.running);
         assert!(playing.running && !playing.paused, "{playing:?}");
+    }
+
+    /// The seconds from `since` until `ready` says so, looked at every
+    /// millisecond, or `None` after five seconds.
+    fn seconds_until(
+        audio: &Audio,
+        since: Instant,
+        ready: impl Fn(&Status) -> bool,
+    ) -> Option<f64> {
+        while since.elapsed() < Duration::from_secs(5) {
+            if ready(&audio.status()) {
+                return Some(since.elapsed().as_secs_f64());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        None
+    }
+
+    /// A song's end is looked at just when it is due, not at the next look
+    /// up to a tenth of a second later, so the next song follows at once.
+    /// (Timed for real, this is the device test below: a busy computer, as
+    /// CI's Mac running every test at once, wakes the thread late.)
+    #[test]
+    fn the_end_is_looked_at_just_when_it_is_due() {
+        let ms = Duration::from_millis;
+        // Before the end is known, and once it was told: the usual looks.
+        assert_eq!(next_look(true, None), FOLLOW);
+        // Known: just when it is due, but not again at once, nor later
+        // than the usual look.
+        assert_eq!(next_look(true, Some(ms(30))), ms(30));
+        assert_eq!(next_look(true, Some(Duration::ZERO)), END_LOOK);
+        assert_eq!(next_look(true, Some(Duration::from_secs(3))), FOLLOW);
+        // Nothing sounding: now and then.
+        assert_eq!(next_look(false, Some(ms(30))), Duration::from_secs(1));
+        assert_eq!(next_look(false, None), Duration::from_secs(1));
+    }
+
+    /// With the sound device, at volume 0: a song is told finished once its
+    /// end has been heard, not 0.2 s before (the next song cut that off),
+    /// and soon after; the next song, started then, sounds soon after too
+    /// (about 0.08 s on the owner's laptop; `the_next_song_sounds_at_once`
+    /// in `audio.rs` holds it to that).
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn a_song_is_told_finished_once_its_end_is_heard() {
+        let tone = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../ytfast-core/tests/fixtures/tone_dash.m4a"
+        ))
+        .unwrap();
+        let length = ytfast_core::audio::decoded_length(&tone)
+            .unwrap()
+            .as_secs_f64();
+        let audio = Audio::start(|| {}, false);
+        audio.send(Command::Volume(0.0));
+        let t0 = Instant::now();
+        let play = |entry| {
+            audio.send(Command::Play {
+                entry,
+                data: ytfast_core::stream::SongData::complete(tone.clone()),
+                gain: 1.0,
+                length,
+                from: 0.0,
+                paused: false,
+            });
+        };
+        // When a song began to sound (seconds from t0), from where it was
+        // heard while it played.
+        let began = |entry| {
+            let mut starts = Vec::new();
+            while starts.len() < 5 {
+                let s = audio.status();
+                if let Some(at) = s.measured
+                    && s.entry == Some(entry)
+                    && s.running
+                    && (0.3..length - 0.5).contains(&s.position)
+                {
+                    starts.push((at - t0).as_secs_f64() - s.position);
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            starts.iter().sum::<f64>() / starts.len() as f64
+        };
+        play(1);
+        let heard = began(1) + length;
+        let told = seconds_until(&audio, t0, |s| s.ended == Some(1)).expect("told");
+        // As the window does: the next song, at once.
+        audio.send(Command::Stop);
+        play(2);
+        let next = began(2);
+        audio.send(Command::Stop);
+        eprintln!(
+            "end heard at {heard:.3} s, told at {told:.3} s ({:+.3} s); the next song sounded \
+             at {next:.3} s ({:.3} s after the end)",
+            told - heard,
+            next - heard
+        );
+        assert!(
+            told >= heard - 0.01,
+            "told {:.3} s before its end was heard",
+            heard - told
+        );
+        assert!(told < heard + 0.06, "told {:.3} s late", told - heard);
+        assert!(
+            next < heard + 0.5,
+            "the next song sounded {:.3} s after",
+            next - heard
+        );
     }
 }

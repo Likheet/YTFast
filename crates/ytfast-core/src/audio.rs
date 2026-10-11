@@ -210,8 +210,26 @@ impl Iterator for SongSource {
 /// Seconds of sound decoded ahead of the device.
 const AHEAD_SECONDS: usize = 2;
 /// Silence is played in blocks of this many frames while the decoder waits
-/// for the download.
+/// for the download, and after the song's end.
 const SILENCE_FRAMES: usize = 256;
+/// Silence after a song's end beyond the device's latency, so that its last
+/// moment is heard before the song counts as finished: the device takes
+/// sound in steps (about 11 ms on Windows), and where in its step the song
+/// ended is not known.
+const TAIL_MARGIN: Duration = Duration::from_millis(20);
+/// The longest latency the silence after a song waits for. AirPlay
+/// speakers report about 2 s; a device that reports more is taken to be
+/// wrong, and must not hold up the next song for long.
+const LONGEST_LATENCY: Duration = Duration::from_secs(3);
+
+/// Samples of silence after a song's end ([`Playing`]), for a device that
+/// plays sound `latency` after it is given: whole frames, so the channels
+/// stay in step.
+fn tail_samples(latency: Duration, rate: u32, channels: u16) -> usize {
+    let wait = latency.min(LONGEST_LATENCY) + TAIL_MARGIN;
+    let frames = (wait.as_secs_f64() * f64::from(rate)).ceil() as usize;
+    frames * usize::from(channels)
+}
 
 /// Decoded sound on its way from a song's decoder to the device.
 #[derive(Default)]
@@ -219,6 +237,8 @@ struct Queue {
     chunks: VecDeque<Vec<f32>>,
     /// Samples in `chunks`.
     samples: usize,
+    /// Samples ever pushed: the song's length so far.
+    pushed: u64,
     /// Decoding has ended: at the end of the song, or where it broke off.
     ended: bool,
     /// Nobody plays the song any more: decoding stops.
@@ -228,6 +248,7 @@ struct Queue {
 impl Queue {
     fn push(&mut self, chunk: Vec<f32>) {
         self.samples += chunk.len();
+        self.pushed += chunk.len() as u64;
         self.chunks.push_back(chunk);
     }
 }
@@ -241,6 +262,10 @@ struct Feed {
     silent: AtomicU64,
     /// Samples per second (all channels).
     per_second: u64,
+    /// The song's length in samples from where the feed started, once
+    /// decoding has ended ([`Feed::end`]); `u64::MAX` until then, and for a
+    /// song let go.
+    length: AtomicU64,
 }
 
 /// What the device gets from a [`Feed`].
@@ -248,7 +273,10 @@ enum Taken {
     Sound(Vec<f32>),
     /// Nothing decoded yet: the download is behind.
     Waiting,
+    /// All of the song has been taken: it ended, or broke off.
     End,
+    /// Nobody plays the song any more.
+    LetGo,
 }
 
 impl Feed {
@@ -267,9 +295,28 @@ impl Feed {
                 self.room.notify_one();
                 Taken::Sound(chunk)
             }
-            None if queue.ended || queue.let_go => Taken::End,
+            None if queue.let_go => Taken::LetGo,
+            None if queue.ended => Taken::End,
             None => Taken::Waiting,
         }
+    }
+
+    /// Decoding has ended. At the end of the song, or where it broke off,
+    /// the song's length (from where the feed started) is known; a song let
+    /// go has none.
+    fn end(&self, queue: &mut Queue) {
+        queue.ended = true;
+        if !queue.let_go {
+            self.length.store(queue.pushed, Ordering::Release);
+        }
+    }
+
+    /// The song's length from where the feed started, once decoding has
+    /// ended.
+    fn length(&self) -> Option<Duration> {
+        let samples = self.length.load(Ordering::Acquire);
+        (samples != u64::MAX)
+            .then(|| Duration::from_secs_f64(samples as f64 / self.per_second.max(1) as f64))
     }
 
     /// Stops the decoder: the song is no longer played. What it decoded
@@ -300,7 +347,7 @@ fn decode_ahead(mut song: SongSource, feed: &Feed, ahead: usize) {
     struct Ended<'a>(&'a Feed);
     impl Drop for Ended<'_> {
         fn drop(&mut self) {
-            self.0.lock().ended = true;
+            self.0.end(&mut self.0.lock());
         }
     }
     let _ended = Ended(feed);
@@ -319,6 +366,10 @@ fn decode_ahead(mut song: SongSource, feed: &Feed, ahead: usize) {
     }
 }
 
+/// The time between giving the device a sample and hearing it, asked when
+/// a song ends ([`Playing`]).
+type Latency = Box<dyn Fn() -> Duration + Send>;
+
 /// A song as the device plays it, as a rodio source.
 ///
 /// The device must never wait (the sound would stop, and pausing or moving
@@ -327,12 +378,22 @@ fn decode_ahead(mut song: SongSource, feed: &Feed, ahead: usize) {
 /// behind, because the download is, silence plays, and is counted so the
 /// song's position (and the lyrics) do not run ahead. Dropping it ends the
 /// decoding thread.
+///
+/// After the song's end, silence plays for as long as the device takes to
+/// play what it holds (its latency: about 0.2 s on Windows), and only then
+/// does the source end. So the song is finished ([`Player::finished`]) once
+/// its end has been heard, and the next song, which empties the device,
+/// cuts off nothing of it.
 struct Playing {
     feed: Arc<Feed>,
     chunk: Vec<f32>,
     at: usize,
     /// Samples of silence still to play.
     silence: usize,
+    /// Samples of silence still to play after the song's end; `None` before
+    /// it.
+    tail: Option<usize>,
+    latency: Latency,
     channels: u16,
     rate: u32,
 }
@@ -341,7 +402,7 @@ impl Playing {
     /// Starts playing `song`: its first moments are decoded here, so the
     /// device's first request is answered with sound, and the rest on a
     /// thread of its own.
-    fn start(mut song: SongSource) -> Result<(Self, Arc<Feed>), AudioError> {
+    fn start(mut song: SongSource, latency: Latency) -> Result<(Self, Arc<Feed>), AudioError> {
         let (channels, rate) = (song.channels, song.rate);
         let per_second = rate as usize * usize::from(channels);
         let mut queue = Queue::default();
@@ -355,11 +416,13 @@ impl Playing {
             }
         }
         let ended = queue.ended;
+        let length = if ended { queue.pushed } else { u64::MAX };
         let feed = Arc::new(Feed {
             queue: Mutex::new(queue),
             room: Condvar::new(),
             silent: AtomicU64::new(0),
             per_second: per_second as u64,
+            length: AtomicU64::new(length),
         });
         if !ended {
             let decoding = Arc::clone(&feed);
@@ -373,6 +436,8 @@ impl Playing {
             chunk: Vec::new(),
             at: 0,
             silence: 0,
+            tail: None,
+            latency,
             channels,
             rate,
         };
@@ -412,7 +477,22 @@ impl Iterator for Playing {
                         .fetch_add(samples as u64, Ordering::Relaxed);
                     self.silence = samples;
                 }
-                Taken::End => return None,
+                Taken::End => {
+                    // Silence while the device plays the last of the song,
+                    // in blocks, so a song let go meanwhile stops at once.
+                    // Not counted: it carries the position to the end.
+                    let left = match self.tail {
+                        Some(left) => left,
+                        None => tail_samples((self.latency)(), self.rate, self.channels),
+                    };
+                    if left == 0 {
+                        return None;
+                    }
+                    let block = left.min(SILENCE_FRAMES * usize::from(self.channels));
+                    self.tail = Some(left - block);
+                    self.silence = block;
+                }
+                Taken::LetGo => return None,
             }
         }
     }
@@ -496,6 +576,42 @@ struct OpenedOutput {
     /// Opened by the default output's name, not as Windows' default: it
     /// does not follow the default by itself ([`Player::maintain`] does).
     by_name: bool,
+}
+
+impl OpenedOutput {
+    /// The stream holds silence that would play before its first song.
+    /// fastframe-audio opens a stream playing, and YTFast pauses it at
+    /// once, but now and then (a few times in a hundred on the owner's
+    /// laptop) the device first takes a step of sound from it, up to 0.2 s
+    /// on Windows, and keeps it through the pause. Only for a stream not
+    /// resumed since it opened, once its pause has taken effect
+    /// ([`PAUSE_SETTLES`]).
+    fn holds_silence(&self) -> bool {
+        !self.output.clock().played().is_zero()
+    }
+}
+
+/// How long a stream just opened is given for its pause to take effect,
+/// before it is asked whether it holds silence.
+const PAUSE_SETTLES: Duration = Duration::from_millis(30);
+
+/// Opens a stream with `open`, and again (three times in all, at most)
+/// while it holds silence ([`OpenedOutput::holds_silence`]). It waits a
+/// moment for each stream's pause, so it is for a stream nothing waits for
+/// yet: the player's first, opened as YTFast starts.
+fn quietly(
+    mut open: impl FnMut() -> Result<OpenedOutput, AudioError>,
+) -> Result<OpenedOutput, AudioError> {
+    let mut opened = open()?;
+    for _ in 1..3 {
+        std::thread::sleep(PAUSE_SETTLES);
+        if !opened.holds_silence() {
+            break;
+        }
+        log::debug!("audio output: a new stream held silence; opening another");
+        opened = open()?;
+    }
+    Ok(opened)
 }
 
 /// Opens the default output, paused (the device rests until there is a
@@ -614,7 +730,10 @@ fn open_output_on(device: Device) -> Result<OpenedOutput, AudioError> {
 /// or a jump, after sound was played moves to a fresh stream, which starts
 /// empty; otherwise the end of what played before would sound first.
 /// Opening one takes about 0.15 s, so a spare is opened while a song plays
-/// ([`Player::prepare_spare`]), and moving to it takes about 0.01 s.
+/// ([`Player::prepare_spare`]), and moving to it takes about 0.01 s. A song
+/// that played to its end is finished only once the device has played all
+/// of it (silence follows it meanwhile: [`Playing`]), so the move to a fresh
+/// stream for the next song loses nothing of it.
 pub struct Player {
     output: fastframe_audio::Output<MixerRender>,
     made: MixerSlot,
@@ -653,7 +772,7 @@ impl Player {
             made,
             mixer,
             by_name,
-        } = open_output()?;
+        } = quietly(open_output)?;
         let sink = rodio::Sink::connect_new(&mixer);
         Ok(Self {
             by_name,
@@ -684,9 +803,13 @@ impl Player {
         self.empty_the_device();
         self.song = Some(Loaded { data, gain });
         self.paused = false;
+        // The song before the device: a device started first can take its
+        // first 0.2 s as silence before the song is there (it did, about
+        // every other time).
+        self.restart_at(Duration::ZERO)?;
         self.output.resume();
         self.fed = true;
-        self.restart_at(Duration::ZERO)
+        Ok(())
     }
 
     /// Swaps the device's stream for a fresh one when the old may still
@@ -730,10 +853,16 @@ impl Player {
     }
 
     /// Opens a spare stream for the next song or jump, while a song plays
-    /// and there is none (about 0.15 s; call it when nothing waits). After
-    /// a failure it rests for half a minute.
+    /// and there is none (about 0.15 s; call it when nothing waits), or
+    /// the spare holds silence. After a failure it rests for half a minute.
     pub fn prepare_spare(&mut self) {
         const REST: Duration = Duration::from_secs(30);
+        // A spare that holds silence would play it before the next song.
+        // Asked at every call: just opened, its pause takes a moment.
+        if self.spare.as_ref().is_some_and(OpenedOutput::holds_silence) {
+            log::debug!("audio output: the spare stream held silence; opening another");
+            self.spare = None;
+        }
         let playing = self.song.is_some() && !self.paused;
         let resting = self.spare_failed.is_some_and(|at| at.elapsed() < REST);
         if self.spare.is_some() || !playing || resting {
@@ -760,7 +889,9 @@ impl Player {
         let Some(song) = &self.song else {
             return Ok(());
         };
-        let (source, feed) = Playing::start(SongSource::open(&song.data, at)?)?;
+        let clock = self.output.clock();
+        let latency = Box::new(move || clock.latency());
+        let (source, feed) = Playing::start(SongSource::open(&song.data, at)?, latency)?;
         // A fresh sink; dropping the old one stops it on the audio thread
         // without waiting.
         let sink = rodio::Sink::connect_new(&self.mixer);
@@ -814,11 +945,13 @@ impl Player {
     /// whole song, and waits for it (see [`Player::can_jump`]).
     pub fn seek(&mut self, to: Duration) -> Result<(), AudioError> {
         self.empty_the_device();
+        // The song before the device, as in `play_song`.
+        self.restart_at(to)?;
         if !self.paused && self.song.is_some() {
             self.output.resume();
             self.fed = true;
         }
-        self.restart_at(to)
+        Ok(())
     }
 
     /// Whether a jump to `to` can be made without waiting: to the start,
@@ -831,15 +964,36 @@ impl Player {
     /// been given, less what it holds before it plays (the latency it
     /// reports: about 0.2 s on Windows), so the time, the lyrics and the
     /// video's pictures are where the sound is, not that far ahead.
-    /// Silence played while the download caught up does not count.
+    /// Silence played while the download caught up does not count, and
+    /// the silence after the song carries it to the end and no further.
     pub fn position(&self) -> Duration {
+        let heard = self.heard();
+        self.end().map_or(heard, |end| heard.min(end))
+    }
+
+    /// [`Player::position`], before it is held at the song's end.
+    fn heard(&self) -> Duration {
         let silent = self.feed.as_ref().map_or(Duration::ZERO, |f| f.silence());
         let given = self.sink.get_pos().saturating_sub(silent);
         self.offset + given.saturating_sub(self.output.clock().latency())
     }
 
-    /// The current song has stopped sounding: played to its end, or broken
-    /// off before it (see [`Player::broke_off`]).
+    /// Where the song ends, once its decoding has ended: a few seconds
+    /// before it is heard, as the song is decoded ahead.
+    fn end(&self) -> Option<Duration> {
+        Some(self.offset + self.feed.as_ref()?.length()?)
+    }
+
+    /// How long until the song is finished ([`Player::finished`]), once
+    /// where it ends is known; `None` before then. It counts down only
+    /// while the song sounds.
+    pub fn until_end(&self) -> Option<Duration> {
+        Some((self.end()? + TAIL_MARGIN).saturating_sub(self.heard()))
+    }
+
+    /// The current song has stopped sounding: its end has been heard (the
+    /// device holds nothing of it any more), or it broke off before its end
+    /// (see [`Player::broke_off`]).
     pub fn finished(&self) -> bool {
         self.song.is_some() && self.sink.empty()
     }
@@ -1064,6 +1218,136 @@ mod tests {
         player.stop();
     }
 
+    /// A song is finished once its end has been heard, not once the last of
+    /// it went to the device: on Windows that was 0.2 s before (the
+    /// latency), and the next song, started then, cut that much off the end
+    /// of every song.
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn a_song_finishes_once_its_end_is_heard() {
+        let length = decoded_length(&tone()).unwrap().as_secs_f64();
+        let mut player = Player::open().expect("a sound device");
+        player.set_volume(0.0);
+        let started = Instant::now();
+        player.play_song(SongData::complete(tone()), 1.0).unwrap();
+        // The sound starts a moment after the song is given: by how much.
+        std::thread::sleep(Duration::from_millis(500));
+        let mut lags = Vec::new();
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(100));
+            lags.push(started.elapsed().as_secs_f64() - player.position().as_secs_f64());
+        }
+        let lag = lags.iter().sum::<f64>() / lags.len() as f64;
+        while !player.finished() {
+            assert!(
+                started.elapsed().as_secs_f64() < length + 2.0,
+                "it finishes"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let finished = started.elapsed().as_secs_f64();
+        let position = player.position().as_secs_f64();
+        let latency = player.output.clock().latency().as_secs_f64();
+        // When the end was heard, by the clock.
+        let heard = lag + length;
+        eprintln!(
+            "song {length:.3} s, sound {lag:.3} s behind; finished at {finished:.3} s, its end \
+             heard at {heard:.3} s; position then {position:.3} s; latency {latency:.3} s"
+        );
+        assert!(
+            finished >= heard - 0.01,
+            "finished {:.3} s before its end was heard",
+            heard - finished
+        );
+        assert!(
+            finished < heard + 0.06,
+            "finished {:.3} s after its end was heard",
+            finished - heard
+        );
+        assert!(
+            (position - length).abs() < 0.02,
+            "the position is the end: {position:.3} s"
+        );
+        player.stop();
+    }
+
+    /// The next song sounds at once: it is given to the stream before the
+    /// stream starts, and the spare holds no silence. (Started first, the
+    /// stream took its first 0.2 s as silence about every other time.)
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn the_next_song_sounds_at_once() {
+        let mut player = Player::open().expect("a sound device");
+        player.set_volume(0.0);
+        player.play_song(SongData::complete(tone()), 1.0).unwrap();
+        for _ in 0..6 {
+            // A spare opened while the song plays, and asked again at the
+            // next looks, as the audio thread does.
+            for _ in 0..3 {
+                std::thread::sleep(Duration::from_millis(100));
+                player.prepare_spare();
+            }
+            // As at a song's end, or a song chosen: stop, then the next.
+            player.stop();
+            let started = Instant::now();
+            player.play_song(SongData::complete(tone()), 1.0).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            let lag = started.elapsed().as_secs_f64() - player.position().as_secs_f64();
+            assert!(
+                lag < 0.1,
+                "the next song sounded {lag:.3} s after it was given"
+            );
+        }
+        player.stop();
+    }
+
+    /// A spare that holds silence is not kept: another takes its place.
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn a_spare_that_holds_silence_is_not_kept() {
+        let mut player = Player::open().expect("a sound device");
+        player.set_volume(0.0);
+        player.play_song(SongData::complete(tone()), 1.0).unwrap();
+        player.prepare_spare();
+        // As if the device took a step of sound before its first pause.
+        let spare = player.spare.as_mut().expect("a spare");
+        spare.output.resume();
+        std::thread::sleep(Duration::from_millis(50));
+        spare.output.pause();
+        std::thread::sleep(PAUSE_SETTLES);
+        assert!(spare.holds_silence());
+        // The audio thread's next looks.
+        for _ in 0..3 {
+            player.prepare_spare();
+            std::thread::sleep(PAUSE_SETTLES);
+        }
+        let spare = player.spare.as_ref().expect("another spare");
+        assert!(!spare.holds_silence(), "the spare that held silence stayed");
+        player.stop();
+    }
+
+    /// The player's first stream is opened again when it holds silence.
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn the_first_stream_is_opened_again_when_it_holds_silence() {
+        let mut opens = 0;
+        let opened = quietly(|| {
+            opens += 1;
+            let mut opened = open_output()?;
+            if opens == 1 {
+                // As if the device took a step of sound before its pause.
+                opened.output.resume();
+                std::thread::sleep(Duration::from_millis(50));
+                opened.output.pause();
+            }
+            Ok(opened)
+        })
+        .expect("a sound device");
+        assert!(opens > 1, "it was not opened again");
+        std::thread::sleep(PAUSE_SETTLES);
+        assert!(!opened.holds_silence());
+    }
+
     #[test]
     #[ignore = "needs a sound device"]
     fn a_song_carries_on_when_ytfast_opens_the_output_again() {
@@ -1171,7 +1455,7 @@ mod tests {
         let (first, rest) = bytes.split_at(bytes.len() / 2);
         arriving.push_for_test(first);
         let source = SongSource::open(&arriving, Duration::ZERO).unwrap();
-        let (mut playing, feed) = Playing::start(source).unwrap();
+        let (mut playing, feed) = Playing::start(source, Box::new(|| Duration::ZERO)).unwrap();
         let feeder = {
             let data = Arc::clone(&arriving);
             let rest = rest.to_vec();
@@ -1204,7 +1488,9 @@ mod tests {
         feeder.join().unwrap();
         let silent = feed.silent.load(Ordering::Relaxed);
         assert!(silent > 0, "it played silence while the song arrived");
-        assert_eq!(played - silent, whole);
+        // And after the song, the silence of its end (not counted).
+        let tail = tail_samples(Duration::ZERO, playing.rate, playing.channels) as u64;
+        assert_eq!(played - silent - tail, whole);
         assert!(
             slowest < Duration::from_millis(500),
             "the device waited {slowest:?}"
@@ -1215,10 +1501,51 @@ mod tests {
     }
 
     #[test]
+    fn silence_follows_the_end_while_the_device_plays_it() {
+        // A device that plays sound 0.2 s after it is given: the song ends
+        // 0.22 s after its last sample (with the margin for the device's
+        // steps), all of it silence, none of it taken off the position.
+        let data = SongData::complete(tone());
+        let whole = SongSource::open(&data, Duration::ZERO).unwrap().count();
+        let source = SongSource::open(&data, Duration::ZERO).unwrap();
+        let per_second = f64::from(source.rate) * f64::from(source.channels);
+        let (playing, feed) =
+            Playing::start(source, Box::new(|| Duration::from_millis(200))).unwrap();
+        let played: Vec<f32> = playing.collect();
+        // Silence while the decoder caught up, if any, is counted apart.
+        let silent = feed.silent.load(Ordering::Relaxed) as usize;
+        let tail = played.len() - silent - whole;
+        assert!(
+            (tail as f64 / per_second - 0.22).abs() < 0.001,
+            "{tail} samples"
+        );
+        assert!(played[played.len() - tail..].iter().all(|&s| s == 0.0));
+        // Where the song ends was known once it was decoded.
+        let length = feed.length().expect("known at the end");
+        assert!((length.as_secs_f64() - whole as f64 / per_second).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_song_let_go_stops_without_the_silence() {
+        // Skipped, or replaced by a jump: no silence after it.
+        let data = SongData::complete(tone());
+        let source = SongSource::open(&data, Duration::ZERO).unwrap();
+        let per_second = source.rate as usize * usize::from(source.channels);
+        let (mut playing, feed) =
+            Playing::start(source, Box::new(|| Duration::from_millis(200))).unwrap();
+        assert!(playing.next().is_some());
+        feed.let_go();
+        // At most what is left of the packet it was playing.
+        let rest = playing.count();
+        assert!(rest < per_second / 10, "{rest} samples after it was let go");
+        assert_eq!(feed.length(), None, "a song let go has no end");
+    }
+
+    #[test]
     fn letting_a_song_go_ends_its_decoding() {
         let data = SongData::complete(tone());
         let source = SongSource::open(&data, Duration::ZERO).unwrap();
-        let (mut playing, _feed) = Playing::start(source).unwrap();
+        let (mut playing, _feed) = Playing::start(source, Box::new(|| Duration::ZERO)).unwrap();
         assert!(playing.next().is_some());
         // The four-second song is decoded two seconds ahead, then the
         // decoder waits for room, holding the song.
