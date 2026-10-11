@@ -1,6 +1,8 @@
-//! YTFast's settings: a few switches, the account, and where problems are
-//! noted. YouTube Music's look and Dynamic Background put each setting in
-//! the same place; Premium sets each on a card of its own.
+//! YTFast's settings, few and short (touched up at the owner's word, 11
+//! October 2026): the look, a few switches, updates, the account, and
+//! where problems are noted. YouTube Music's look and Dynamic Background
+//! put each setting in the same place; Premium sets each on a card of its
+//! own.
 
 use egui::{Align, Layout, Rect, UiBuilder, pos2, vec2};
 
@@ -34,7 +36,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         });
 }
 
-/// Everything Settings shows, from its title down.
+/// Everything Settings shows, from its title down: the look, playback,
+/// updates, the account and about, each a short section of one-line
+/// settings.
 fn contents(app: &App, ui: &mut egui::Ui) {
     // Premium: a larger title, and each setting on a card.
     let (above, size, below) = if theme::premium() {
@@ -46,28 +50,15 @@ fn contents(app: &App, ui: &mut egui::Ui) {
     theme::label(ui, "Settings", theme::bold(size), PALETTE.text);
     ui.add_space(below);
 
-    heading(ui, "Playback");
-    switch(
-        app,
-        ui,
-        "Start songs the fast way",
-        "Songs start in about a second, the way the website does it. Turn this off if songs fail to start: YTFast then always uses yt-dlp, which takes about ten seconds per song.",
-        app.settings.fast_way,
-        Setting::FastWay,
-    );
-    switch(
-        app,
-        ui,
-        "Keep playing when the queue ends",
-        "Carry on with songs like the last one, as YouTube Music's autoplay does.",
-        app.settings.autoplay,
-        Setting::Autoplay,
-    );
+    heading(ui, "Appearance");
+    looks(app, ui);
+
+    section(ui, "Playback");
     switch(
         app,
         ui,
         "Even out loudness",
-        "Turn loud songs down to the level YouTube Music plays them at, from the next song.",
+        "Loud songs play at the level YouTube Music plays them at.",
         app.settings.even_loudness,
         Setting::EvenLoudness,
     );
@@ -75,65 +66,84 @@ fn contents(app: &App, ui: &mut egui::Ui) {
         app,
         ui,
         "Skip songs you dislike",
-        "Disliking the song or video playing moves on to the next one, as YouTube Music does.",
+        "Disliking the song playing moves on to the next, as YouTube Music does.",
         app.settings.skip_disliked,
         Setting::SkipDisliked,
     );
     switch(
         app,
         ui,
-        "Ask before closing while a song plays",
-        "Closing YTFast while a song plays asks first. Turn this off to let it close at once.",
-        app.settings.confirm_close,
-        Setting::ConfirmClose,
+        "Translate lyrics",
+        "Each line in English too, and in Latin letters for other scripts.",
+        app.settings.translate_lyrics,
+        Setting::TranslateLyrics,
     );
     switch(
         app,
         ui,
-        "Translate lyrics",
-        "Under each line of lyrics, the line in English, and in Latin letters when it is written in another script (Japanese, Korean, Hindi...). Also the Lyrics tab's Translate button.",
-        app.settings.translate_lyrics,
-        Setting::TranslateLyrics,
+        "Ask before closing while a song plays",
+        "Closing YTFast while a song plays asks first.",
+        app.settings.confirm_close,
+        Setting::ConfirmClose,
     );
 
-    ui.add_space(18.0);
-    heading(ui, "Theme");
-    for choice in Theme::ALL {
-        theme_choice(app, ui, choice);
-    }
-
     if !app.demo {
-        ui.add_space(18.0);
-        heading(ui, "Updates");
+        section(ui, "Updates");
         updates(app, ui);
     }
 
-    ui.add_space(18.0);
-    heading(ui, "Account");
-    if let Auth::SignedIn { name, .. } = &app.auth {
-        let browser = app.settings.browser.as_deref().unwrap_or("your browser");
-        text(
-            ui,
-            &format!("Signed in as {name}, with the sign-in from {browser}."),
-        );
-    }
-    ui.add_space(8.0);
-    if !app.demo && theme::pill_button(ui, "Sign out", false).clicked() {
-        app.act(Action::SignOut);
-    }
+    section(ui, "Account");
+    let signed_in = match &app.auth {
+        Auth::SignedIn { name, .. } => match app.settings.browser.as_deref() {
+            Some(browser) => format!("Signed in as {name} ({browser})."),
+            None => format!("Signed in as {name}."),
+        },
+        _ => "Not signed in.".to_string(),
+    };
+    let sign_out = (!app.demo).then_some(("Sign out", Action::SignOut));
+    words_and_button(app, ui, &signed_in, sign_out);
 
-    ui.add_space(18.0);
-    heading(ui, "About");
-    text(ui, crate::app::VERSION);
-    text(
+    section(ui, "About");
+    words_and_button(app, ui, crate::app::VERSION, None);
+    words_and_button(
+        app,
         ui,
-        "Problems are noted in ytfast.log, in YTFast's cache folder. It has no passwords or cookies in it, so it is safe to send.",
+        LOG_WORDS,
+        Some(("Open the log's folder", Action::OpenLogFolder)),
     );
-    ui.add_space(8.0);
-    if theme::pill_button(ui, "Open that folder", false).clicked() {
-        app.act(Action::OpenLogFolder);
-    }
     ui.add_space(40.0);
+}
+
+/// Where problems are noted, beside the button that opens its folder.
+const LOG_WORDS: &str = "Problems are noted in ytfast.log, free of passwords.";
+
+/// How wide the words beside a button may be: the column less room for
+/// the button.
+const WORDS_BESIDE_BUTTON: f32 = 640.0 - 200.0;
+
+/// The space before a section, and its heading.
+fn section(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(18.0);
+    heading(ui, text);
+}
+
+/// A row of words (14, quieter) and at its right, when there is one, a
+/// button.
+fn words_and_button(app: &App, ui: &mut egui::Ui, words: &str, button: Option<(&str, Action)>) {
+    row(ui, |ui| {
+        ui.set_min_height(36.0);
+        ui.vertical(|ui| {
+            ui.set_max_width(WORDS_BESIDE_BUTTON.min(ui.available_width()));
+            text(ui, words);
+        });
+        if let Some((label, action)) = button {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::pill_button(ui, label, false).clicked() {
+                    app.act(action);
+                }
+            });
+        }
+    });
 }
 
 fn heading(ui: &mut egui::Ui, text: &str) {
@@ -191,68 +201,61 @@ fn switch(app: &App, ui: &mut egui::Ui, title: &str, about: &str, on: bool, whic
     });
 }
 
-/// A theme to choose: its name and what it is, and a round mark at the
-/// right, filled for the one worn. The whole row chooses it.
-fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
-    let (name, about) = choice.words();
-    let chosen = app.settings.theme == choice;
-    let rect = row(ui, |ui| {
+/// The looks, as three buttons in a row, the one worn lit (each named for
+/// screen readers, so the demo can choose one by name); under them, in one
+/// line, what the look worn is, or for Dynamic Background its own switch
+/// (its colours moving). The line is as tall in every look, so nothing
+/// under it moves when the look changes.
+fn looks(app: &App, ui: &mut egui::Ui) {
+    let worn = app.settings.theme;
+    row(ui, |ui| {
         ui.vertical(|ui| {
-            ui.set_max_width((ui.available_width() - 70.0).max(0.0));
-            theme::label(ui, name, theme::medium(15.5), PALETTE.text);
-            ui.label(
-                egui::RichText::new(about)
-                    .font(theme::regular(13.0))
-                    .color(PALETTE.secondary),
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                for choice in Theme::ALL {
+                    let (name, _) = choice.words();
+                    if theme::chip(ui, name, choice == worn, 36.0).clicked() && choice != worn {
+                        app.act(Action::SetTheme(choice));
+                    }
+                }
+            });
+            ui.add_space(12.0);
+            let (line, _) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+            let mut line_ui = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(line)
+                    .layout(Layout::left_to_right(Align::Center)),
             );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (spot, _) = ui.allocate_exact_size(egui::vec2(36.0, 20.0), egui::Sense::hover());
-            let centre = egui::pos2(spot.right() - 10.0, spot.center().y);
-            // The switches' colour (blue in YouTube Music's look).
-            let ring = if chosen {
-                PALETTE.switch
+            if worn == Theme::DynamicBackground {
+                line_ui.vertical(|ui| {
+                    theme::label(ui, "Moving background", theme::medium(15.5), PALETTE.text);
+                    ui.label(
+                        egui::RichText::new("The song's colours drift slowly while it plays.")
+                            .font(theme::regular(13.0))
+                            .color(PALETTE.secondary),
+                    );
+                });
+                line_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::toggle(ui, app.settings.moving_background, "Moving background")
+                        .clicked()
+                    {
+                        app.act(Action::Toggle(Setting::MovingBackground));
+                    }
+                });
             } else {
-                PALETTE.secondary
-            };
-            ui.painter()
-                .circle_stroke(centre, 9.0, egui::Stroke::new(2.0, ring));
-            if chosen {
-                ui.painter().circle_filled(centre, 5.0, PALETTE.switch);
+                let (_, about) = worn.words();
+                text(&mut line_ui, &format!("{about}."));
             }
         });
     });
-    let response = ui.interact(rect, ui.id().with(("theme", name)), egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, chosen, name)
-    });
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    if response.clicked() && !chosen {
-        app.act(Action::SetTheme(choice));
-    }
-    // Dynamic Background's own switch, under it: in every look, so nothing
-    // under it moves, but only to be used while that look is worn.
-    if choice == Theme::DynamicBackground {
-        ui.add_enabled_ui(chosen, |ui| {
-            switch(
-                app,
-                ui,
-                "Moving background",
-                "The song's colours drift slowly while it plays (Dynamic Background). Off, they stay still, and YTFast draws the window less often.",
-                app.settings.moving_background,
-                Setting::MovingBackground,
-            );
-        });
-    }
 }
 
 /// What "Download updates automatically" says, on Windows and on a Mac
 /// (where only a copy in Applications installs its updates).
 const UPDATES_ABOUT: [&str; 2] = [
-    "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it.",
-    "YTFast looks for a new version once a day and downloads it. The Update button at the top then shows it; Restart to update installs it. Keep YTFast in Applications for this.",
+    "New versions download in the background; Restart to update installs them.",
+    "New versions download in the background, to a copy in Applications.",
 ];
 
 /// The updates switch, what the updater is doing, and the button that
@@ -303,23 +306,29 @@ fn updates(app: &App, ui: &mut egui::Ui) {
         State::Restarting => ("Restarting...".to_string(), None),
         State::Failed(message) => (message, check),
     };
-    text(ui, &words);
-    if let Some((label, primary, action)) = button {
-        ui.add_space(8.0);
-        if theme::pill_button(ui, label, primary).clicked() {
-            app.act(action);
+    row(ui, |ui| {
+        ui.set_min_height(36.0);
+        ui.vertical(|ui| {
+            ui.set_max_width((ui.available_width() - 200.0).max(0.0));
+            text(ui, &words);
+        });
+        if let Some((label, primary, action)) = button {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::pill_button(ui, label, primary).clicked() {
+                    app.act(action);
+                }
+            });
         }
-    }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// How many lines a setting's explanation takes (13, in the 570 the
-    /// column leaves it beside its switch), in Roboto or in Dynamic
-    /// Background's Inter, on a screen of `pixels_per_point`.
-    fn lines(text: &str, inter: bool, pixels_per_point: f32) -> usize {
+    /// How many lines words take, `size` big in `width`, in Roboto or in
+    /// Dynamic Background's Inter, on a screen of `pixels_per_point`.
+    fn lines(text: &str, size: f32, width: f32, inter: bool, pixels_per_point: f32) -> usize {
         let ctx = egui::Context::default();
         let mut fonts = theme::install(&ctx);
         fonts.set_inter_first(inter);
@@ -330,9 +339,9 @@ mod tests {
                 .fonts_mut(|f| {
                     f.layout(
                         text.to_string(),
-                        theme::regular(13.0),
+                        theme::regular(size),
                         PALETTE.secondary,
-                        570.0,
+                        width,
                     )
                 })
                 .rows
@@ -342,19 +351,21 @@ mod tests {
         count
     }
 
-    /// The explanation of updates takes as many lines in Dynamic
-    /// Background's font as in Roboto, on Windows and on a Mac (whose words
-    /// are longer), at the owner's screens' scales: so choosing that look
-    /// moves no setting under it (on the Mac it once took a line more).
+    /// Settings' words take one line in Dynamic Background's font as in
+    /// Roboto, the updates' on Windows and on a Mac (whose words differ),
+    /// at the owner's screens' scales: so choosing that look moves no
+    /// setting (on the Mac the updates' once took a line more).
     #[test]
-    fn the_updates_explanation_takes_the_same_lines_in_every_look() {
-        for text in UPDATES_ABOUT {
+    fn settings_words_take_one_line_in_every_look() {
+        // A switch's explanation: 13, in the 570 the column leaves it.
+        let explanations = UPDATES_ABOUT.iter().map(|text| (*text, 13.0, 570.0));
+        // Words beside a button: 14.
+        let beside = [(LOG_WORDS, 14.0, WORDS_BESIDE_BUTTON)];
+        for (text, size, width) in explanations.chain(beside) {
             for scale in [1.0, 1.25, 1.5, 2.0] {
-                assert_eq!(
-                    lines(text, true, scale),
-                    lines(text, false, scale),
-                    "{scale}: {text}"
-                );
+                for inter in [false, true] {
+                    assert_eq!(lines(text, size, width, inter, scale), 1, "{scale}: {text}");
+                }
             }
         }
     }

@@ -129,7 +129,8 @@ Paolino), as `audio.rs` does.
   its prepared form are cached on disk by the player's ID; the solver is
   restarted after preparing a new player, which leaves it larger. If any
   step fails, yt-dlp finds the song instead (`prepare.rs`) and the log says
-  why. Settings can turn the fast way off.
+  why. The fast way is always tried first: Settings' switch for it went
+  (11 October 2026, at the owner's word), as yt-dlp takes over by itself.
 - A song plays from its first 256 KB (`START_BYTES` in `prepare.rs`)
   while the rest downloads (`stream.rs`). A connection that breaks or
   stalls (8 s without data) is asked again for the rest, three times; a
@@ -212,8 +213,9 @@ Paolino), as `audio.rs` does.
   from where they were, never first back to the line that was sung. The
   playing song's lyrics are asked for when the player page opens
   (whatever its tab), and with Lyrics showing, the next song's too, so
-  they show as it starts. Translate (the chip above the lyrics, and
-  Settings) shows each line in English and, for another script, in Latin
+  they show as it starts. Translate (a switch in Settings; the owner
+  wanted no chip over the lyrics) shows each line in English and, for
+  another script, in Latin
   letters: people's translation and rōmaji from Musixmatch when they fit
   the lines (`translate::lay_over`), else Google Translate's free address
   (`translate.rs`; over HTTP/1.1, as it answers HTTP/2 from apps with 429).
@@ -273,8 +275,12 @@ Paolino), as `audio.rs` does.
   menu go, and in every look the cover or video takes the room left of a
   panel 30% wide (400 to 720; `now_playing::fullscreen_places`). F or
   Esc leaves it, and so does leaving the player page; a Mac's own
-  leaving is followed (`App::sync_fullscreen`).
-- Three looks, chosen in Settings (Theme): YouTube Music's own (the
+  leaving is followed (`App::sync_fullscreen`). On Windows a maximized
+  window leaves maximized first and is maximized again after: maximized,
+  a window without Windows' title bar keeps out of the taskbar's strip,
+  which showed black under the player bar in full screen.
+- Three looks, chosen in Settings (Appearance, three buttons named for
+  screen readers): YouTube Music's own (the
   default), Premium (charcoal, rounder, a warm accent, a roomier layout
   of its own; `docs/look/premium.md`) and Dynamic Background (the playing
   song's colours behind everything, under glass;
@@ -304,15 +310,15 @@ Paolino), as `audio.rs` does.
   load the rest in the background (`Session::more_tracks`).
 - Home (and Explore, a mood's Home: `Route::shelves`) shows the shelves
   YouTube sends first, and asks for its next ones as its end comes near
-  (a screen and a half before it shows, so a steady scroll seldom reaches
-  it), one batch at a time, as YouTube Music's own does
+  (three screens before it shows, `page::LOAD_AHEAD`, so a fast scroll
+  seldom reaches it), one batch at a time, as YouTube Music's own does
   (`Session::more_shelves`; a spinner while they come). The owner's Home
-  sent three shelves first, then four more batches of three. A scroll
-  that does reach the end stops there, as a browser's does: a glide dying
-  away (a touchpad's, after the fingers lift) does not carry on into what
-  loads meanwhile, until scrolling pauses; the hand's own scrolling (the
-  wheel turned on, fingers moving: each movement as large as the last)
-  goes on into it (`page::hold_at_end`).
+  sent three shelves first, then four more batches of three. Nothing
+  holds a scroll at the end of what has loaded: it goes on into what
+  arrives, as a long document scrolls on (a hold there, until 11 October
+  2026, made scrolling pause and slow at each batch). Covers that arrive
+  together go to the graphics card at most 1 MB a frame
+  (`images::UPLOAD_PER_FRAME`), so no frame takes long.
 - Every page is a header and sections of songs or cards (`read::Page`), so
   one view draws Home, Explore, search, albums, artists and playlists.
 - `--demo` replaces the account with made-up music and no network or
@@ -328,7 +334,7 @@ Paolino), as `audio.rs` does.
   it wakes (`update::Schedule`; a Mac's waits stop in sleep, so a day of
   time awake can take two or three for a laptop asleep at night); a failed look
   tries again in an hour, a failed download the next day. It downloads a
-  newer version in the background (Settings, "Install updates automatically", on by
+  newer version in the background (Settings, "Download updates automatically", on by
   default), checks the release's `checksums.txt` signature against the
   publisher key built in, and installs it when the listener restarts. As
   in Spotifast: a toast says a version is out, an Update badge stays in the
@@ -405,9 +411,10 @@ Paolino), as `audio.rs` does.
     (`MAX_QUEUE_BATCHES` in `innertube.rs`), and the Library's tabs up to
     9 more batches of their cards (`MAX_LIBRARY_BATCHES`).
   - A page of shelves (Home) and a search of one kind ask for their next
-    part only when their end comes near (a screen and a half before it
-    shows), one request at a time (`Request::MoreResults`), never by
-    themselves.
+    part only when their end comes near (three screens before it shows;
+    a screen and a half until 11 October 2026, which a fast scroll passed
+    before the part came: the same requests, asked sooner), one request
+    at a time (`Request::MoreResults`), never by themselves.
   - When the fast way cannot get a player ready, it rests for 15 minutes
     (`REST_AFTER_FAILURE` in `direct.rs`) and yt-dlp finds songs
     meanwhile, rather than trying again for every song.
@@ -529,10 +536,9 @@ Paolino), as `audio.rs` does.
   smaller one: `YTFAST_DEMO_ZOOM` lays the demo out as another screen's
   (0.4962 at 1707 by 715 is a 3440 by 1440 screen, at 1270 by 715 a 2560
   by 1440 one, at 953 by 536 a 1920 by 1080 one), smaller. The demo starts
-  in YouTube Music's look (it saves no settings), and the theme's radio
-  buttons cannot be pressed by name: with the demo closed, add
-  `"ytfast": "(theme:Premium)",` at the top of its `demo-window.ron`, and
-  take it out after.
+  in YouTube Music's look (it saves no settings); Settings' look buttons
+  ("YouTube Music", "Premium", "Dynamic Background") can be pressed by
+  name.
 - On the owner's Mac, build and install with
   `packaging/macos/install.sh`. It puts YTFast in Applications, signed
   with that Mac's own fixed signature ("YTFast Local Signing", kept in the
@@ -1059,6 +1065,33 @@ unit tests (298) and the tests with the sound device (a song finished
 next song sounding 0.075 to 0.087 s after the end; every start 0.04 s
 after the song was given; the old position test failing 2 of 30 runs
 before, 0 of 30 after). Not yet tested: by ear, Bluetooth, and the Mac.
+
+Then (11 October 2026, version 1.2.3), at the owner's word: scrolling
+still paused wherever more was loading (Home's shelves, a search's
+results), slowing and then going on, where a long document scrolls on.
+The next part was asked for a screen and a half ahead, which a fast
+scroll passed before it came; the end then held the scroll; and the
+covers that came with it went to the graphics card all in one frame. Now
+the next part is asked for three screens ahead, nothing holds the scroll,
+and covers go up at most 1 MB a frame. The Translate chip over the lyrics
+is gone (Translate is a switch in Settings). Full screen from a maximized
+window left the taskbar's strip black under the player bar on Windows
+(above, at full screen). And Settings was touched up: the looks as three
+buttons, shorter words (one line each), the account's and the log's
+buttons beside their words, and fewer switches: "Start songs the fast
+way" is gone, and "Keep playing when the queue ends" is left to Up next's
+Autoplay switch, as on YouTube Music. Tested: the unit tests (303, among
+them a glide going on into shelves that arrived, where the old test held
+it; covers sent a few each frame; full screen from a maximized window
+leaving maximized first and maximized again after; no Translate chip;
+the looks as named buttons and the switches gone; the updates' and the
+log's words on one line in either font at 100 to 200%; Settings' parts in
+the same place in YouTube Music's look and Dynamic Background), and the
+demo off the screen: Settings in each look, the looks chosen by name. Not
+yet tested: scrolling with the owner's touchpad and mouse, full screen on
+the owner's screen, and the Mac. 1.2.3 also carries the daily look for
+updates by the computer's clock (above, under Updates;
+Likheet/YTFast#44).
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

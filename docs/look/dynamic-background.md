@@ -1,6 +1,6 @@
 # Dynamic Background theme
 
-A third look, chosen in Settings (Theme), beside YouTube Music's own and
+A third look, chosen in Settings (Appearance), beside YouTube Music's own and
 Premium. Added on 10 October 2026.
 
 Since 11 October 2026 it keeps YouTube Music's layout: every part where

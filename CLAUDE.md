@@ -107,12 +107,14 @@ nothing then), so whatever keeps the music going belongs there, not in
   placeholder takes the picture's shape (`widgets::shape_in`), so nothing
   moves when it arrives. A fan's video has only its 16:9 still: the player
   bar gives it 71 by 40 (Premium's 85 by 48).
-- **Home's end holds only a glide.** `page::hold_at_end` stops what is
-  left of a scroll at the end of what has loaded (a touchpad's glide
-  dying away), so it does not carry the page into shelves that arrive;
-  a new movement as large as the last (the wheel turned on, fingers
-  moving) goes on into them. Holding every movement until a pause made
-  the page stick at the end of each batch while the owner scrolled.
+- **Nothing holds a scroll at the end of what has loaded.** The next part
+  of a page (Home's shelves, a search's results) is asked for three
+  screens ahead (`page::LOAD_AHEAD`), and a scroll that reaches the end
+  goes on into what arrives. Holding it there (first every movement until
+  a pause, then only a glide) made scrolling pause and slow at each batch;
+  the owner wants it to run on as a long document does. Covers that
+  arrive together go to the graphics card at most 1 MB a frame
+  (`images::UPLOAD_PER_FRAME`), so no frame takes long.
 - **The pointer is YouTube Music's** (read from its stylesheet): a hand on
   whatever can be pressed (`theme::pointing`; round buttons, chips, pills,
   switches and menus already do it), and "not allowed" on the player's

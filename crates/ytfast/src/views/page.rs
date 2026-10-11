@@ -168,14 +168,6 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                     two_columns(app, ui, &route, page, header);
                 }
                 _ => {
-                    // A page that loads more as it is scrolled stops at its
-                    // end, as a browser's does (`hold_at_end`).
-                    let hold = route
-                        .loads_more()
-                        .then(|| egui::Id::new(("page-end", &route)));
-                    if let Some(id) = hold {
-                        hold_at_end(ui, id);
-                    }
                     let shown = from_top(app, egui::ScrollArea::vertical())
                         .id_salt(("page", &route))
                         .auto_shrink([false, false])
@@ -183,10 +175,6 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                             scroll_by_keys(ui);
                             one_column(app, ui, &route, page);
                         });
-                    if let Some(id) = hold {
-                        let end = (shown.content_size.y - shown.inner_rect.height()).max(0.0);
-                        note_end(ui, id, end > 0.0 && shown.state.offset.y >= end - 1.0);
-                    }
                     scrolled(app, ui, shown.state.offset.y);
                 }
             }
@@ -195,97 +183,12 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
     }
 }
 
-/// How long scrolling must pause, in seconds, before a page held at its
-/// end scrolls on (`hold_at_end`).
-const END_PAUSE: f64 = 0.15;
-
-/// A movement down at least this large (points) is the hand's, not the
-/// tail of a glide dying away (`hold_at_end`).
-const FRESH_STEP: f32 = 10.0;
-
-/// Where a page that loads more stands at its end ([`hold_at_end`]).
-#[derive(Clone, Copy, Default)]
-struct EndHold {
-    /// The page was at its end last frame.
-    at_end: bool,
-    /// A scroll reached the end, and what is left of it goes nowhere.
-    held: bool,
-    /// Input time of the last scrolling down (the wheel's or touchpad's
-    /// own movement, not egui's smoothing after it).
-    last_down: f64,
-    /// How far that last movement down went, in points.
-    last_step: f32,
-}
-
-/// A scroll that reaches the end of a page that loads more (Home, a
-/// search of one kind) stops there, as a browser's does: a glide dying
-/// away (a touchpad's, after the fingers lift) does not carry on into what
-/// loads meanwhile, which shows below where the page stopped. Once more has
-/// loaded, the hand's own scrolling goes on into it: the wheel's next turn,
-/// or fingers moving on the touchpad, each a movement as large as the one
-/// before (a glide's only shrink). A scroll after a pause ([`END_PAUSE`]),
-/// or one up, goes where it can. Call before the page's scroll area reads
-/// the input.
-fn hold_at_end(ui: &egui::Ui, id: egui::Id) {
-    let line = ui
-        .ctx()
-        .options(|o| o.input_options.line_scroll_speed)
-        .max(1.0);
-    let page = ui.clip_rect().height();
-    let (now, steps, gliding_down, up) = ui.input(|i| {
-        let steps: Vec<f32> = i
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                egui::Event::MouseWheel { delta, unit, .. } if delta.y < 0.0 => Some(
-                    -delta.y
-                        * match unit {
-                            egui::MouseWheelUnit::Point => 1.0,
-                            egui::MouseWheelUnit::Line => line,
-                            egui::MouseWheelUnit::Page => page,
-                        },
-                ),
-                _ => None,
-            })
-            .collect();
-        (
-            i.time,
-            steps,
-            i.smooth_scroll_delta.y < 0.0,
-            i.smooth_scroll_delta.y > 0.0,
-        )
-    });
-    let mut hold: EndHold = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    if up {
-        hold.held = false;
-    }
-    for step in steps {
-        // Judged as the scroll goes on: the window draws nothing during a
-        // pause.
-        if now - hold.last_down > END_PAUSE {
-            hold.held = false;
-        }
-        // More loaded below, and the hand scrolls on: into it.
-        if hold.held && !hold.at_end && step >= FRESH_STEP && step >= hold.last_step {
-            hold.held = false;
-        }
-        hold.held |= hold.at_end;
-        hold.last_down = now;
-        hold.last_step = step;
-    }
-    if hold.held && gliding_down {
-        ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
-    }
-    ui.data_mut(|d| d.insert_temp(id, hold));
-}
-
-/// Notes, after the page's scroll area, whether it is at its end.
-fn note_end(ui: &egui::Ui, id: egui::Id, at_end: bool) {
-    ui.data_mut(|d| {
-        let hold: &mut EndHold = d.get_temp_mut_or_default(id);
-        hold.at_end = at_end;
-    });
-}
+/// How many screens before a page's end its next part is asked for (Home's
+/// shelves, a search's results). At a screen and a half, a fast flick
+/// reached the end before YouTube answered and the page paused there, then
+/// went on (the owner's word, 11 October 2026); the parts asked for are the
+/// same, only sooner.
+const LOAD_AHEAD: f32 = 3.0;
 
 /// Notes whether the page is scrolled from its top, for the top bar; when
 /// that changes, the bar is drawn again.
@@ -493,9 +396,10 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
             }
             sections(app, ui, route, page, &look);
             // A search of one kind loads its next results, and a page of
-            // shelves (Home) its next shelves, as its end comes near: a
-            // screen and a half before it shows, so a steady scroll seldom
-            // reaches it, as on YouTube Music. A spinner while they come.
+            // shelves (Home) its next shelves, as its end comes near:
+            // [`LOAD_AHEAD`] screens before it shows, so a fast flick seldom
+            // reaches it and scrolls on without a pause. A spinner while
+            // they come.
             if route.loads_more() {
                 if app.more_results.get(route) == Some(&true) {
                     ui.add_space(24.0);
@@ -505,7 +409,7 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                 }
                 let (end, _) = ui.allocate_exact_size(vec2(1.0, 1.0), Sense::hover());
                 let seen = ui.clip_rect();
-                if end.top() < seen.bottom() + seen.height() * 1.5 {
+                if end.top() < seen.bottom() + seen.height() * LOAD_AHEAD {
                     app.act(Action::MoreResults(route.clone()));
                 }
             }

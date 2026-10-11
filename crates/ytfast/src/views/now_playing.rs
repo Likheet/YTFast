@@ -561,10 +561,7 @@ fn lyrics(app: &App, ui: &mut egui::Ui, entry: &Entry) {
                 );
             });
         }
-        Some(State::Ready(lyrics)) => {
-            lyric_lines::translate_bar(app, ui, &entry.track.video_id, 16.0);
-            lines(app, ui, lyrics, &entry.track.video_id);
-        }
+        Some(State::Ready(lyrics)) => lines(app, ui, lyrics, &entry.track.video_id),
     }
 }
 

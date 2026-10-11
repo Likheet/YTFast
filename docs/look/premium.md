@@ -1,6 +1,6 @@
 # Premium theme
 
-A second look, chosen in Settings (Theme). YouTube Music's own look stays
+A second look, chosen in Settings (Appearance). YouTube Music's own look stays
 the default, and everything in this folder's other notes is about that
 one. Premium was first made on `codex/premium-ui` (9 October 2026),
 became a setting on 10 October 2026, and was reworked twice that day at
