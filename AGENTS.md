@@ -1121,7 +1121,7 @@ the owner's screen, and the Mac. 1.2.3 also carries the daily look for
 updates by the computer's clock (above, under Updates;
 Likheet/YTFast#44).
 
-Then (11 October 2026, not yet released), at the owner's word: a fast
+Then (11 October 2026, version 1.2.4), at the owner's word: a fast
 scroll over a long Home still lagged once more shelves had loaded.
 Measured on the owner's laptop, at their window (1707 by 1019 at 150%)
 with covers as large as YouTube's there: a frame takes about 1 ms
