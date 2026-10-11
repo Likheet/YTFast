@@ -177,6 +177,10 @@ pub struct Playback {
     /// Where it plays from, in seconds: its start, or where the other
     /// version was when the video mode was turned on or off.
     pub start_at: f64,
+    /// It starts paused there: the other version of a song that was paused
+    /// when the video mode was turned on or off (the owner found the switch
+    /// playing it).
+    pub start_paused: bool,
 }
 
 /// The video mode's picture for the song playing (a queue entry).
@@ -232,6 +236,7 @@ impl Default for Playback {
             listening_from: 0.0,
             version: None,
             start_at: 0.0,
+            start_paused: false,
         }
     }
 }
@@ -1629,8 +1634,9 @@ impl App {
         if let Some(wanted) = self.version_of(&current.track)
             && self.playback.version.as_ref() != Some(&wanted)
         {
-            let from = self.playback.start_at;
+            let (from, paused) = (self.playback.start_at, self.playback.start_paused);
             self.start_from(current, from);
+            self.playback.start_paused = paused;
             return;
         }
         let own = self.playback.version.as_deref() == Some(current.track.video_id.as_str());
@@ -1670,6 +1676,7 @@ impl App {
                     gain,
                     length,
                     from: self.playback.start_at,
+                    paused: self.playback.start_paused,
                 });
                 self.backend
                     .send(Request::Details(current.track.video_id.clone()));
@@ -2188,7 +2195,10 @@ impl App {
             {
                 let to = wanted.as_deref().unwrap_or_default();
                 let at = self.moment_in(&entry, self.clock(), to);
+                // Paused, the other version waits there, paused too.
+                let paused = self.audio_status.paused;
                 self.start_from(entry, at);
+                self.playback.start_paused = paused;
             }
             // The same sound (a video plays its own): only the picture
             // comes or goes. Whether a song has a video is asked when it
@@ -2207,8 +2217,9 @@ impl App {
             }
             // Waiting to hear about its video: as itself, at once.
             PlayState::Preparing if self.playback.version.is_none() => {
-                let from = self.playback.start_at;
+                let (from, paused) = (self.playback.start_at, self.playback.start_paused);
                 self.start_from(entry, from);
+                self.playback.start_paused = paused;
             }
             // Getting ready: `prepared` changes the version once it is.
             PlayState::Preparing => {
@@ -2386,6 +2397,11 @@ impl App {
         match self.playback.state {
             PlayState::Playing if self.audio_status.paused => self.audio.send(Command::Resume),
             PlayState::Playing => self.audio.send(Command::Pause),
+            // Getting ready to start paused (the switch moved while
+            // paused): Play starts it playing.
+            PlayState::Preparing if self.playback.start_paused => {
+                self.playback.start_paused = false;
+            }
             PlayState::Failed(_) => {
                 if let Some(entry) = self.playback.entry.clone() {
                     self.start(entry);
@@ -4150,16 +4166,12 @@ mod tests {
         );
     }
 
-    /// A scroll that reaches Home's end stops there: shelves that arrive
-    /// meanwhile show below, and the page scrolls on into them only once
-    /// the scrolling has paused.
-    #[test]
-    fn a_scroll_stops_at_homes_end_until_it_pauses() {
-        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
-        let load = long_home(&mut w);
+    /// Home scrolled to its end, and on; then three more shelves arrive.
+    /// Returns where the end was.
+    fn home_at_its_end_then_more(w: &mut Window) -> f32 {
+        let load = long_home(w);
         w.settle();
         let at = egui::pos2(700.0, 400.0);
-        // Scrolled to the end, and on.
         let mut last = -1.0;
         for _ in 0..80 {
             w.wheel(at, -120.0);
@@ -4171,7 +4183,6 @@ mod tests {
         }
         let end = w.h.app.page_offset.get();
         w.h.requests();
-        // More shelves arrive while the scroll goes on: it stays put.
         w.h.answer(Event::MoreSections {
             route: Route::Home,
             load,
@@ -4186,20 +4197,51 @@ mod tests {
                 .collect(),
             done: true,
         });
-        for _ in 0..5 {
-            w.wheel(at, -120.0);
+        end
+    }
+
+    /// A scroll that reaches Home's end stops there; a glide dying away (a
+    /// touchpad's, after the fingers lift) does not carry the page on by
+    /// itself into shelves that arrive meanwhile. After a pause, scrolling
+    /// goes on into them.
+    #[test]
+    fn a_glide_stops_at_homes_end_until_the_scrolling_pauses() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        let end = home_at_its_end_then_more(&mut w);
+        let at = egui::pos2(700.0, 400.0);
+        // Each movement smaller than the one before.
+        for dy in [-90.0, -70.0, -50.0, -35.0, -20.0, -12.0, -6.0] {
+            w.wheel(at, dy);
         }
         assert!(
             (w.h.app.page_offset.get() - end).abs() < 1.0,
             "held at the end"
         );
-        // A pause, then scrolling on: into the new shelves.
         w.frame(Vec::new());
         w.frame(Vec::new());
         for _ in 0..3 {
             w.wheel(at, -120.0);
         }
         assert!(w.h.app.page_offset.get() > end + 100.0, "scrolled on");
+    }
+
+    /// Scrolling on without a pause (the wheel turned on, fingers moving on
+    /// the touchpad) goes on into the shelves that arrived, as a browser's:
+    /// the owner found the page stuck at the end of each batch, as if it
+    /// slowed there, until they stopped scrolling.
+    #[test]
+    fn scrolling_on_goes_into_shelves_that_arrived() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        let end = home_at_its_end_then_more(&mut w);
+        let at = egui::pos2(700.0, 400.0);
+        for _ in 0..3 {
+            w.wheel(at, -120.0);
+        }
+        assert!(
+            w.h.app.page_offset.get() > end + 100.0,
+            "scrolled on from {end} to {}",
+            w.h.app.page_offset.get()
+        );
     }
 
     /// In every theme, a right-click on the player bar (not on its
@@ -4259,14 +4301,15 @@ mod tests {
     }
 
     /// In every look, a song dragged in Up next lands where it is let go;
-    /// the rows are YouTube Music's in each (56 high, 1 between).
+    /// the rows are YouTube Music's (56 high, 1 between), Premium's 64 high
+    /// and 2 apart.
     #[test]
     fn a_song_dragged_in_up_next_lands_where_it_is_let_go() {
         use crate::theme::Theme;
-        for theme in [
-            Theme::YouTubeMusic,
-            Theme::Premium,
-            Theme::DynamicBackground,
+        for (theme, pitch) in [
+            (Theme::YouTubeMusic, 57.0),
+            (Theme::Premium, 66.0),
+            (Theme::DynamicBackground, 57.0),
         ] {
             let mut w = Window::new(theme);
             w.h.play(&["a", "b", "c", "d", "e"]);
@@ -4276,7 +4319,7 @@ mod tests {
             let b = w.find("B", 0);
             let d = w.find("D", 0);
             assert!(
-                (d.top() - b.top() - 2.0 * 57.0).abs() < 0.5,
+                (d.top() - b.top() - 2.0 * pitch).abs() < 0.5,
                 "{theme:?} {b:?} {d:?}"
             );
             // B picked up and carried down to D's upper half: it goes
@@ -5179,6 +5222,48 @@ mod tests {
         assert_eq!(prepares(&h.requests(), true), ["d"]);
     }
 
+    /// Paused, the switch changes the version and keeps it paused, at the
+    /// same moment (the owner found it playing); Play then plays it.
+    #[test]
+    fn the_switch_keeps_a_paused_song_paused() {
+        let mut h = Harness::new();
+        h.act(Action::PlayTracks {
+            tracks: vec![song_with_video("a", "va")],
+            start: 0,
+            source: None,
+        });
+        h.ready();
+        at(&mut h, 42.0);
+        h.app.audio.set_status(|s| s.paused = true);
+        h.frame();
+        h.requests();
+        h.commands();
+        let paused_play = |commands: &[Command]| {
+            commands.iter().find_map(|c| match c {
+                Command::Play { from, paused, .. } => Some((*from, *paused)),
+                _ => None,
+            })
+        };
+        h.act(Action::VideoMode(true));
+        assert_eq!(prepares(&h.requests(), true), ["va"]);
+        h.ready();
+        assert_eq!(paused_play(&h.commands()), Some((42.0, true)));
+        // And back, still paused.
+        at(&mut h, 42.0);
+        h.app.audio.set_status(|s| s.paused = true);
+        h.frame();
+        h.act(Action::VideoMode(false));
+        h.ready();
+        assert_eq!(paused_play(&h.commands()), Some((42.0, true)));
+        // Playing, the switch plays the other version on.
+        at(&mut h, 50.0);
+        h.app.audio.set_status(|s| s.paused = false);
+        h.frame();
+        h.act(Action::VideoMode(true));
+        h.ready();
+        assert_eq!(paused_play(&h.commands()), Some((50.0, false)));
+    }
+
     /// Turned off, the song plays on from where its video was; a video
     /// itself keeps playing, only its picture goes.
     #[test]
@@ -6041,17 +6126,19 @@ mod tests {
             .collect()
     }
 
-    /// Switching looks changes colours, corners, glass and fonts, never
-    /// where things are (the owner found things moving around, 11 October
-    /// 2026). Every named part YouTube Music's look draws on these
-    /// screens, at three window sizes, is in the other looks too, at the
-    /// same place and size. Every look is drawn here in Roboto: Dynamic
-    /// Background's Inter, on Roboto's lines, sets words a little wider (up
-    /// to 12 along a row of chips), so a card's title may take a second
-    /// line there (as on YouTube Music, a card is as tall as its words).
-    /// The lyrics are left out: each look sets them in its own size.
+    /// Switching between YouTube Music's look and Dynamic Background
+    /// changes colours, corners, glass and fonts, never where things are
+    /// (the owner found things moving around, 11 October 2026; Premium
+    /// keeps a layout of its own, at their word). Every named part YouTube
+    /// Music's look draws on these screens, at three window sizes, is in
+    /// Dynamic Background too, at the same place and size. Both are drawn
+    /// here in Roboto: Dynamic Background's Inter, on Roboto's lines, sets
+    /// words a little wider (up to 12 along a row of chips), so a card's
+    /// title may take a second line there (as on YouTube Music, a card is
+    /// as tall as its words). The lyrics are left out: each look sets them
+    /// in its own size.
     #[test]
-    fn every_look_puts_things_in_the_same_places() {
+    fn dynamic_background_puts_things_where_youtube_music_does() {
         use crate::theme::Theme;
         let screens = [
             "home",
@@ -6072,7 +6159,7 @@ mod tests {
         ] {
             for screen in screens {
                 let reference = keyed(parts_of(Theme::YouTubeMusic, screen, size, false));
-                for theme in [Theme::Premium, Theme::DynamicBackground] {
+                for theme in [Theme::DynamicBackground] {
                     let other = keyed(parts_of(theme, screen, size, false));
                     for (key, a) in &reference {
                         let Some(b) = other.get(key) else {

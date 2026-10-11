@@ -122,9 +122,11 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 .as_ref()
                 .map(|_| badge_width(ui))
                 .unwrap_or(0.0);
-            // The same places in every look (YouTube Music's).
-            let (avatar, arrows, field) =
-                youtube_music_places(app, ui, bar, guide, name.right(), badge);
+            let (avatar, arrows, field) = if theme::premium() {
+                premium_places(bar, guide, name.right(), badge)
+            } else {
+                youtube_music_places(app, ui, bar, guide, name.right(), badge)
+            };
             if let Some(version) = &app.update_found {
                 // Before the arrows (on the right) or the account.
                 let end = if arrows.left() > field.right() {
@@ -206,6 +208,29 @@ fn youtube_music_places(
     let room = if badge > 0.0 { badge + 8.0 } else { 0.0 };
     let width = (arrows.left() - room - 16.0 - search_left).clamp(120.0, 480.0);
     let field = Rect::from_min_size(pos2(search_left, bar.center().y - 21.0), vec2(width, 42.0));
+    (avatar, arrows, field)
+}
+
+/// Premium's places, balanced across the bar: back and forward just past
+/// the menu, the search box (at most 560) in the middle of the page, kept
+/// 24 clear of both, and the account 16 before the window's buttons; all on
+/// the bar's middle line, as the window's buttons are.
+fn premium_places(bar: Rect, guide: f32, name_right: f32, badge: f32) -> (Rect, Rect, Rect) {
+    let y = bar.center().y;
+    let page_left = bar.left() + guide;
+    let arrows_left = (page_left + 16.0).max(name_right + 16.0);
+    let arrows = Rect::from_min_max(
+        pos2(arrows_left, y - 20.0),
+        pos2(arrows_left + 80.0, y + 20.0),
+    );
+    let account_right = bar.right() - window_frame::buttons_width() - 16.0;
+    let avatar = Rect::from_center_size(pos2(account_right - 13.0, y), Vec2::splat(26.0));
+    let room = if badge > 0.0 { badge + 12.0 } else { 0.0 };
+    let (room_left, room_right) = (arrows.right() + 24.0, avatar.left() - room - 24.0);
+    let width = (room_right - room_left).clamp(120.0, 560.0);
+    let middle = (page_left + bar.right()) / 2.0;
+    let left = (middle - width / 2.0).clamp(room_left, (room_right - width).max(room_left));
+    let field = Rect::from_min_size(pos2(left, y - 21.0), vec2(width, 42.0));
     (avatar, arrows, field)
 }
 

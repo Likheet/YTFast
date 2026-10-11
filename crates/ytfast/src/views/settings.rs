@@ -1,6 +1,6 @@
 //! YTFast's settings: a few switches, the account, and where problems are
-//! noted. Every look puts each setting in the same place (Premium draws a
-//! glass card behind each, in the room between them).
+//! noted. YouTube Music's look and Dynamic Background put each setting in
+//! the same place; Premium sets each on a card of its own.
 
 use egui::{Align, Layout, Rect, UiBuilder, pos2, vec2};
 
@@ -13,8 +13,8 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             // One column in the middle of the page, as much room either
-            // side of it: at most 640 wide.
-            let most = 640.0;
+            // side of it: at most 640 wide (Premium's cards 760).
+            let most = if theme::premium() { 760.0 } else { 640.0 };
             let full = ui.max_rect();
             // At least 24 clear of the menu and the window's edge.
             let width = (full.width() - 48.0).clamp(0.0, most);
@@ -36,9 +36,15 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 
 /// Everything Settings shows, from its title down.
 fn contents(app: &App, ui: &mut egui::Ui) {
-    ui.add_space(20.0);
-    theme::label(ui, "Settings", theme::bold(30.0), PALETTE.text);
-    ui.add_space(18.0);
+    // Premium: a larger title, and each setting on a card.
+    let (above, size, below) = if theme::premium() {
+        (32.0, 36.0, 24.0)
+    } else {
+        (20.0, 30.0, 18.0)
+    };
+    ui.add_space(above);
+    theme::label(ui, "Settings", theme::bold(size), PALETTE.text);
+    ui.add_space(below);
 
     heading(ui, "Playback");
     switch(
@@ -143,26 +149,24 @@ fn text(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// A setting's row, 12 above the next. Premium: on a glass card (white@0.05,
-/// a white@0.06 edge, r 12) reaching 12 past it at the sides and 4 into the
-/// room above and below, so the page's colours show through and the row
-/// stays where it is in every look. Returns its rectangle.
+/// A setting's row; on a glass card in the Premium theme (white@0.05, a
+/// white@0.06 edge, r 12, 16 in), so the page's colours show through.
+/// Returns its rectangle.
 fn row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
-    let card = theme::premium().then(|| ui.painter().add(egui::Shape::Noop));
-    let rect = ui.horizontal(add).response.rect;
-    if let Some(card) = card {
-        ui.painter().set(
-            card,
-            egui::epaint::RectShape::new(
-                rect.expand2(vec2(12.0, 4.0)),
-                egui::CornerRadius::same(12),
-                egui::Color32::from_white_alpha(13),
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(16)),
-                egui::StrokeKind::Inside,
-            ),
-        );
+    if !theme::premium() {
+        let rect = ui.horizontal(add).response.rect;
+        ui.add_space(12.0);
+        return rect;
     }
-    ui.add_space(12.0);
+    let rect = egui::Frame::new()
+        .fill(egui::Color32::from_white_alpha(13))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(16)))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(16))
+        .show(ui, |ui| ui.horizontal(add))
+        .response
+        .rect;
+    ui.add_space(8.0);
     rect
 }
 
@@ -244,9 +248,6 @@ fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
     }
 }
 
-/// The updates switch, what the updater is doing, and the button that
-/// fits it: look now, install the version found, or restart to install
-/// the one downloaded.
 /// What "Download updates automatically" says, on Windows and on a Mac
 /// (where only a copy in Applications installs its updates).
 const UPDATES_ABOUT: [&str; 2] = [
@@ -254,6 +255,9 @@ const UPDATES_ABOUT: [&str; 2] = [
     "YTFast looks for a new version once a day and downloads it. The Update button at the top then shows it; Restart to update installs it. Keep YTFast in Applications for this.",
 ];
 
+/// The updates switch, what the updater is doing, and the button that
+/// fits it: look now, install the version found, or restart to install
+/// the one downloaded.
 fn updates(app: &App, ui: &mut egui::Ui) {
     use crate::update::State;
     switch(
