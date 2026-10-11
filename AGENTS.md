@@ -322,8 +322,13 @@ Paolino), as `audio.rs` does.
   settings, and keeps its window's size in a file of its own
   (`demo-window.ron` in the cache folder).
 - Updates come from the repository's GitHub releases (public): a minute
-  after starting and once a day YTFast looks, downloads a newer version in
-  the background (Settings, "Install updates automatically", on by
+  after starting and once a day YTFast looks (one request, about 12 KB),
+  the day counted by the computer's clock, not by time awake, and the
+  clock read every 5 minutes, so a computer that slept looks soon after
+  it wakes (`update::Schedule`; a Mac's waits stop in sleep, so a day of
+  time awake can take two or three for a laptop asleep at night); a failed look
+  tries again in an hour, a failed download the next day. It downloads a
+  newer version in the background (Settings, "Install updates automatically", on by
   default), checks the release's `checksums.txt` signature against the
   publisher key built in, and installs it when the listener restarts. As
   in Spotifast: a toast says a version is out, an Update badge stays in the
