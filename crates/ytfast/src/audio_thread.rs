@@ -21,6 +21,9 @@ pub enum Command {
         gain: f32,
         length: f64,
         from: f64,
+        /// Ready there but silent, as Play left it (the other version of a
+        /// song paused when the video mode changed).
+        paused: bool,
     },
     Pause,
     Resume,
@@ -398,6 +401,7 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                             gain,
                             length: song_length,
                             from,
+                            paused,
                         } => {
                             pending_jump = None;
                             sound_after_jump = false;
@@ -431,12 +435,15 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                                     ended_sent = false;
                                     problem = None;
                                     // Partway: silent until there, not the
-                                    // song's start heard first.
+                                    // song's start heard first; paused, it
+                                    // stays silent there.
                                     let from = from.clamp(0.0, (length - 0.5).max(0.0));
-                                    if from > 0.5 {
+                                    if from > 0.5 || paused {
                                         engine.pause();
+                                    }
+                                    if from > 0.5 {
                                         pending_jump = Some(from);
-                                        sound_after_jump = true;
+                                        sound_after_jump = !paused;
                                     }
                                 }
                                 Err(message) => {
@@ -607,6 +614,7 @@ mod tests {
             gain: 1.0,
             length: 200.0,
             from: 42.0,
+            paused: false,
         });
         let status = status_when(&audio, |s| s.entry == Some(7) && s.running);
         assert!(status.running, "it plays: {status:?}");
@@ -618,5 +626,31 @@ mod tests {
         let paused = status_when(&audio, |s| s.paused);
         assert!(paused.paused && !paused.running);
         assert!((paused.clock() - paused.position).abs() < 1e-9);
+    }
+
+    /// A song started paused (the other version, when the video mode
+    /// changes while paused) waits there, silent, until Play.
+    #[test]
+    fn a_song_started_paused_waits_there() {
+        let audio = Audio::start(|| {}, true);
+        audio.send(Command::Play {
+            entry: 7,
+            data: ytfast_core::stream::SongData::complete(Vec::new()),
+            gain: 1.0,
+            length: 200.0,
+            from: 42.0,
+            paused: true,
+        });
+        status_when(&audio, |s| {
+            s.entry == Some(7) && (42.0..43.0).contains(&s.position)
+        });
+        // Still there a moment later, silent.
+        std::thread::sleep(Duration::from_millis(300));
+        let status = audio.status();
+        assert!(status.paused && !status.running, "it waits: {status:?}");
+        assert!((42.0..42.01).contains(&status.position), "{status:?}");
+        audio.send(Command::Resume);
+        let playing = status_when(&audio, |s| s.running);
+        assert!(playing.running && !playing.paused, "{playing:?}");
     }
 }

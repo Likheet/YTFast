@@ -449,7 +449,8 @@ only matter if that changes.
   often the frame's middle two thirds, zoomed (its `sqp`). **Done:** 11
   Oct 2026: `Thumb` keeps YouTube's height (`Thumb::aspect`);
   `widgets::Fit` draws a picture whole or filled, as the reply's scale
-  says; a placeholder takes the picture's shape; the player bar 71 by 40;
+  says; a placeholder takes the picture's shape; the player bar 71 by 40
+  (Premium's 85 by 48);
   the player page asks for the whole frame (`hq720.jpg`) and takes the
   row's still when the video has none. Not measured on YouTube Music:
   where the corners go on a still shown whole on the player page (YTFast

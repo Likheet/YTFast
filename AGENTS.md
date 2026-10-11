@@ -219,10 +219,13 @@ Paolino), as `audio.rs` does.
   (`translate.rs`; over HTTP/1.1, as it answers HTTP/2 from apps with 429).
 - The video mode, YouTube Music's Song and Video switch at the top of the
   player page's picture, always at the same height whatever is shown
-  (`now_playing::places`): while it says Video, the queue's songs play as their
+  (`now_playing::places`; Premium's over its cover): while it says Video,
+  the queue's songs play as their
   music videos, sound and picture. Next, Previous, a song ending and Up
   next keep it; a song started anywhere else (a page, search, Related)
-  plays as a song and turns it off (`App::play_tracks`). A song's video
+  plays as a song and turns it off (`App::play_tracks`). Switched while
+  paused, the other version waits at the same moment, paused
+  (`Playback::start_paused`, `Command::Play { paused }`). A song's video
   is itself for a video, else its pair from Up next
   (`TrackMore::counterpart`) or from its details (`SongDetails::video`);
   one not known yet waits for its details before it starts
@@ -272,22 +275,22 @@ Paolino), as `audio.rs` does.
   Esc leaves it, and so does leaving the player page; a Mac's own
   leaving is followed (`App::sync_fullscreen`).
 - Three looks, chosen in Settings (Theme): YouTube Music's own (the
-  default), Premium (charcoal, rounder, a warm accent;
-  `docs/look/premium.md`) and Dynamic Background (the playing song's
-  colours behind everything, under glass;
-  `docs/look/dynamic-background.md`). All three lay the window out as
-  YouTube Music does, every part in the same place and at the same size,
-  and differ only in colours, corners, glass and fonts, so switching moves
-  nothing (`every_look_puts_things_in_the_same_places`). Dynamic
+  default), Premium (charcoal, rounder, a warm accent, a roomier layout
+  of its own; `docs/look/premium.md`) and Dynamic Background (the playing
+  song's colours behind everything, under glass;
+  `docs/look/dynamic-background.md`). YouTube Music's look and Dynamic
+  Background lay the window out alike, every part in the same place and
+  at the same size, so switching between them moves nothing
+  (`dynamic_background_puts_things_where_youtube_music_does`); Dynamic
   Background sets everything in Inter on Roboto's line heights
   (`theme::on_robotos_lines`). Each frame draws in the chosen one
-  (`theme::set`, `theme::premium()`, `theme::dynamic()`); `PALETTE`
-  follows it.
+  (`theme::set`, `theme::premium()`, `theme::dynamic()`); `PALETTE` and
+  Premium's sizes follow it.
 - A picture keeps its shape (`Thumb::aspect`, from the height YouTube
   gives). A fan's video has no cover, only its video's 16:9 still: song
   rows, Up next and the player page show it whole in their square
   (`widgets::Fit::Whole`, YouTube Music's `ASPECT_FIT`), the player bar
-  71 by 40, and cards fill their place, cut at the sides (`Fit::Fill`,
+  71 by 40 (Premium's 85 by 48), and cards fill their place, cut at the sides (`Fit::Fill`,
   `ASPECT_FILL`). The player page asks for the video's whole frame
   (`hq720.jpg`, `Thumb::whole_frame`), as a row's still is often its
   middle, zoomed, and takes the row's still when the video has none.
@@ -305,9 +308,11 @@ Paolino), as `audio.rs` does.
   it), one batch at a time, as YouTube Music's own does
   (`Session::more_shelves`; a spinner while they come). The owner's Home
   sent three shelves first, then four more batches of three. A scroll
-  that does reach the end stops there, as a browser's does: what is left
-  of it (a touchpad's glide, a wheel still turning) does not carry on into
-  what loads meanwhile, until scrolling pauses (`page::hold_at_end`).
+  that does reach the end stops there, as a browser's does: a glide dying
+  away (a touchpad's, after the fingers lift) does not carry on into what
+  loads meanwhile, until scrolling pauses; the hand's own scrolling (the
+  wheel turned on, fingers moving: each movement as large as the last)
+  goes on into it (`page::hold_at_end`).
 - Every page is a header and sections of songs or cards (`read::Page`), so
   one view draws Home, Explore, search, albums, artists and playlists.
 - `--demo` replaces the account with made-up music and no network or
@@ -1002,6 +1007,24 @@ the player page in each look, everything in the same place, and the
 demo's made-up fan video (in a mix's Up next) shown whole in Up next and
 on the player page, 71 by 40 in the player bar. Not yet tested: a real
 fan's video with the owner's account, and the Mac.
+
+Then (11 October 2026, not yet released), at the owner's word: 1.2.0's
+Premium looked cramped and worse to them, so Premium has its own layout
+again, as in 1.1.2 (the play buttons in the middle of its floating player
+bar and the song at its left, its sizes, menu, top bar, rows, pages,
+Settings' cards and player page), keeping the fan videos' pictures (85 by
+48 in its player bar) and a Song and Video switch at one height over its
+cover. Home stuck at the end of each batch of shelves while the owner
+scrolled on: the hold at the end kept every movement until a pause; now
+the hand's own scrolling goes on into what loaded, and only a glide dying
+away is held. And switching Song and Video while paused played the other
+version: it now waits there, paused. Tested: the unit tests (295, among
+them Premium's player page as in 1.1.2 and its switch at one height,
+Premium's grid, scrolling on into new shelves (it fails on the old hold)
+and a glide still held, the other version started paused at the same
+moment, and the sound thread waiting silent until Play). Not yet tested:
+the owner's touchpad and mouse on Home, a real video switched while
+paused, and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
