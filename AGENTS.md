@@ -986,8 +986,13 @@ them every named part of nine screens at three window sizes in the same
 place in each look, Settings unmoved by Dynamic Background's font,
 Inter's lines as tall as Roboto's at every size and weight, the switch at
 one height, pictures' shapes read from real replies, and the whole frame
-asked for, then the row's still when the video has none). Not yet tested:
-a real fan's video with the owner's account, and the Mac.
+asked for, then the row's still when the video has none), and the demo off
+the screen on the owner's laptop (its screen asleep, so the pictures were
+taken by the app itself, with a hook not committed): Home, Settings and
+the player page in each look, everything in the same place, and the
+demo's made-up fan video (in a mix's Up next) shown whole in Up next and
+on the player page, 71 by 40 in the player bar. Not yet tested: a real
+fan's video with the owner's account, and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

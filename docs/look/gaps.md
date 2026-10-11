@@ -454,7 +454,8 @@ only matter if that changes.
   row's still when the video has none. Not measured on YouTube Music:
   where the corners go on a still shown whole on the player page (YTFast
   rounds the picture itself). Tested: the unit tests (the shapes read
-  from real replies; the whole frame asked for, then the row's still).
+  from real replies; the whole frame asked for, then the row's still),
+  and the demo (its made-up fan video, in a mix's Up next).
 
 ### 4. Player page tabs (`tp-yt-paper-tabs.ytmusic-player-page`)
 
