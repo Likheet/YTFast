@@ -263,11 +263,13 @@ Paolino), as `audio.rs` does.
   panel 30% wide (400 to 720; `now_playing::fullscreen_places`). F or
   Esc leaves it, and so does leaving the player page; a Mac's own
   leaving is followed (`App::sync_fullscreen`).
-- Two looks, chosen in Settings (Theme): YouTube Music's own, the
-  default, and Premium (charcoal, rounder, a warm accent;
-  `docs/look/premium.md`). Each frame draws in the chosen one
-  (`theme::set`, `theme::premium()`); `PALETTE` and the sizes that differ
-  follow it.
+- Three looks, chosen in Settings (Theme): YouTube Music's own (the
+  default), Premium (charcoal, rounder, a warm accent;
+  `docs/look/premium.md`) and Dynamic Background (the playing song's
+  colours behind everything, under glass;
+  `docs/look/dynamic-background.md`). Each frame draws in the chosen one
+  (`theme::set`, `theme::premium()`, `theme::dynamic()`); `PALETTE` and
+  the sizes that differ follow it.
 - The interface font is Roboto, YouTube Music's own (Roboto Bold stands
   in for YouTube Sans, which may not be shipped), with Inter behind it for
   any letter Roboto lacks. The computer's fonts for other scripts
