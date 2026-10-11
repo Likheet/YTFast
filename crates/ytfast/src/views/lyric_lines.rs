@@ -1,14 +1,13 @@
 //! What the lyrics share in every look: the words of the line being sung
-//! lit as they are sung, the line in Latin letters and in English under
-//! it (Translate), and the Translate chip above the lyrics.
+//! lit as they are sung, and the line in Latin letters and in English
+//! under it (Settings, "Translate lyrics").
 
 use std::sync::Arc;
 
-use egui::{Align, Color32, Galley, Layout, vec2};
+use egui::{Color32, Galley};
 
-use crate::app::{Action, App, Setting};
-use crate::lyrics::{Lyrics, TRANSLATE_TO, Translation, Word};
-use crate::theme::{self, PALETTE};
+use crate::app::App;
+use crate::lyrics::{Lyrics, Translation, Word};
 use ytfast_core::translate::Translated;
 
 /// The space between a line and what is under it (in Latin letters, in
@@ -256,45 +255,6 @@ pub(super) fn layout(
         egui::text::LayoutJob::simple(text.to_string(), font.clone(), Color32::WHITE, width);
     job.sections[0].format.line_height = line_height;
     ui.fonts_mut(|f| f.layout_job(job))
-}
-
-/// Above the lyrics, 40 high: the Translate chip, `margin` from the right,
-/// and before it what it is doing (translating, or why nothing shows).
-pub(super) fn translate_bar(app: &App, ui: &mut egui::Ui, video_id: &str, margin: f32) {
-    let on = app.settings.translate_lyrics;
-    ui.allocate_ui_with_layout(
-        vec2(ui.available_width(), 40.0),
-        Layout::right_to_left(Align::Center),
-        |ui| {
-            ui.set_min_height(40.0);
-            ui.add_space(margin);
-            let chip = theme::chip(ui, "Translate", on, 32.0)
-                .on_hover_text("Each line in English, and in Latin letters");
-            if chip.clicked() {
-                app.act(Action::Toggle(Setting::TranslateLyrics));
-            }
-            if !on {
-                return;
-            }
-            ui.add_space(12.0);
-            let note = match app.translations.get(video_id) {
-                None | Some(Translation::Loading) => {
-                    ui.add(egui::Spinner::new().size(16.0).color(PALETTE.secondary));
-                    return;
-                }
-                Some(Translation::Missing) => "Could not translate",
-                Some(Translation::Ready(t)) if t.is_empty() => {
-                    if t.language.as_deref() == Some(TRANSLATE_TO) {
-                        "Already in English"
-                    } else {
-                        "Nothing to translate"
-                    }
-                }
-                Some(Translation::Ready(_)) => return,
-            };
-            theme::label(ui, note, theme::regular(14.0), PALETTE.secondary);
-        },
-    );
 }
 
 #[cfg(test)]

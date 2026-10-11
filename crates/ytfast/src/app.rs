@@ -583,6 +583,9 @@ pub struct App {
     /// clock): the window's own word on it is believed only a while after.
     fullscreen_wanted: Option<bool>,
     fullscreen_asked: f64,
+    /// The window was maximized when full screen began, and is maximized
+    /// again when it ends (Windows).
+    maximized_before_fullscreen: bool,
     /// Lyrics and related pages, by song.
     pub lyrics: HashMap<String, crate::lyrics::State>,
     /// Lyrics translated, by song.
@@ -823,6 +826,7 @@ impl App {
             fullscreen: false,
             fullscreen_wanted: None,
             fullscreen_asked: f64::NEG_INFINITY,
+            maximized_before_fullscreen: false,
             lyrics: HashMap::new(),
             translations: HashMap::new(),
             related: HashMap::new(),
@@ -915,10 +919,27 @@ impl App {
     /// Asks the window for full screen when it was chosen; and when the
     /// window left it by itself (a Mac's own Esc or green button), the
     /// page is laid out as before.
+    ///
+    /// On Windows a maximized window leaves maximized first, and is
+    /// maximized again after: the window library keeps a maximized window
+    /// of YTFast's own frame to the screen less the taskbar, in full screen
+    /// too, and the taskbar's strip showed black under the player bar (the
+    /// owner's picture, 11 October 2026).
     fn sync_fullscreen(&mut self, ctx: &egui::Context) {
+        use egui::ViewportCommand;
         let now = ctx.input(|i| i.time);
         if let Some(on) = self.fullscreen_wanted.take() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+            if on && cfg!(windows) {
+                self.maximized_before_fullscreen =
+                    ctx.input(|i| i.viewport().maximized == Some(true));
+                if self.maximized_before_fullscreen {
+                    ctx.send_viewport_cmd(ViewportCommand::Maximized(false));
+                }
+            }
+            ctx.send_viewport_cmd(ViewportCommand::Fullscreen(on));
+            if !on && std::mem::take(&mut self.maximized_before_fullscreen) {
+                ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
+            }
             self.fullscreen_asked = now;
             return;
         }
@@ -3849,6 +3870,8 @@ mod tests {
         commands: Vec<egui::ViewportCommand>,
         /// The pointer's look after the last frame.
         cursor: egui::CursorIcon,
+        /// The window says it is maximized.
+        maximized: bool,
     }
 
     impl Window {
@@ -3868,6 +3891,7 @@ mod tests {
                 texts: Vec::new(),
                 commands: Vec::new(),
                 cursor: egui::CursorIcon::Default,
+                maximized: false,
             }
         }
 
@@ -3967,7 +3991,7 @@ mod tests {
                 repeat: false,
                 modifiers: egui::Modifiers::NONE,
             };
-            let input = egui::RawInput {
+            let mut input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(1280.0, 820.0),
@@ -3976,6 +4000,11 @@ mod tests {
                 events: vec![down(true), down(false)],
                 ..Default::default()
             };
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .maximized = Some(self.maximized);
             let app = &mut self.h.app;
             let mut output = self.h.ctx.run_ui(input, |ui| {
                 app.shortcuts(ui.ctx());
@@ -5687,6 +5716,41 @@ mod tests {
         crate::theme::set(Theme::YouTubeMusic);
     }
 
+    /// On Windows a maximized window leaves maximized just before full
+    /// screen, so full screen covers the taskbar's strip too (it showed
+    /// black under the player bar), and is maximized again after it.
+    #[test]
+    fn a_maximized_window_fills_the_whole_screen_in_full_screen() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["a"]);
+        w.h.app.now_playing = true;
+        w.settle();
+        w.maximized = true;
+        let told = w.press(egui::Key::F);
+        let at = |told: &[egui::ViewportCommand], command| told.iter().position(|t| *t == command);
+        let full = at(&told, egui::ViewportCommand::Fullscreen(true));
+        let restored = at(&told, egui::ViewportCommand::Maximized(false));
+        assert!(full.is_some(), "{told:?}");
+        if cfg!(windows) {
+            assert!(restored.is_some_and(|r| Some(r) < full), "{told:?}");
+        } else {
+            assert_eq!(restored, None, "{told:?}");
+        }
+        let told = w.press(egui::Key::Escape);
+        let windowed = at(&told, egui::ViewportCommand::Fullscreen(false));
+        let maximized = at(&told, egui::ViewportCommand::Maximized(true));
+        assert!(windowed.is_some(), "{told:?}");
+        if cfg!(windows) {
+            assert!(maximized.is_some_and(|m| Some(m) > windowed), "{told:?}");
+        }
+        // A window not maximized is left as it is.
+        w.maximized = false;
+        let told = w.press(egui::Key::F);
+        assert_eq!(at(&told, egui::ViewportCommand::Maximized(false)), None);
+        let told = w.press(egui::Key::Escape);
+        assert_eq!(at(&told, egui::ViewportCommand::Maximized(true)), None);
+    }
+
     /// Made-up lyrics timed by the line, as a source sends them: their
     /// words' times estimated.
     fn timed_lyrics(lines: &[(u64, &str)]) -> crate::lyrics::Lyrics {
@@ -5807,8 +5871,10 @@ mod tests {
     }
 
     /// In each look: the line being sung lights word by word (drawn without
-    /// fail, partway through a word), the Translate chip turns Translate on,
-    /// and each line then shows its translation under it (the line grows).
+    /// fail, partway through a word); there is no Translate button over the
+    /// lyrics (the owner wants it in Settings only), and with Settings'
+    /// "Translate lyrics" on, each line shows its translation under it (the
+    /// line grows).
     #[test]
     fn lyrics_light_word_by_word_and_show_their_translation_in_each_look() {
         use crate::lyrics::{State, Translation};
@@ -5833,8 +5899,8 @@ mod tests {
             assert!(w.shows("Paper planes tonight"), "{theme:?}");
             let before = w.largest("Paper planes tonight");
             assert!(!w.h.app.settings.translate_lyrics);
-            let chip = w.find("Translate", 0);
-            w.click(chip.center());
+            assert!(!w.shows("Translate"), "{theme:?}: no button");
+            w.h.act(Action::Toggle(Setting::TranslateLyrics));
             w.settle();
             assert!(w.h.app.settings.translate_lyrics, "{theme:?}");
             w.h.app.translations.insert(
@@ -5852,18 +5918,6 @@ mod tests {
                 after.height() > before.height() + 10.0,
                 "{theme:?}: {before:?} then {after:?}"
             );
-            // An English song: nothing to add, and it says so.
-            w.h.app.translations.insert(
-                "a".into(),
-                Translation::Ready(ytfast_core::translate::Translated {
-                    language: Some("en".into()),
-                    lines: vec![None, None],
-                    latin: vec![None, None],
-                    source: "Test".into(),
-                }),
-            );
-            w.settle();
-            assert!(w.says("Already in English"), "{theme:?}");
         }
         crate::theme::set(Theme::YouTubeMusic);
     }
