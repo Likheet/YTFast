@@ -5,12 +5,10 @@
 //! shuffle and the arrow that opens the player page. The progress line
 //! runs along its top edge.
 //!
-//! Premium: the bar is a glass panel floating over the page (corners 16,
-//! inset 12 and 8, a clear edge, a light along its top, a shadow); its
-//! middle column (36% of it, 28% under 1150 wide; 240 to 560) holds
-//! previous, play on a white disc and next, and under them the song's line
-//! in the accent between the time played and the length; the song at its
-//! left, the other buttons at its right, all quieter than play.
+//! Every look puts its parts in these places. Premium draws the bar as a
+//! glass panel (corners 14, inset 4, a clear edge, a light along its top, a
+//! shadow), play on a white disc, the song's line in its accent, and like,
+//! dislike and the menu quieter than play.
 
 use egui::{Align2, Color32, CornerRadius, Frame, Rect, Sense, UiBuilder, Vec2, pos2, vec2};
 
@@ -36,9 +34,6 @@ const NARROW_RIGHT_WIDTH: f32 = 36.0 + 8.0 + 36.0 + 4.0 + 16.0;
 /// `#f1f1f1`: like, dislike and the menu.
 const SOFT: Color32 = Color32::from_rgb(0xf1, 0xf1, 0xf1);
 
-/// Premium: the room either side of the song's line for the times.
-const TIMES: f32 = 52.0;
-
 /// Like, dislike and the menu: `#f1f1f1` and 24 (Premium: the quieter
 /// grey and 22, so play stands out).
 fn soft() -> (Color32, f32) {
@@ -63,17 +58,11 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .show_separator_line(false)
         .frame(Frame::new().fill(fill))
         .show(ui, |ui| {
-            let bar = if premium { floating(ui) } else { ui.max_rect() };
+            let bar = ui.max_rect();
+            if premium {
+                floating(ui);
+            }
             let Some(entry) = &app.playback.entry else {
-                if premium {
-                    ui.painter().text(
-                        pos2(bar.left() + 24.0, bar.center().y),
-                        Align2::LEFT_CENTER,
-                        "Choose something to play",
-                        theme::regular(14.0),
-                        PALETTE.secondary,
-                    );
-                }
                 return;
             };
             // A click on the bar's empty parts opens (or closes) the
@@ -88,62 +77,31 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 .show(|ui| widgets::song_menu(app, ui, &entry.track, widgets::Place::Playing));
 
             let narrow = ui.ctx().content_rect().width() < NARROW;
-            // Premium: the song's line, in the middle column under the
-            // buttons.
-            let mut track = None;
-            let expand = if premium {
-                // Narrower in a narrow window, so the song keeps its name.
-                let share = if narrow { 0.28 } else { 0.36 };
-                let column = (bar.width() * share).clamp(240.0, 560.0);
-                let middle = Rect::from_center_size(bar.center(), vec2(column, bar.height()));
-                let transport = Rect::from_center_size(
-                    pos2(bar.center().x, bar.top() + 30.0),
-                    vec2(160.0, 40.0),
-                );
-                left_group(app, ui, transport);
-                track = Some(Rect::from_min_max(
-                    pos2(middle.left() + TIMES, bar.bottom() - 18.0),
-                    pos2(middle.right() - TIMES, bar.bottom() - 18.0),
-                ));
-                let expand = right_group(app, ui, bar, narrow);
-                let (from, to) = (bar.left() + 12.0, middle.left() - 16.0);
-                middle_group(app, ui, bar, from, to, entry);
-                expand
-            } else {
-                let left_end = left_group(app, ui, bar);
-                let right_start = bar.right()
-                    - if narrow {
-                        NARROW_RIGHT_WIDTH
-                    } else {
-                        RIGHT_WIDTH
-                    };
-                let expand = right_group(app, ui, bar, narrow);
-                middle_group(app, ui, bar, left_end, right_start, entry);
-                expand
-            };
+            let left_end = left_group(app, ui, bar);
+            let right_start = bar.right()
+                - if narrow {
+                    NARROW_RIGHT_WIDTH
+                } else {
+                    RIGHT_WIDTH
+                };
+            let expand = right_group(app, ui, bar, narrow);
+            middle_group(app, ui, bar, left_end, right_start, entry);
             // Over the song's words, which it covers while open.
             if let Some(expand) = expand {
                 expanding_menu(app, ui, bar, expand);
             }
             // Last, so it is over the bar's own things.
-            match track {
-                Some(track) => {
-                    if !premium_times(app, ui, track) {
-                        progress_line(app, ui, track);
-                    }
-                }
-                None => progress_line(app, ui, bar),
-            }
+            progress_line(app, ui, bar);
         });
 }
 
-/// Premium's floating bar, a glass panel: inset 12 and 8, corners 16,
-/// `#202024` at 90% (what is behind shows a little), a white@0.12 edge, a
-/// white@0.07 light along its top and a shadow under it. Returns its
-/// rectangle.
-fn floating(ui: &egui::Ui) -> Rect {
-    let bar = ui.max_rect().shrink2(vec2(12.0, 8.0));
-    let corners = CornerRadius::same(16);
+/// Premium's bar, a glass panel just inside the bar (inset 4, so the
+/// buttons keep YouTube Music's places): corners 14, `#202024` at 90% (what
+/// is behind shows a little), a white@0.12 edge, a white@0.07 light along
+/// its top and a shadow under it.
+fn floating(ui: &egui::Ui) {
+    let bar = ui.max_rect().shrink(4.0);
+    let corners = CornerRadius::same(14);
     let shadow = egui::Shadow {
         offset: [0, 8],
         blur: 28,
@@ -167,7 +125,6 @@ fn floating(ui: &egui::Ui) -> Rect {
         egui::Stroke::new(1.0, Color32::from_white_alpha(31)),
         egui::StrokeKind::Inside,
     );
-    bar
 }
 
 /// A round button `size` across with its icon `icon_size` and no disc at
@@ -207,8 +164,8 @@ fn bar_button(
 
 /// Previous (36, at 8), play or pause (a 40 spot at 60, its icon 40, a 52
 /// disc under the pointer), next (36, at 120), then the time 8 after it.
-/// Returns where the group ends (16 after the time). Premium: `bar` is the
-/// buttons' own room, 160 wide; the time goes with the song's line.
+/// Returns where the group ends (16 after the time). Premium: play on a
+/// white disc.
 fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
     let premium = theme::premium();
     let y = bar.center().y;
@@ -271,9 +228,6 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
         app.act(Action::Next);
     }
 
-    if premium {
-        return bar.right();
-    }
     // "0:00 / 4:38", 12/400 #aaa, 8 after next (and its margin of 4).
     let mut x = next.right() + 4.0 + 8.0;
     if app.audio_status.length > 0.0 {
@@ -314,67 +268,18 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
     x + 16.0
 }
 
-/// Premium: the time played at the left of the song's line `track` and the
-/// length (and "Demo") at its right, 12 in the quieter grey, 10 from its
-/// ends; or, when the sound has a problem, that instead of the line, in
-/// red. True when the problem shows.
-fn premium_times(app: &App, ui: &mut egui::Ui, track: Rect) -> bool {
-    let y = track.center().y;
-    if let Some(problem) = &app.audio_status.problem {
-        let width = track.width() + 2.0 * TIMES;
-        let words = theme::fit(ui, problem, theme::regular(11.0), PALETTE.danger, width, 1);
-        let rect = Rect::from_center_size(pos2(track.center().x, y), words.size());
-        ui.painter().galley(rect.min, words, PALETTE.danger);
-        ui.interact(rect, ui.id().with("sound-problem"), Sense::hover())
-            .on_hover_text(problem);
-        return true;
-    }
-    let length = app.audio_status.length;
-    let (played, mut total) = if length > 0.0 {
-        (theme::clock(app.shown_position()), theme::clock(length))
-    } else {
-        ("-:--".to_string(), "-:--".to_string())
-    };
-    if app.demo {
-        total.push_str(" \u{00b7} Demo");
-    }
-    let font = theme::regular(12.0);
-    ui.painter().text(
-        pos2(track.left() - 10.0, y),
-        Align2::RIGHT_CENTER,
-        played,
-        font.clone(),
-        PALETTE.secondary,
-    );
-    ui.painter().text(
-        pos2(track.right() + 10.0, y),
-        Align2::LEFT_CENTER,
-        total,
-        font,
-        PALETTE.secondary,
-    );
-    false
-}
-
-/// The song: its cover 40 (r 2), 16 after it its title (14/500 white, 16
-/// from a window 1364 wide) and "Artist • Album" (14/400 white@0.70, the
-/// same 16, each a link), 8 after them like
+/// The song: its cover 40 (r 2; a video's still 71 wide), 16 after it its
+/// title (14/500 white, 16 from a window 1364 wide) and "Artist • Album"
+/// (14/400 white@0.70, the same 16, each a link), 8 after them like
 /// and dislike (36 each), then the menu (36), 16 after; the group centred
 /// between the left and right groups, the words as wide as they need up
 /// to what is left.
 fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, entry: &Entry) {
     let track = &entry.track;
     let y = bar.center().y;
-    // Cover 40, 16, the words, 8, like 36, 2.5, dislike 36, 16, menu 36, 16
-    // (Premium: cover 48 r 8 and 12 after it, 8 before and after the menu,
-    // at the left of its room).
-    let premium = theme::premium();
-    let (art_size, art_gap, menu_gap) = if premium {
-        (48.0, 12.0, 8.0)
-    } else {
-        (40.0, 16.0, 16.0)
-    };
-    let fixed = art_size + art_gap + 8.0 + 36.0 + 2.5 + 36.0 + menu_gap + 36.0 + menu_gap;
+    // Cover 40, 16, the words, 8, like 36, 2.5, dislike 36, 16, menu 36, 16.
+    let (art_width, art_gap, menu_gap) = (art_width(track.thumbnail.as_ref()), 16.0, 16.0);
+    let fixed = art_width + art_gap + 8.0 + 36.0 + 2.5 + 36.0 + menu_gap + 36.0 + menu_gap;
     let room = (to - from - fixed).max(0.0);
     let (line, line_color) = match &app.playback.state {
         PlayState::Preparing => ("Getting the song ready...".to_string(), PALETTE.secondary),
@@ -406,13 +311,9 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
     };
     let words = title.size().x.max(under_width).min(room);
     let group = fixed + words;
-    let left = if premium {
-        from
-    } else {
-        from + ((to - from - group) / 2.0).max(0.0)
-    };
+    let left = from + ((to - from - group) / 2.0).max(0.0);
 
-    let art = Rect::from_min_size(pos2(left, y - art_size / 2.0), Vec2::splat(art_size));
+    let art = Rect::from_min_size(pos2(left, y - 20.0), vec2(art_width, 40.0));
     widgets::cover_with(
         app,
         ui,
@@ -420,7 +321,7 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
         track.thumbnail.as_ref(),
         CornerRadius::same(if theme::dynamic() {
             crate::dynamic::RADIUS_ART
-        } else if premium {
+        } else if theme::premium() {
             8
         } else {
             2
@@ -459,6 +360,17 @@ fn middle_group(app: &App, ui: &mut egui::Ui, bar: Rect, from: f32, to: f32, ent
     let (color, size) = soft();
     let more = bar_button(ui, menu_rect, Icon::MoreVertical, size, 36.0, color, "More");
     theme::menu_popup(&more).show(|ui| widgets::song_menu(app, ui, track, widgets::Place::Playing));
+}
+
+/// The song's picture's width in the player bar, 40 high: 40 for a song's
+/// cover, 71 for a video's 16:9 still (a fan's video has only that), as
+/// YouTube Music's.
+fn art_width(thumb: Option<&ytfast_core::read::Thumb>) -> f32 {
+    if thumb.is_some_and(|thumb| thumb.aspect() > 1.2) {
+        71.0
+    } else {
+        40.0
+    }
 }
 
 /// The byline's parts: the artists (a link to the artist) and the album
@@ -827,9 +739,9 @@ fn volume(app: &App, ui: &mut egui::Ui, button: Rect) {
 /// it. Click or drag (anywhere 15 above to 17 below its centre) to move in
 /// the song.
 fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
-    // Premium: `bar` is the line itself, in the accent, 4 thick (6 under
-    // the pointer) and rounded, on white@0.16; its knob shows only under
-    // the pointer.
+    // Premium: the line in its accent, 4 thick (6 under the pointer) and
+    // rounded, on white@0.18; its knob shows only under the pointer. In the
+    // same place as YouTube Music's.
     let premium = theme::premium();
     let (red, pink) = if premium {
         (PALETTE.accent, PALETTE.accent)
@@ -853,12 +765,8 @@ fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
     };
     // The line's centre is 1 below the bar's top; its pointer area runs 15
     // above to 17 below, over the page's foot.
-    let centre = if premium {
-        bar.center().y
-    } else {
-        bar.top() + 1.0
-    };
-    let (above, below) = if premium { (10.0, 10.0) } else { (15.0, 17.0) };
+    let centre = bar.top() + 1.0;
+    let (above, below) = (15.0, 17.0);
     let area_rect = Rect::from_min_max(
         pos2(bar.left(), centre - above),
         pos2(bar.right(), centre + below),
@@ -967,5 +875,26 @@ fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
     {
         let at = ((pointer.x - bar.left()) / bar.width()).clamp(0.0, 1.0) as f64 * length;
         app.act(Action::Seek(at));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The player bar's picture is 40 high: 40 wide for a song's cover, 71
+    /// for a video's still, as YouTube Music's.
+    #[test]
+    fn a_videos_still_is_71_wide_in_the_player_bar() {
+        let thumb = |url: &str, width, height| ytfast_core::read::Thumb {
+            url: url.into(),
+            width,
+            height,
+        };
+        let cover = thumb("https://lh3.googleusercontent.com/a=w544-h544", 544, 544);
+        let still = thumb("https://i.ytimg.com/vi/abc/sddefault.jpg?sqp=x", 400, 225);
+        assert_eq!(art_width(Some(&cover)), 40.0);
+        assert_eq!(art_width(Some(&still)), 71.0);
+        assert_eq!(art_width(None), 40.0);
     }
 }

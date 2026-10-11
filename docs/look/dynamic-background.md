@@ -3,6 +3,11 @@
 A third look, chosen in Settings (Theme), beside YouTube Music's own and
 Premium. Added on 10 October 2026.
 
+Since 11 October 2026 it keeps YouTube Music's layout, as Premium does:
+every part where YouTube Music's look puts it, at the same size (its rows
+and its player page had their own sizes before, and things moved when the
+look changed). It differs only in colours, glass, corners and its font.
+
 It recreates chengggit's "Dynamic Background" theme for the Better Lyrics
 extension (<https://github.com/chengggit/YouTube-Music-Dynamic-Theme>, MIT
 licence, Copyright (c) chengggit), the second most installed theme in Better
@@ -32,15 +37,18 @@ its coordinates moved by slow waves.
   buttons with words corners 16, the shelves' arrows rounded squares,
   Subscribe white at 20%.
 - Everything is set in Inter (already in the app; Roboto in the other two
-  looks).
+  looks), on Roboto's line heights (`theme::on_robotos_lines`), so its
+  words sit on the same lines as in the other looks. Inter's own lines are
+  a little taller (1.21 of the size, Roboto's 1.17), which moved Settings'
+  rows down by up to 26 as the look changed. Its words are a little wider,
+  so a long title may take a second line where Roboto's took one.
 - Covers: cards and large covers corners 20, middling 12, small 4.
-- Song rows: an album's and a playlist's 56 high (cover or number 38, 24
-  after it); an artist's top songs 54; Up next 58, 8 apart, covers 42; no
-  lines between rows.
+- Song rows: YouTube Music's sizes, covers r 4, no lines between rows.
 - An artist's picture at 80%, fading out over its lower 40% into the
   background, across the whole window.
-- The player page: the cover at most 400 (corners 20, shadow) and the tabs
-  in white. Lyrics as Better Lyrics sets them in the theme: Inter 40
+- The player page: YouTube Music's places (the cover as large as YouTube
+  Music's, at most 800), corners 20 and the theme's shadow, the tabs in
+  white. Lyrics as Better Lyrics sets them in the theme: Inter 40
   semibold (smaller in a narrow window), the line being sung white with a
   short glow, the next one half lit, the others at 30% and blurred; the
   pointer lights a line, and scrolling by hand lifts the blur.
@@ -49,8 +57,9 @@ its coordinates moved by slow waves.
 
 - `src/dynamic.rs`: the colours, the background (`paint`, `wash`), glass,
   and the theme's buttons, chips and switch.
-- `src/views/dynamic.rs`: the player page and lyrics, toasts, the row
-  sizes, cover corners and the other pieces that differ.
+- `src/views/dynamic.rs`: the player page (in the places every look
+  shares, `now_playing::places`) and lyrics, toasts, the rows' corners,
+  cover corners and the other pieces that are drawn differently.
 - Elsewhere, each place that differs asks `theme::dynamic()` and hands
   over to those two files, so the other looks' code stays as it is.
 - `backend::Picture::soft` keeps each cover at 24 × 24 (about 2 KB) for

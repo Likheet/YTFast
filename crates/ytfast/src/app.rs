@@ -1144,6 +1144,11 @@ impl App {
         self.images.borrow_mut().get(url, &self.backend)
     }
 
+    /// Whether the picture at `url` did not load.
+    pub fn picture_failed(&self, url: &str) -> bool {
+        self.images.borrow_mut().failed(url)
+    }
+
     /// The cover `url` behind an album's or playlist's page, once it has
     /// arrived: its middle band (the rows a wide window shows of a square
     /// cover, a third to two thirds down), shrunk to a few pixels, and when
@@ -4253,39 +4258,49 @@ mod tests {
         crate::theme::set(Theme::YouTubeMusic);
     }
 
-    /// In Dynamic Background, whose rows in Up next are taller and apart,
-    /// a song dragged in Up next lands where it is let go.
+    /// In every look, a song dragged in Up next lands where it is let go;
+    /// the rows are YouTube Music's in each (56 high, 1 between).
     #[test]
     fn a_song_dragged_in_up_next_lands_where_it_is_let_go() {
-        let mut w = Window::new(crate::theme::Theme::DynamicBackground);
-        w.h.play(&["a", "b", "c", "d", "e"]);
-        w.h.app.now_playing = true;
-        w.h.app.np_tab = NpTab::UpNext;
-        w.settle();
-        let b = w.find("B", 0);
-        let d = w.find("D", 0);
-        // Rows the theme's height apart (58, and 8 between).
-        assert!((d.top() - b.top() - 2.0 * 66.0).abs() < 0.5, "{b:?} {d:?}");
-        // B picked up and carried down to D's upper half: it goes before D.
-        let from = b.center();
-        w.point(from);
-        w.button(from, true);
-        for step in 1..=8 {
-            let y = from.y + (d.top() + 12.0 - from.y) * step as f32 / 8.0;
-            w.point(egui::pos2(from.x, y));
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.play(&["a", "b", "c", "d", "e"]);
+            w.h.app.now_playing = true;
+            w.h.app.np_tab = NpTab::UpNext;
+            w.settle();
+            let b = w.find("B", 0);
+            let d = w.find("D", 0);
+            assert!(
+                (d.top() - b.top() - 2.0 * 57.0).abs() < 0.5,
+                "{theme:?} {b:?} {d:?}"
+            );
+            // B picked up and carried down to D's upper half: it goes
+            // before D.
+            let from = b.center();
+            w.point(from);
+            w.button(from, true);
+            for step in 1..=8 {
+                let y = from.y + (d.top() + 12.0 - from.y) * step as f32 / 8.0;
+                w.point(egui::pos2(from.x, y));
+            }
+            let to = egui::pos2(from.x, d.top() + 12.0);
+            w.button(to, false);
+            w.frame(Vec::new());
+            let order: Vec<&str> =
+                w.h.app
+                    .queue
+                    .entries()
+                    .iter()
+                    .map(|e| e.track.video_id.as_str())
+                    .collect();
+            assert_eq!(order, ["a", "c", "b", "d", "e"], "{theme:?}");
         }
-        let to = egui::pos2(from.x, d.top() + 12.0);
-        w.button(to, false);
-        w.frame(Vec::new());
-        let order: Vec<&str> =
-            w.h.app
-                .queue
-                .entries()
-                .iter()
-                .map(|e| e.track.video_id.as_str())
-                .collect();
-        assert_eq!(order, ["a", "c", "b", "d", "e"]);
-        crate::theme::set(crate::theme::Theme::YouTubeMusic);
+        crate::theme::set(Theme::YouTubeMusic);
     }
 
     /// In Dynamic Background, a playlist's song is ticked by its tick box
@@ -4365,6 +4380,7 @@ mod tests {
                     thumbnail: Some(ytfast_core::read::Thumb {
                         url: "https://example.com/cover.jpg".into(),
                         width: 544,
+                        height: 544,
                     }),
                     ..Default::default()
                 }),
@@ -4427,6 +4443,7 @@ mod tests {
                 thumbnail: Some(ytfast_core::read::Thumb {
                     url: "https://example.com/tile.jpg".into(),
                     width: 226,
+                    height: 226,
                 }),
                 round: false,
                 open: None,
@@ -4903,6 +4920,7 @@ mod tests {
             thumbnail: Some(ytfast_core::read::Thumb {
                 url: "https://example.com/cover.jpg".into(),
                 width: 60,
+                height: 60,
             }),
             ..Track::default()
         };
@@ -5846,6 +5864,321 @@ mod tests {
             );
         }
         crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// The demo's answer to what the app asks for, as the backend gives
+    /// it in `--demo`: pages, Up next, lyrics, Related, a song's details.
+    /// Pictures stay unloaded.
+    fn demo_answer(request: Request) -> Option<Event> {
+        Some(match request {
+            Request::Page { route, load, order } => {
+                let page = crate::demo::page(&route, order.as_deref());
+                Event::Page(route, load, Ok(page))
+            }
+            Request::Image(url) => Event::Image(url, None),
+            Request::Related(id) => Event::Related(id.clone(), Ok(crate::demo::related(&id))),
+            Request::Lyrics { video_id, .. } => {
+                Event::Lyrics(video_id.clone(), Some(crate::demo::lyrics(&video_id)))
+            }
+            Request::UpNext {
+                video_id,
+                playlist_id,
+                queue,
+            } => Event::UpNext {
+                result: Ok(crate::demo::up_next(&video_id)),
+                video_id,
+                playlist_id,
+                queue,
+            },
+            Request::Details(id) => Event::SongVideo(id, Ok(None)),
+            _ => return None,
+        })
+    }
+
+    /// Every named part of the window on `screen` in `theme`, at `size`
+    /// (role, name, place), after the demo has answered and the window
+    /// settled; a song from a demo album playing. In Roboto, or with
+    /// `own_font` in the look's own (Dynamic Background's Inter).
+    fn parts_of(
+        theme: crate::theme::Theme,
+        screen: &str,
+        size: egui::Vec2,
+        own_font: bool,
+    ) -> Vec<(String, String, egui::Rect)> {
+        let mut h = Harness::new();
+        h.ctx.enable_accesskit();
+        h.app.settings.theme = theme;
+        h.app
+            .script_fonts
+            .set_inter_first(own_font && theme == crate::theme::Theme::DynamicBackground);
+        h.app.auth = Auth::SignedIn {
+            name: "Listener".into(),
+            handle: None,
+            photo: None,
+        };
+        let album = Route::Browse {
+            id: "demo-album-Postcards".into(),
+            params: None,
+        };
+        let tracks: Vec<Track> = crate::demo::page(&album, None)
+            .sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter_map(|i| match i {
+                Item::Track(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        h.act(Action::PlayTracks {
+            tracks,
+            start: 0,
+            source: None,
+        });
+        h.ready();
+        let route = match screen {
+            "album" => album,
+            "playlist" => Route::Browse {
+                id: "demo-playlist-Road trip".into(),
+                params: None,
+            },
+            "artist" => Route::Browse {
+                id: "demo-artist-Mara Sol".into(),
+                params: None,
+            },
+            "search" => Route::Search("mara".into()),
+            "library" => Route::Library,
+            "settings" => Route::Settings,
+            _ => Route::Home,
+        };
+        h.act(Action::Navigate(route));
+        if let Some(tab) = screen.strip_prefix("player-") {
+            h.app.now_playing = true;
+            h.app.np_tab = match tab {
+                "lyrics" => NpTab::Lyrics,
+                "related" => NpTab::Related,
+                _ => NpTab::UpNext,
+            };
+        }
+        let mut parts = Vec::new();
+        for frame in 0..14 {
+            for request in h.requests() {
+                if let Some(event) = demo_answer(request) {
+                    h.events.send(event).unwrap();
+                }
+            }
+            h.frame();
+            h.app.want_song_extras();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                time: Some(frame as f64 * 0.1),
+                ..Default::default()
+            };
+            let app = &h.app;
+            let mut output = h.ctx.run_ui(input, |ui| {
+                crate::theme::set(app.settings.theme);
+                if crate::theme::dynamic() {
+                    crate::dynamic::paint(app, ui);
+                }
+                views::show(app, ui);
+            });
+            output.textures_delta.clear();
+            if let Some(update) = output.platform_output.accesskit_update {
+                parts = update
+                    .nodes
+                    .into_iter()
+                    .filter_map(|(_, node)| {
+                        let b = node.bounds()?;
+                        let name = node
+                            .label()
+                            .map(str::to_string)
+                            .or_else(|| node.value().map(str::to_string))?;
+                        let rect = egui::Rect::from_min_max(
+                            egui::pos2(b.x0 as f32, b.y0 as f32),
+                            egui::pos2(b.x1 as f32, b.y1 as f32),
+                        );
+                        Some((format!("{:?}", node.role()), name, rect))
+                    })
+                    .collect();
+            }
+            h.app.apply_actions();
+        }
+        crate::theme::set(crate::theme::Theme::YouTubeMusic);
+        parts
+    }
+
+    /// The parts by role, name and how many of the same came before
+    /// (from the top left).
+    fn keyed(
+        mut parts: Vec<(String, String, egui::Rect)>,
+    ) -> HashMap<(String, String, usize), egui::Rect> {
+        parts.sort_by(|a, b| {
+            (a.2.top(), a.2.left())
+                .partial_cmp(&(b.2.top(), b.2.left()))
+                .unwrap()
+        });
+        let mut seen: HashMap<(String, String), usize> = HashMap::new();
+        parts
+            .into_iter()
+            .map(|(role, name, rect)| {
+                let n = seen.entry((role.clone(), name.clone())).or_default();
+                *n += 1;
+                ((role, name, *n - 1), rect)
+            })
+            .collect()
+    }
+
+    /// Switching looks changes colours, corners, glass and fonts, never
+    /// where things are (the owner found things moving around, 11 October
+    /// 2026). Every named part YouTube Music's look draws on these
+    /// screens, at three window sizes, is in the other looks too, at the
+    /// same place and size. Every look is drawn here in Roboto: Dynamic
+    /// Background's Inter, on Roboto's lines, sets words a little wider (up
+    /// to 12 along a row of chips), so a card's title may take a second
+    /// line there (as on YouTube Music, a card is as tall as its words).
+    /// The lyrics are left out: each look sets them in its own size.
+    #[test]
+    fn every_look_puts_things_in_the_same_places() {
+        use crate::theme::Theme;
+        let screens = [
+            "home",
+            "album",
+            "playlist",
+            "artist",
+            "search",
+            "library",
+            "settings",
+            "player-upnext",
+            "player-related",
+        ];
+        let mut wrong = Vec::new();
+        for size in [
+            egui::vec2(1280.0, 820.0),
+            egui::vec2(1707.0, 1019.0),
+            egui::vec2(1000.0, 700.0),
+        ] {
+            for screen in screens {
+                let reference = keyed(parts_of(Theme::YouTubeMusic, screen, size, false));
+                for theme in [Theme::Premium, Theme::DynamicBackground] {
+                    let other = keyed(parts_of(theme, screen, size, false));
+                    for (key, a) in &reference {
+                        let Some(b) = other.get(key) else {
+                            wrong.push(format!("{size:?} {screen} {theme:?}: no {key:?}"));
+                            continue;
+                        };
+                        let fits = (a.top() - b.top()).abs() <= 1.0
+                            && (a.height() - b.height()).abs() <= 1.0
+                            && (a.left() - b.left()).abs() <= 1.0
+                            && (a.width() - b.width()).abs() <= 1.0;
+                        if !fits {
+                            wrong.push(format!(
+                                "{size:?} {screen} {theme:?}: {key:?} at {a:?} in YouTube Music, {b:?} here"
+                            ));
+                        }
+                    }
+                    for key in other.keys() {
+                        if !reference.contains_key(key) {
+                            wrong.push(format!("{size:?} {screen} {theme:?}: only here: {key:?}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} parts differ:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// Choosing Dynamic Background in Settings moves no setting, in its own
+    /// font: Inter, on Roboto's lines, keeps every row as tall and where it
+    /// was (its words are a little wider, so a paragraph may break at
+    /// another word, but onto no more lines).
+    #[test]
+    fn choosing_dynamic_background_moves_no_setting() {
+        use crate::theme::Theme;
+        for size in [
+            egui::vec2(1280.0, 820.0),
+            egui::vec2(1707.0, 1019.0),
+            egui::vec2(1000.0, 700.0),
+        ] {
+            let at = |theme| {
+                let parts = parts_of(theme, "settings", size, true);
+                keyed(
+                    parts
+                        .into_iter()
+                        .filter(|part| part.0 != "TextRun")
+                        .collect(),
+                )
+            };
+            let (youtube, dynamic) = (at(Theme::YouTubeMusic), at(Theme::DynamicBackground));
+            assert_eq!(youtube.len(), dynamic.len(), "{size:?}");
+            for (key, a) in &youtube {
+                let b = dynamic
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{size:?}: no {key:?}"));
+                assert!(
+                    (a.top() - b.top()).abs() <= 1.0 && (a.height() - b.height()).abs() <= 1.0,
+                    "{size:?} {key:?}: {a:?} in YouTube Music, {b:?} in Dynamic Background"
+                );
+            }
+        }
+    }
+
+    /// A fan's video has only its still: the player page asks for its
+    /// whole frame (`hq720.jpg`, the row's still being often its middle,
+    /// zoomed) and, when the video has none, takes the still its row gave.
+    #[test]
+    fn the_player_page_shows_a_videos_whole_frame_or_its_rows_still() {
+        let mut h = Harness::new();
+        h.app.auth = Auth::SignedIn {
+            name: "Listener".into(),
+            handle: None,
+            photo: None,
+        };
+        let still = "https://i.ytimg.com/vi/fanvideo01/sddefault.jpg?sqp=zoomed";
+        let whole = "https://i.ytimg.com/vi/fanvideo01/hq720.jpg";
+        let mut track = song("fanvideo01");
+        track.thumbnail = Some(ytfast_core::read::Thumb {
+            url: still.into(),
+            width: 400,
+            height: 225,
+        });
+        h.act(Action::PlayTracks {
+            tracks: vec![track],
+            start: 0,
+            source: None,
+        });
+        h.ready();
+        h.app.now_playing = true;
+        let asked = |h: &mut Harness| -> Vec<String> {
+            let app = &h.app;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 820.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = h.ctx.run_ui(input, |ui| views::show(app, ui));
+            output.textures_delta.clear();
+            h.requests()
+                .into_iter()
+                .filter_map(|request| match request {
+                    Request::Image(url) => Some(url),
+                    _ => None,
+                })
+                .collect()
+        };
+        let first = asked(&mut h);
+        assert!(first.iter().any(|url| url == whole), "{first:?}");
+        assert!(!first.iter().any(|url| url == still), "{first:?}");
+        // This video has no such frame.
+        h.answer(Event::Image(whole.into(), None));
+        let then = asked(&mut h);
+        assert!(then.iter().any(|url| url == still), "{then:?}");
+        assert!(!then.iter().any(|url| url == whole), "{then:?}");
     }
 
     #[test]

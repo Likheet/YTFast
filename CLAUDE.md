@@ -78,16 +78,31 @@ nothing then), so whatever keeps the music going belongs there, not in
   margins, colours). Do not round or "tidy" them; to change a screen,
   open the real one, measure it (the page's computed styles), then check
   the result in `--demo` beside it.
-- **Three themes.** `PALETTE` and the sizes that differ by theme
-  (`top_bar_height()`, `player_bar_height()`, `guide_width()`,
-  `page_foot()`, `Row::themed`) follow the theme chosen in Settings, so
-  read them while drawing, never into a `const`. A screen that looks
-  different in Premium keeps YouTube Music's code untouched and adds its
-  own behind `theme::premium()` (`docs/look/premium.md`). Dynamic
-  Background does the same behind `theme::dynamic()`, with its own
-  screens in `views/dynamic.rs` (`docs/look/dynamic-background.md`).
-  Tests that draw or size things in Premium or Dynamic Background call
-  `theme::set` themselves (it is per thread).
+- **Three looks, one layout.** YouTube Music, Premium and Dynamic
+  Background put every part in the same place at the same size, and
+  differ only in colours, corners, glass and fonts (the owner's brother
+  found things moving when the look changed; fixed 11 October 2026).
+  `every_look_puts_things_in_the_same_places` (`app.rs`) checks every
+  named part of nine screens at three window sizes: a look may change how
+  a part is drawn, never where it is or how big. `PALETTE` follows the
+  chosen look, so read it while drawing, never into a `const`. What
+  Premium draws differently sits behind `theme::premium()`
+  (`docs/look/premium.md`), Dynamic Background's behind
+  `theme::dynamic()`, its player page and lyrics in `views/dynamic.rs`
+  (`docs/look/dynamic-background.md`). Dynamic Background sets everything
+  in Inter on Roboto's line heights (`theme::on_robotos_lines`): without
+  them each line of text is a point taller, and Settings' rows move. Tests
+  that draw things in Premium or Dynamic Background call `theme::set`
+  themselves (it is per thread).
+- **A picture keeps its shape.** `Thumb::aspect` comes from the height
+  YouTube gives (a video's still without one is 16:9). Draw pictures with
+  `widgets::cover_with` or `picture` (whole, `Fit::Whole`: rows, Up next,
+  the player) or `cover_filled` (cards and search's top result,
+  `Fit::Fill`), as YouTube Music's `thumbnailScale` says (`ASPECT_FIT`,
+  `ASPECT_FILL`); never stretch a texture over a place of another shape. A
+  placeholder takes the picture's shape (`widgets::shape_in`), so nothing
+  moves when it arrives. A fan's video has only its 16:9 still: the player
+  bar gives it 71 by 40.
 - **The pointer is YouTube Music's** (read from its stylesheet): a hand on
   whatever can be pressed (`theme::pointing`; round buttons, chips, pills,
   switches and menus already do it), and "not allowed" on the player's

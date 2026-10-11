@@ -62,7 +62,32 @@ fn thumb(name: &str) -> Option<Thumb> {
     Some(Thumb {
         url: format!("demo://cover/{name}"),
         width: 544,
+        height: 544,
     })
+}
+
+/// A fan's video of a made-up song (`MUSIC_VIDEO_TYPE_UGC`): no album and
+/// no cover, only its video's still, 16:9.
+fn fan_video(i: usize) -> Track {
+    let song = song(i);
+    let video_id = format!("demofan{:04}", i % SONGS.len());
+    Track {
+        title: format!("{} (slowed + reverb)", song.title),
+        artists: "lofi corner".into(),
+        album: None,
+        album_id: None,
+        artist_id: None,
+        kind: TrackKind::Other("MUSIC_VIDEO_TYPE_UGC".into()),
+        thumbnail: Some(Thumb {
+            url: format!("demo://still/{video_id}"),
+            width: 400,
+            height: 225,
+        }),
+        duration_seconds: Some(length(&video_id) as u32),
+        video_id,
+        more: None,
+        ..song
+    }
 }
 
 /// The song's length in seconds, made up but always the same.
@@ -1209,22 +1234,30 @@ pub fn up_next(key: &str) -> (Vec<Track>, Option<String>) {
         .enumerate()
         .find(|(i, _)| format!("demo{i:07}") == key)
         .map(|(_, s)| format!("{} Mix", s.0));
-    ((start..start + 12).map(song).collect(), title)
+    let mut songs: Vec<Track> = (start..start + 12).map(song).collect();
+    // A fan's video among them, as there often is.
+    songs[2] = fan_video(start + 2);
+    (songs, title)
 }
 
-/// A made-up cover: two colours from the name, as a diagonal gradient.
+/// A made-up cover: two colours from the name, as a diagonal gradient; a
+/// video's still (`demo://still/...`) 16:9.
 pub fn cover(url: &str) -> egui::ColorImage {
-    const SIDE: usize = 96;
+    let (width, height) = if url.starts_with("demo://still/") {
+        (160, 90)
+    } else {
+        (96, 96)
+    };
     let s = seed(url);
     let colour = |shift: u32| {
         let hue = ((s >> shift) % 360) as f32;
         egui::ecolor::Hsva::new(hue / 360.0, 0.55, 0.75, 1.0)
     };
     let (a, b) = (colour(0), colour(20));
-    let mut pixels = Vec::with_capacity(SIDE * SIDE);
-    for y in 0..SIDE {
-        for x in 0..SIDE {
-            let t = (x + y) as f32 / (2 * SIDE) as f32;
+    let mut pixels = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            let t = (x + y) as f32 / (width + height) as f32;
             let mix = egui::ecolor::Hsva::new(
                 a.h + (b.h - a.h) * t,
                 a.s + (b.s - a.s) * t,
@@ -1234,7 +1267,7 @@ pub fn cover(url: &str) -> egui::ColorImage {
             pixels.push(egui::Color32::from(mix));
         }
     }
-    egui::ColorImage::new([SIDE, SIDE], pixels)
+    egui::ColorImage::new([width, height], pixels)
 }
 
 /// Made-up lines in Japanese, in Latin letters and in English, for the
