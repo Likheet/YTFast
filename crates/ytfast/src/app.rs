@@ -1274,6 +1274,12 @@ impl App {
         };
         self.queue.title = left.title;
         let at = left.at.max(0.0);
+        // A Mac's media keys reach only an app that has played since it
+        // started: this one claims them for the song kept (nothing
+        // elsewhere).
+        if let Some(controls) = &mut self.controls {
+            controls.claim(&entry.id.to_string(), Duration::from_secs_f64(at));
+        }
         self.playback = Playback {
             entry: Some(entry),
             state: PlayState::LeftOff,
