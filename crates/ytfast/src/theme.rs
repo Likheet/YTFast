@@ -1326,6 +1326,16 @@ pub fn pill_sized(
     response
 }
 
+/// Asks for the next frame `after` from now, as meant. egui brings a frame
+/// asked for later forward by the time it predicts one takes (16.7 ms on a
+/// 60 Hz screen), so a steady animation asked every 66 ms ran every 49:
+/// 20 frames a second where 15 were meant, each costing the processor a
+/// few ms in drawing (measured on the owner's laptop, 12 October 2026).
+pub fn repaint_in(ctx: &egui::Context, after: std::time::Duration) {
+    let lead = ctx.input(|i| i.predicted_dt).max(0.0);
+    ctx.request_repaint_after(after + std::time::Duration::from_secs_f32(lead));
+}
+
 /// The pointer over something that can be pressed, as YouTube Music
 /// shows it (`cursor: pointer` on its buttons, chips, tabs, switches, the
 /// menu's entries and links): a hand while the pointer is on it and it can
@@ -1433,6 +1443,36 @@ pub fn clock(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A frame asked for 66 ms on comes 66 ms on, on a 60 Hz screen,
+    /// where egui alone would bring it 16.7 ms forward.
+    #[test]
+    fn a_frame_asked_for_later_comes_when_meant() {
+        use std::time::Duration;
+        let ctx = egui::Context::default();
+        let delay = |ask: &dyn Fn(&egui::Context)| {
+            let mut last = Duration::ZERO;
+            // A few frames, past egui's first ones (which repaint at once).
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    predicted_dt: 1.0 / 60.0,
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| ask(ui.ctx()));
+                // No window takes the frame's new textures here.
+                output.textures_delta.clear();
+                last = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            }
+            last.as_secs_f64()
+        };
+        let meant = delay(&|ctx| repaint_in(ctx, Duration::from_millis(66)));
+        assert!((meant - 0.066).abs() < 0.001, "{meant}");
+        let egui_alone = delay(&|ctx| ctx.request_repaint_after(Duration::from_millis(66)));
+        assert!(
+            (egui_alone - (0.066 - 1.0 / 60.0)).abs() < 0.001,
+            "{egui_alone}"
+        );
+    }
 
     #[test]
     fn page_grid_is_youtube_musics() {
