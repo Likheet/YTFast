@@ -545,11 +545,9 @@ fn byline(
 /// Like, then dislike (2.5 apart), 36 each, their icons 24 `#f1f1f1`
 /// (filled when chosen). Moves `x` past them.
 fn likes(app: &App, ui: &mut egui::Ui, x: &mut f32, y: f32, track: &ytfast_core::read::Track) {
-    let state = app
-        .likes
-        .get(&track.video_id)
-        .copied()
-        .unwrap_or(LikeState::Neutral);
+    // As chosen, or as YouTube said, else as the row it was played from
+    // said.
+    let state = app.like_of(track);
     let liked = state == LikeState::Liked;
     let disliked = state == LikeState::Disliked;
     let like = Rect::from_min_size(pos2(*x, y - 18.0), Vec2::splat(36.0));

@@ -143,6 +143,10 @@ pub struct Track {
     /// on its page, and can still be taken out of a playlist, but it does
     /// not play.
     pub playable: bool,
+    /// What the account thinks of the song, as its row said (`None` when
+    /// it did not say, as signed out). What was chosen since sits on top
+    /// (the app's `App::like_of`).
+    pub like: Option<Rating>,
     /// What its row says beyond that, when it says more.
     pub more: Option<Box<TrackMore>>,
 }
@@ -325,6 +329,7 @@ impl Default for Track {
             artist_id: None,
             album_id: None,
             playable: true,
+            like: None,
             more: None,
         }
     }
@@ -464,6 +469,7 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         artist_id: links.artist_id,
         album_id: links.album_id,
         playable,
+        like: song::row_rating(row),
         more,
     })
 }
@@ -895,6 +901,30 @@ mod tests {
             ]}}]
         });
         assert_eq!(track_continuation(&last), None);
+    }
+
+    /// A page's row says whether the account likes its song, by its like
+    /// button (liked, disliked or neither), kept as the song's `like`; a
+    /// row that says nothing (signed out) has none.
+    #[test]
+    fn a_rows_like_comes_with_its_song() {
+        let like = |status: Option<&str>| {
+            let mut row = serde_json::json!({"musicResponsiveListItemRenderer": {
+                "playlistItemData": {"videoId": "abcdefghijk"},
+                "flexColumns": [{"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "A song"}]}}}],
+                "menu": {"menuRenderer": {"items": []}}
+            }});
+            if let Some(status) = status {
+                row["musicResponsiveListItemRenderer"]["menu"]["menuRenderer"]["topLevelButtons"] = serde_json::json!([
+                    {"likeButtonRenderer": {"target": {"videoId": "abcdefghijk"}, "likeStatus": status, "likesAllowed": true}}
+                ]);
+            }
+            tracks(&serde_json::json!({"contents": [row]}))[0].like
+        };
+        assert_eq!(like(Some("LIKE")), Some(Rating::Like));
+        assert_eq!(like(Some("DISLIKE")), Some(Rating::Dislike));
+        assert_eq!(like(Some("INDIFFERENT")), Some(Rating::Indifferent));
+        assert_eq!(like(None), None);
     }
 
     #[test]

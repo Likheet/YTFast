@@ -702,6 +702,8 @@ pub fn track_row_in(
     // A song YouTube no longer offers is shown at 60%, without its cover,
     // and does not play.
     let playable = track.playable;
+    // A liked song's filled thumb stays shown (below, by the row's kind).
+    let liked = playable && shown_like(app, track, place) == crate::app::LikeState::Liked;
     let shown = if playable { 1.0 } else { 0.6 };
     let (title_color, line_color) = (
         PALETTE.text.gamma_multiply(shown),
@@ -805,8 +807,16 @@ pub fn track_row_in(
         if hovered {
             row_actions(app, ui, rect, id, track, place, places, &mut clicked_menu);
         }
+        // A liked song keeps its filled thumb shown where like is, as
+        // YouTube Music's; the words end before it.
+        let like_at = rect.right() - places[0];
+        let marked = liked && !hovered;
+        if marked {
+            let at = Rect::from_min_size(pos2(like_at, rect.center().y - 18.0), Vec2::splat(36.0));
+            liked_mark(ui, id, at, 24.0);
+        }
         if style.keep_room || hovered {
-            right = rect.right() - places[0];
+            right = like_at;
         }
         // An album's or playlist's rows have a tick box at their right end,
         // under the pointer, and on every row while some are ticked (the
@@ -827,6 +837,9 @@ pub fn track_row_in(
             );
             right = at.x - 4.0;
             ui.painter().galley(at, galley, line_color);
+        }
+        if marked {
+            right = right.min(like_at);
         }
     } else if style.menu_for_length {
         // Up next: the length at the right edge; under the pointer ⋮
@@ -864,6 +877,16 @@ pub fn track_row_in(
             right = at.x + 8.0;
             ui.painter().galley(at, galley, line_color);
         }
+        // A liked song's filled thumb (YTFast's own: YouTube Music's Up
+        // next shows none) before the length, or ⋮ under the pointer, in
+        // the same place either way; the words end 8 before it.
+        if liked {
+            let edge = rect.right() - style.pad - 36.0;
+            let at =
+                Rect::from_min_size(pos2(edge - 24.0, rect.center().y - 10.0), Vec2::splat(20.0));
+            liked_mark(ui, id, at, 20.0);
+            right = right.min(at.left() + 8.0);
+        }
     } else if !duration.is_empty() {
         let galley = ui
             .painter()
@@ -876,6 +899,16 @@ pub fn track_row_in(
         ui.painter().galley(at, galley, PALETTE.secondary);
     } else {
         right -= 32.0;
+    }
+    // Other lists (search, Quick picks): a liked song's filled thumb before
+    // the length, or where ⋮ shows under the pointer.
+    if liked && style.buttons.is_none() && !style.menu_for_length {
+        let at = Rect::from_min_size(
+            pos2(right - 24.0, rect.center().y - 10.0),
+            Vec2::splat(20.0),
+        );
+        liked_mark(ui, id, at, 20.0);
+        right = at.left();
     }
     if hovered && style.buttons.is_none() && !style.menu_for_length {
         let menu_response = ui.interact(menu, id.with("menu"), Sense::click());
@@ -1065,6 +1098,28 @@ fn paint_bars(ui: &egui::Ui, centre: egui::Pos2) {
 }
 
 /// Like, dislike and ⋮ on a row under the pointer, their left edges
+/// What a song's row shows of the account's like: as known
+/// ([`App::known_like`]: chosen in this run, else as YouTube said); when
+/// not known, every song on Liked Music's own page is liked.
+fn shown_like(app: &App, track: &Track, place: Place) -> crate::app::LikeState {
+    use crate::app::LikeState;
+    app.known_like(track).unwrap_or(
+        if place == Place::Page && app.route == crate::backend::Route::Liked {
+            LikeState::Liked
+        } else {
+            LikeState::Neutral
+        },
+    )
+}
+
+/// A liked song's filled thumb `size` big in `at`, kept shown in its row
+/// (`#f1f1f1`, as the like button's), named for screen readers.
+fn liked_mark(ui: &egui::Ui, id: egui::Id, at: Rect, size: f32) {
+    let response = ui.interact(at, id.with("liked"), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Liked"));
+    theme::paint_icon(ui, Icon::ThumbsUpFilled, at, size, PALETTE.button);
+}
+
 /// `places` from the row's right (`Row::buttons`), 36 each, their icons 24
 /// `#f1f1f1`. A greyed-out song has only ⋮.
 #[allow(clippy::too_many_arguments)]
@@ -1096,11 +1151,7 @@ fn row_actions(
         theme::paint_icon(ui, icon, at, 24.0, soft);
         response
     };
-    let state = app
-        .likes
-        .get(&track.video_id)
-        .copied()
-        .unwrap_or(LikeState::Neutral);
+    let state = shown_like(app, track, place);
     let liked = state == LikeState::Liked;
     let disliked = state == LikeState::Disliked;
     let up = if liked {
@@ -1253,13 +1304,7 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
         }
         Place::Page | Place::Playing => {}
     }
-    // As chosen in this run or as YouTube said; else every song on Liked
-    // Music's own page is liked.
-    let on_liked = place == Place::Page && app.route == crate::backend::Route::Liked;
-    let liked = app
-        .likes
-        .get(&track.video_id)
-        .map_or(on_liked, |like| *like == crate::app::LikeState::Liked);
+    let liked = shown_like(app, track, place) == crate::app::LikeState::Liked;
     if liked {
         item(
             ui,

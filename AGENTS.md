@@ -263,6 +263,28 @@ Paolino), as `audio.rs` does.
   undoes them (back to what was shown before) and says so. Disliking the
   song playing moves on to the next, as YouTube Music does (Settings,
   "Skip songs you dislike", on by default).
+- Every song's row says whether the account likes it: a page's rows by
+  their like button, Up next's by their menu's "Add to liked songs"
+  (read on the owner's account, 11 October 2026: every row of Liked
+  Music, an album, an artist's page and Top songs, and two Up nexts said
+  so, so it costs no request). Each song keeps it (`Track::like`,
+  `read::row_rating`), under this run's choices (`App::known_like`,
+  `App::like_of`). A liked song keeps its filled thumb shown in its row:
+  where like is under the pointer on an album's, a playlist's and an
+  artist's songs (YouTube Music's), before the length in Up next and in
+  other lists (YTFast's own). The menu, the like button, the player bar
+  and the + key start from it.
+- Back and Forward: the top bar's arrows, the mouse's side buttons,
+  Alt+Left and Alt+Right (Cmd+[ and Cmd+] on a Mac), and, as in Chrome,
+  a sideways swipe of two fingers on a touchpad (`swipe.rs`, run by
+  `views::show` before and after the page): what no part of the window
+  scrolls of it (a shelf at its end leaves it over) pulls an arrow in
+  from the page's side, and let go full it goes back (swiped right) or
+  forward (swiped left). A swipe a shelf takes as it starts stays the
+  shelf's; one up or down, the wheel turned sideways by Shift, and
+  swipes under the player page or a dialog never go. Windows says
+  nothing when the fingers lift, so a pause of 0.2 s ends a gesture
+  there; a Mac's lift goes at once, and its glide is ignored.
 - Closing the window while a song plays (its ×, Alt+F4, the taskbar, a
   Mac's red button: one close request, `App::ask_before_closing`) keeps
   it open and asks first ("Do you really want to close? There's a song
@@ -318,7 +340,13 @@ Paolino), as `audio.rs` does.
   arrives, as a long document scrolls on (a hold there, until 11 October
   2026, made scrolling pause and slow at each batch). Covers that arrive
   together go to the graphics card at most 1 MB a frame
-  (`images::UPLOAD_PER_FRAME`), so no frame takes long.
+  (`images::UPLOAD_PER_FRAME`), so no frame takes long. A whole Home's
+  covers stay (room for 64 MB, `images::BUDGET`: at 150% a Home of 15
+  shelves takes about 45 to 50 MB), and one let go of comes back from
+  the backend's memory (16 MB of covers as YouTube sent them,
+  `backend::PictureFiles`), decoded again in milliseconds, not
+  downloaded again: at 32 MB a long Home's covers were downloaded again
+  on every pass, late, which the owner saw as fast scrolls lagging.
 - Every page is a header and sections of songs or cards (`read::Page`), so
   one view draws Home, Explore, search, albums, artists and playlists.
 - `--demo` replaces the account with made-up music and no network or
@@ -1093,6 +1121,35 @@ the owner's screen, and the Mac. 1.2.3 also carries the daily look for
 updates by the computer's clock (above, under Updates;
 Likheet/YTFast#44).
 
+Then (11 October 2026, version 1.2.4), at the owner's word: a fast
+scroll over a long Home still lagged once more shelves had loaded.
+Measured on the owner's laptop, at their window (1707 by 1019 at 150%)
+with covers as large as YouTube's there: a frame takes about 1 ms
+either way, and in the demo, covers let go of and loaded again cost no
+frame (every frame 16.7 ms, the same with room for only 15 covers); but
+the room for covers (32 MB) held about 60 of a long Home's, so each pass
+downloaded 56 of them again, and they came in late. Now a whole Home's
+covers stay, and one let go of comes back from memory (above, under
+Home). Also at the owner's word: a liked song shows its filled thumb in
+its row and in Up next, from what YouTube's replies already say of every
+row (above), and a sideways swipe of two fingers goes Back and Forward,
+as in Chrome (above, Back and Forward). Tested: the unit tests (316,
+among them a long Home at the owner's window scrolled down, up and down
+again asking for no cover twice (56 of 90 asked again with room for
+32 MB), cover files let go of in order, each row's like read from a
+page, Up next and search's top result, the thumbs in each look on a
+playlist and in Up next, the menu and the like button starting from
+them, and the swipe: back and forward when let go full, nowhere when
+short, over a shelf that scrolls, up and down, with Shift or under the
+player page, a Mac's glide ignored), and the demo off the screen: the
+thumbs on Home's Quick picks, an album, Liked Music, a playlist and Up
+next in YouTube Music's look and Dynamic Background, and a held swipe
+pulling the arrow and going back when let go. Not yet tested: scrolling
+and the swipe with the owner's touchpad (a Windows touchpad's sideways
+swipe reaches YTFast as sideways scrolling; which way goes back follows
+the touchpad's scrolling direction), covers coming back from memory
+with real ones, and the Mac.
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
@@ -1107,7 +1164,7 @@ differently: clicking a song in History queues the rest of that list;
 the playlist form has no Collaborate switch; Up next shows the Autoplay
 switch for radios too; F puts the player page in full screen (YouTube
 Music's own full screen is the video's); Up next's rows show the open
-hand.
+hand; a liked song shows its filled thumb in Up next too.
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp

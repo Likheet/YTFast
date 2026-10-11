@@ -127,19 +127,26 @@ fn like_status(reply: &Value) -> Option<Rating> {
     if let Some(like) = rating(button) {
         return Some(like);
     }
-    // Otherwise the song's row in the queue, and its menu.
-    let row = playing_row(reply, playing)?;
-    let mut buttons = Vec::new();
-    collect(row, "likeButtonRenderer", &mut buttons);
-    if let Some(like) = rating(buttons.first()) {
+    // Otherwise the song's row in the queue, as any row says it.
+    row_rating(playing_row(reply, playing)?)
+}
+
+/// What the account thinks of the song in a row, as the row says: its
+/// like button's status (a page's rows: liked, disliked or neither), else
+/// its menu's "Add to liked songs" (Up next's rows), which tells liked
+/// from not liked only. `None` when the row says neither.
+pub(crate) fn row_rating(row: &Value) -> Option<Rating> {
+    like_button(row).or_else(|| menu_rating(row.get("menu")?))
+}
+
+/// [`row_rating`] from a menu alone: for a card that holds other songs'
+/// rows too (search's top result).
+pub(crate) fn menu_rating(menu: &Value) -> Option<Rating> {
+    if let Some(like) = like_button(menu) {
         return Some(like);
     }
     let mut toggles = Vec::new();
-    collect(
-        row.get("menu")?,
-        "toggleMenuServiceItemRenderer",
-        &mut toggles,
-    );
+    collect(menu, "toggleMenuServiceItemRenderer", &mut toggles);
     toggles
         .iter()
         // "Add to liked songs", not some other toggle.
@@ -157,6 +164,17 @@ fn like_status(reply: &Value) -> Option<Rating> {
                 Rating::Indifferent
             }
         })
+}
+
+/// What the first like button under `node` says.
+fn like_button(node: &Value) -> Option<Rating> {
+    let mut buttons = Vec::new();
+    collect(node, "likeButtonRenderer", &mut buttons);
+    buttons
+        .first()
+        .and_then(|b| b.get("likeStatus"))
+        .and_then(Value::as_str)
+        .and_then(Rating::from_status)
 }
 
 /// The queue's row for the song that plays: the one marked as selected,

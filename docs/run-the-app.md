@@ -121,13 +121,19 @@ once a song plays.
   **New playlist** and your playlists under them. The button with three
   lines at the top left closes the menu to a strip of icons, and opens it
   again.
-- The arrows before the search box go back and forward.
+- The arrows before the search box go back and forward. So do the
+  mouse's side buttons, Alt+Left and Alt+Right (Cmd+[ and Cmd+] on a
+  Mac), and, as in a browser, a sideways swipe of two fingers on a
+  touchpad: an arrow comes in from the side as you swipe; let go once it
+  is white.
 - The round button at the top right is your account: **History**,
   **Settings** and **Sign out** are in its menu.
 
 **Playing**
 
 - **Click a song** to play it. The songs after it in that list play next.
+- A song you liked shows a filled thumb in its row, in every list and in
+  Up next.
 - Songs start in about a second. A song you rest the pointer on, and the top
   search result, are made ready ahead of time, so they start at once.
 - When the queue runs out, songs like the last one follow, as YouTube

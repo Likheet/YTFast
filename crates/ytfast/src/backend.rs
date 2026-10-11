@@ -616,6 +616,53 @@ type PreparedCell = Arc<OnceCell<Result<Arc<Prepared>, Failure>>>;
 /// The most songs kept ready ahead (each is a few MB).
 const READY_AHEAD: usize = 3;
 
+/// Covers as YouTube sent them (JPEG, about 30 KB at the size Home's cards
+/// ask for), up to [`PICTURE_FILES`] bytes, the one unused longest let go
+/// first. The window keeps covers as pictures only up to its budget
+/// (`images.rs`); one it let go of that shows again is decoded from here
+/// in a few milliseconds, not downloaded again. Before, each fast scroll
+/// over a long Home downloaded again every cover the scroll before had let
+/// go of, and they came in late (the owner found it lagging, 11 October
+/// 2026).
+#[derive(Default)]
+struct PictureFiles {
+    files: HashMap<String, (Arc<[u8]>, u64)>,
+    bytes: usize,
+    /// Counts the uses, to tell which file was used longest ago.
+    uses: u64,
+}
+
+/// The most memory [`PictureFiles`] takes: about 500 of Home's covers.
+const PICTURE_FILES: usize = 16 * 1024 * 1024;
+
+impl PictureFiles {
+    fn get(&mut self, url: &str) -> Option<Arc<[u8]>> {
+        self.uses += 1;
+        let (file, used) = self.files.get_mut(url)?;
+        *used = self.uses;
+        Some(Arc::clone(file))
+    }
+
+    fn keep(&mut self, url: String, file: Arc<[u8]>) {
+        self.uses += 1;
+        self.bytes += file.len();
+        if let Some((old, _)) = self.files.insert(url, (file, self.uses)) {
+            self.bytes -= old.len();
+        }
+        while self.bytes > PICTURE_FILES {
+            let oldest = self
+                .files
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(url, _)| url.clone());
+            let Some((gone, _)) = oldest.and_then(|url| self.files.remove(&url)) else {
+                break;
+            };
+            self.bytes -= gone.len();
+        }
+    }
+}
+
 struct Shared {
     events: mpsc::Sender<Event>,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -624,6 +671,12 @@ struct Shared {
     signed_in: RwLock<Option<Preparer>>,
     prepared: Mutex<(HashMap<String, PreparedCell>, VecDeque<String>)>,
     images: Semaphore,
+    /// Covers as YouTube sent them, so one the window let go of comes back
+    /// from memory ([`PictureFiles`]).
+    picture_files: std::sync::Mutex<PictureFiles>,
+    /// Covers decoded from memory: a few at a time, so a fast scroll back
+    /// over many does not take every core.
+    decodes: Semaphore,
     download: reqwest::Client,
     /// What YouTube said about songs played (likes, lyrics, related),
     /// asked once per song.
@@ -681,6 +734,8 @@ async fn serve(
         signed_in: RwLock::new(None),
         prepared: Mutex::new((HashMap::new(), VecDeque::new())),
         images: Semaphore::new(6),
+        picture_files: std::sync::Mutex::new(PictureFiles::default()),
+        decodes: Semaphore::new(4),
         download: net::download_client(),
         details: Mutex::new(HashMap::new()),
         loads: std::sync::Mutex::new(HashMap::new()),
@@ -1727,7 +1782,7 @@ async fn video(shared: &Shared, entry: u64, video_id: String) {
     answer(Ok(Some(data)));
 }
 
-fn like_state(rating: Rating) -> crate::app::LikeState {
+pub(crate) fn like_state(rating: Rating) -> crate::app::LikeState {
     match rating {
         Rating::Like => crate::app::LikeState::Liked,
         Rating::Dislike => crate::app::LikeState::Disliked,
@@ -2013,6 +2068,25 @@ async fn image(shared: &Shared, url: String) {
         ));
         return;
     }
+    // Downloaded before: decoded again from memory, at once.
+    let kept = shared
+        .picture_files
+        .lock()
+        .ok()
+        .and_then(|mut files| files.get(&url));
+    if let Some(file) = kept {
+        let Ok(_permit) = shared.decodes.acquire().await else {
+            return;
+        };
+        let side = picture_side(&url);
+        let picture =
+            tokio::task::spawn_blocking(move || decode_picture(&file, side).map(Picture::new))
+                .await
+                .ok()
+                .flatten();
+        shared.send(Event::Image(url, picture));
+        return;
+    }
     use std::sync::atomic::Ordering;
     let asked = shared.pictures_asked.fetch_add(1, Ordering::AcqRel) + 1;
     let Ok(_permit) = shared.images.acquire().await else {
@@ -2034,23 +2108,39 @@ async fn image(shared: &Shared, url: String) {
         Ok(response) => response.bytes().await.ok(),
         Err(_) => None,
     };
-    // An artist's wide picture (asked for cropped, `-p`) is drawn across
-    // the page; covers are never drawn larger than the player page's.
-    let side = if url.contains("-p-l90-rj") {
-        WIDE_IMAGE_SIDE
-    } else {
-        IMAGE_SIDE
-    };
+    let side = picture_side(&url);
     let picture = match bytes {
         Some(bytes) => {
-            tokio::task::spawn_blocking(move || decode_picture(&bytes, side).map(Picture::new))
-                .await
-                .ok()
-                .flatten()
+            let file: Arc<[u8]> = Arc::from(bytes.as_ref());
+            let decoded = {
+                let file = Arc::clone(&file);
+                tokio::task::spawn_blocking(move || decode_picture(&file, side).map(Picture::new))
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            // Kept only once it decodes: a broken one is asked for again.
+            if decoded.is_some()
+                && let Ok(mut files) = shared.picture_files.lock()
+            {
+                files.keep(url.clone(), file);
+            }
+            decoded
         }
         None => None,
     };
     shared.send(Event::Image(url, picture));
+}
+
+/// The largest side the picture at `url` is kept at: an artist's wide
+/// picture (asked for cropped, `-p`) is drawn across the page; covers are
+/// never drawn larger than the player page's.
+fn picture_side(url: &str) -> u32 {
+    if url.contains("-p-l90-rj") {
+        WIDE_IMAGE_SIDE
+    } else {
+        IMAGE_SIDE
+    }
 }
 
 fn decode_picture(bytes: &[u8], side: u32) -> Option<egui::ColorImage> {
@@ -2101,6 +2191,30 @@ mod tests {
         // Another problem is never put down to it.
         let other = failed("ERROR: Sign in to confirm you're not a bot");
         assert!(!sign_in_problem(&other, Browser::Chrome, Some(false)).contains("Full Disk"));
+    }
+
+    /// Covers' files are kept up to their budget; over it, the one used
+    /// longest ago goes first, and using one keeps it.
+    #[test]
+    fn cover_files_let_go_of_the_one_used_longest_ago() {
+        let mut files = PictureFiles::default();
+        let file = |n: u8| -> Arc<[u8]> { Arc::from(vec![n; PICTURE_FILES / 4]) };
+        files.keep("a".into(), file(1));
+        files.keep("b".into(), file(2));
+        files.keep("c".into(), file(3));
+        // "a" used again: "b" is now the one used longest ago.
+        assert_eq!(files.get("a").map(|f| f[0]), Some(1));
+        files.keep("d".into(), file(4));
+        files.keep("e".into(), file(5));
+        assert!(files.bytes <= PICTURE_FILES);
+        assert!(files.get("b").is_none());
+        for url in ["a", "c", "d", "e"] {
+            assert!(files.get(url).is_some(), "{url}");
+        }
+        // The same address again replaces its file.
+        files.keep("e".into(), file(6));
+        assert_eq!(files.get("e").map(|f| f[0]), Some(6));
+        assert_eq!(files.bytes, PICTURE_FILES);
     }
 
     #[test]

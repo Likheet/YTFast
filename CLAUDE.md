@@ -204,14 +204,24 @@ nothing then), so whatever keeps the music going belongs there, not in
   screen from somewhere new must pass through `ScriptFonts::want_for`
   (see `words` in `app.rs`), or it may show as empty boxes.
 - **Everything kept in memory has a limit** (pages 24, with Home, Library
-  and Liked Music always kept; lyrics, related, details and covers too).
-  Give any new store one: the target is about 200 MB.
+  and Liked Music always kept; lyrics, related, details and covers too:
+  64 MB of covers as pictures, 16 MB as YouTube's files). Give any new
+  store one: the target is about 200 MB.
 - **What the user chose sits on top of what YouTube said.** `App.likes`,
   `saved` and `subscribed` hold this run's choices over the page's own
   state; a late `Event::Liked` never replaces one. Changes go to YouTube
   one at a time, in order (`backend::serve`), and an `EditFailed` undoes
   what was shown only when no newer change to the same thing is on its way
-  (`App::edit_answered`); a like goes back to what it was before.
+  (`App::edit_answered`); a like goes back to what it was before. A
+  song's own like comes with its row (`Track::like`): views read
+  `App::known_like` or `App::like_of`, never `App.likes` alone, or a song
+  liked before this run shows as not liked.
+- **Sideways scrolling is offered to the page first.** A scroll area that
+  can scroll sideways takes it (egui empties `smooth_scroll_delta.x`);
+  only what is left over pulls Back or Forward (`swipe.rs`, which
+  `views::show` runs before and after the page). A new sideways scroll
+  area gets this for free; anything that reads sideways scrolling
+  without scrolling must empty it, or a swipe over it goes back.
 - **The folder on disk is `YtFast`**, not `YTFast`
   (`ProjectDirs::from("", "", "YtFast")`, in the app and the check alike).
   Renaming it would lose the helpers and download them again. Each open

@@ -511,6 +511,8 @@ pub struct App {
     styled: Option<crate::theme::Theme>,
     pub images: RefCell<Images>,
     pub scrolling: fastframe_scroll::Scrolling,
+    /// A sideways swipe going Back or Forward (`swipe.rs`).
+    pub swipe: RefCell<crate::swipe::Swipe>,
     pub controls: Option<now_playing::NowPlaying>,
     pub demo: bool,
     /// The updater (none in the demo).
@@ -785,6 +787,7 @@ impl App {
             audio,
             images: RefCell::new(Images::default()),
             scrolling: fastframe_scroll::Scrolling::default(),
+            swipe: RefCell::default(),
             controls,
             demo,
             updates: None,
@@ -1168,6 +1171,21 @@ impl App {
     /// Whether the picture at `url` did not load.
     pub fn picture_failed(&self, url: &str) -> bool {
         self.images.borrow_mut().failed(url)
+    }
+
+    /// What the account thinks of `track`, when known: as chosen in this
+    /// run, or as YouTube said of the song playing ([`Event::Liked`]), on
+    /// top of what its row said (`Track::like`).
+    pub fn known_like(&self, track: &Track) -> Option<LikeState> {
+        self.likes
+            .get(&track.video_id)
+            .copied()
+            .or_else(|| track.like.map(crate::backend::like_state))
+    }
+
+    /// [`App::known_like`], neither liked nor disliked when not known.
+    pub fn like_of(&self, track: &Track) -> LikeState {
+        self.known_like(track).unwrap_or(LikeState::Neutral)
     }
 
     /// The cover `url` behind an album's or playlist's page, once it has
@@ -3238,7 +3256,7 @@ impl App {
         };
         if let (Some(wanted), Some(entry)) = (rate, &self.playback.entry) {
             let id = entry.track.video_id.clone();
-            let next = if self.likes.get(&id) == Some(&wanted) {
+            let next = if self.like_of(&entry.track) == wanted {
                 LikeState::Neutral
             } else {
                 wanted
@@ -4090,11 +4108,17 @@ mod tests {
 
         /// A frame with the wheel turned (points, as a touchpad's) at `at`.
         fn wheel(&mut self, at: egui::Pos2, dy: f32) {
+            self.wheel_by(at, egui::vec2(0.0, dy));
+        }
+
+        /// A frame with a touchpad's two fingers moved by `delta` (points;
+        /// sideways too) at `at`.
+        fn wheel_by(&mut self, at: egui::Pos2, delta: egui::Vec2) {
             self.frame(vec![
                 egui::Event::PointerMoved(at),
                 egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
-                    delta: egui::vec2(0.0, dy),
+                    delta,
                     phase: egui::TouchPhase::Move,
                     modifiers: egui::Modifiers::NONE,
                 },
@@ -4152,6 +4176,283 @@ mod tests {
                 )
             })
             .count()
+    }
+
+    /// A long Home at the owner's window (1707 by 1019 at 150%), its covers
+    /// as large as YouTube's there (360 by 360): scrolled down to its end,
+    /// back to its top and down again, it asks for each cover once, as the
+    /// window keeps them all. With room for only 32 MB of covers it let go
+    /// of most and asked again on every pass; downloaded again, they came
+    /// in late, and the owner found such scrolls lagging.
+    #[test]
+    fn a_long_home_keeps_its_covers_when_scrolled_back_and_forth() {
+        use ytfast_core::read::{Card, CardLook, Shape, Thumb};
+        let mut h = Harness::new();
+        h.app.auth = Auth::SignedIn {
+            name: "Listener".into(),
+            handle: None,
+            photo: None,
+        };
+        h.ctx.set_pixels_per_point(1.5);
+        h.act(Action::Navigate(Route::Home));
+        h.app.load(Route::Home);
+        let load = h
+            .requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Page {
+                    route: Route::Home,
+                    load,
+                    ..
+                } => Some(load),
+                _ => None,
+            })
+            .last()
+            .expect("Home is asked for");
+        let card = |n: usize, i: usize| {
+            Item::Card(Card {
+                title: format!("Album {n}-{i}"),
+                subtitle: "Album • Artist".into(),
+                thumbnail: Some(Thumb {
+                    url: format!("https://lh3.googleusercontent.com/c{n}x{i}=w226-h226-l90-rj"),
+                    width: 226,
+                    height: 226,
+                }),
+                round: false,
+                open: None,
+                play: None,
+                podcast: None,
+                look: CardLook::default(),
+            })
+        };
+        let sections = (0..15)
+            .map(|n| Section {
+                title: format!("Shelf {n}"),
+                shape: Shape::Carousel,
+                items: (0..12).map(|i| card(n, i)).collect(),
+                ..Section::default()
+            })
+            .collect();
+        h.answer(Event::Page(
+            Route::Home,
+            load,
+            Ok(Page {
+                sections,
+                ..Page::default()
+            }),
+        ));
+        let mut asked: HashMap<String, usize> = HashMap::new();
+        let mut time = 0.0;
+        // Frames as the window draws them, the wheel turned `dy` in each,
+        // until the page stops moving; covers answered as YouTube's.
+        let mut scroll = |h: &mut Harness, asked: &mut HashMap<String, usize>, dy: f32| {
+            let (mut still, mut last) = (0, f32::NAN);
+            for _ in 0..2000 {
+                time += 1.0 / 60.0;
+                h.frame();
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1707.0, 1019.0),
+                    )),
+                    time: Some(time),
+                    events: vec![
+                        egui::Event::PointerMoved(egui::pos2(900.0, 500.0)),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, dy),
+                            phase: egui::TouchPhase::Move,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                };
+                let app = &h.app;
+                let mut output = h.ctx.run_ui(input, |ui| {
+                    crate::theme::set(app.settings.theme);
+                    app.images.borrow_mut().begin_frame(ui.ctx());
+                    views::show(app, ui);
+                });
+                output.textures_delta.clear();
+                h.app.apply_actions();
+                for request in h.requests() {
+                    match request {
+                        Request::Image(url) => {
+                            *asked.entry(url.clone()).or_default() += 1;
+                            let cover = egui::ColorImage::new(
+                                [360, 360],
+                                vec![egui::Color32::GRAY; 360 * 360],
+                            );
+                            let picture = crate::backend::Picture::new(cover);
+                            h.events.send(Event::Image(url, Some(picture))).unwrap();
+                        }
+                        Request::MoreResults { route, load } => {
+                            let none = Event::MoreSections {
+                                route,
+                                load,
+                                sections: Vec::new(),
+                                done: true,
+                            };
+                            h.events.send(none).unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+                let now = h.app.page_offset.get();
+                still = if now == last { still + 1 } else { 0 };
+                last = now;
+                if still >= 30 {
+                    break;
+                }
+            }
+        };
+        scroll(&mut h, &mut asked, -60.0);
+        let end = h.app.page_offset.get();
+        scroll(&mut h, &mut asked, 600.0);
+        assert!(h.app.page_offset.get() < 1.0, "back at the top");
+        scroll(&mut h, &mut asked, -300.0);
+        assert!(
+            (h.app.page_offset.get() - end).abs() < 1.0,
+            "at the end again"
+        );
+        // More covers were shown than 32 MB holds...
+        let covers = asked.len();
+        assert!(covers * 360 * 360 * 4 > 32 * 1024 * 1024, "{covers} covers");
+        // ...and none was asked for twice.
+        let again = asked.values().filter(|n| **n > 1).count();
+        assert_eq!(again, 0, "{again} of {covers} covers asked for again");
+    }
+
+    /// A sideways swipe of two fingers on a touchpad goes Back (swiped
+    /// right) and Forward (swiped left), as in a browser, once let go
+    /// full, an arrow showing how far meanwhile; a wheel turned sideways by
+    /// Shift goes nowhere.
+    #[test]
+    fn a_sideways_swipe_goes_back_and_forward() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        long_home(&mut w);
+        w.settle();
+        let route = Route::browse("VLPLx".into(), None);
+        w.h.act(Action::Navigate(route.clone()));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("the page is asked for");
+        let page = Page {
+            sections: vec![Section {
+                items: ["a", "b", "c"].map(|v| Item::Track(song(v))).to_vec(),
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(route.clone(), load, Ok(page)));
+        w.settle();
+        let at = egui::pos2(700.0, 400.0);
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(60.0, 0.0));
+        }
+        // Not while the fingers are on the pad: the arrow shows how far.
+        assert_eq!(w.h.app.route, route);
+        assert!(w.shows("Swiping back"));
+        // Let go: Back.
+        w.settle();
+        assert_eq!(w.h.app.route, Route::Home);
+        assert!(!w.shows("Swiping back"));
+        // Swiped left: Forward again.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(-60.0, 0.0));
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, route);
+        // The wheel turned sideways by Shift: nowhere.
+        for _ in 0..6 {
+            w.frame(vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 60.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::SHIFT,
+                },
+            ]);
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, route);
+    }
+
+    /// A swipe that starts over a shelf that can scroll that way is the
+    /// shelf's: it scrolls, and the page stays. At the shelf's end, a new
+    /// swipe goes on to the page, as in a browser.
+    #[test]
+    fn a_swipe_over_a_shelf_scrolls_the_shelf() {
+        use ytfast_core::read::{Card, CardLook, Shape, Thumb};
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        long_home(&mut w);
+        w.settle();
+        w.h.act(Action::Navigate(Route::Explore));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("Explore is asked for");
+        let cards = (0..12)
+            .map(|i| {
+                Item::Card(Card {
+                    title: format!("Card {i}"),
+                    subtitle: "Album".into(),
+                    // Albums' covers (without, they are Explore's buttons).
+                    thumbnail: Some(Thumb {
+                        url: format!("https://example.com/c{i}.jpg"),
+                        width: 226,
+                        height: 226,
+                    }),
+                    round: false,
+                    open: None,
+                    play: None,
+                    podcast: None,
+                    look: CardLook::default(),
+                })
+            })
+            .collect();
+        let page = Page {
+            sections: vec![Section {
+                title: "A shelf".into(),
+                shape: Shape::Carousel,
+                items: cards,
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(Route::Explore, load, Ok(page)));
+        w.settle();
+        let card = w.find("Card 3", 0);
+        let at = card.center();
+        // Swiped left over the shelf: it scrolls on.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(-60.0, 0.0));
+        }
+        w.settle();
+        assert!(w.find("Card 3", 0).left() < card.left() - 200.0);
+        // Swiped right over it: it scrolls back, and the page stays.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(60.0, 0.0));
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, Route::Explore);
+        assert!((w.find("Card 3", 0).left() - card.left()).abs() < 1.0);
+        // At its start now, a new swipe right goes Back.
+        for _ in 0..6 {
+            w.wheel_by(at, egui::vec2(60.0, 0.0));
+        }
+        w.settle();
+        assert_eq!(w.h.app.route, Route::Home);
     }
 
     /// Home's next shelves are asked for three screens before its end
@@ -4407,6 +4708,102 @@ mod tests {
         w.click(tick.center());
         assert!(w.h.app.selected.is_empty());
         crate::theme::set(crate::theme::Theme::YouTubeMusic);
+    }
+
+    /// Songs YouTube says are liked keep their filled thumb shown
+    /// ("Liked") in their rows without the pointer, on a playlist's page
+    /// and in Up next, in every look; what is chosen in this run wins over
+    /// what the row said; the menu and the like button start from it.
+    #[test]
+    fn liked_songs_show_their_thumb_in_their_rows() {
+        use crate::theme::Theme;
+        use ytfast_core::read::Rating;
+        let rated = |id: &str, like: Option<Rating>| Track { like, ..song(id) };
+        let tracks = vec![
+            rated("a", Some(Rating::Like)),
+            rated("b", Some(Rating::Indifferent)),
+            rated("c", None),
+            rated("d", Some(Rating::Like)),
+        ];
+        // The rows named `row` hold a "Liked" thumb.
+        let marked = |w: &Window| -> Vec<String> {
+            let mut rows: Vec<String> = w
+                .named
+                .iter()
+                .filter(|(name, rect)| {
+                    name.len() == 1
+                        && w.named
+                            .iter()
+                            .any(|(n, mark)| n == "Liked" && rect.contains_rect(*mark))
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            rows.sort();
+            rows.dedup();
+            rows
+        };
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            let route = Route::browse("VLPLx".into(), None);
+            w.h.act(Action::Navigate(route.clone()));
+            let load =
+                w.h.requests()
+                    .into_iter()
+                    .find_map(|r| match r {
+                        Request::Page { load, .. } => Some(load),
+                        _ => None,
+                    })
+                    .expect("the page is asked for");
+            let page = Page {
+                sections: vec![Section {
+                    items: tracks.iter().cloned().map(Item::Track).collect(),
+                    ..Section::default()
+                }],
+                ..Page::default()
+            };
+            w.h.answer(Event::Page(route, load, Ok(page)));
+            w.point(egui::pos2(5.0, 5.0));
+            w.settle();
+            assert_eq!(marked(&w), ["A", "D"], "{theme:?}");
+            // Chosen in this run: A no longer, B now.
+            w.h.act(Action::Rate("a".into(), LikeState::Neutral));
+            w.h.act(Action::Rate("b".into(), LikeState::Liked));
+            w.settle();
+            assert_eq!(marked(&w), ["B", "D"], "{theme:?}");
+            // D's menu offers to take it out of Liked Music...
+            let d = w.find("D", 0);
+            w.right_click(d.center());
+            assert!(w.shows("Remove from liked songs"), "{theme:?}");
+            // Closed by a click on the empty page under the rows.
+            w.click(egui::pos2(700.0, 640.0));
+            // ...and its like button, under the pointer, takes the like
+            // back.
+            w.point(d.center());
+            w.frame(Vec::new());
+            let like = w.find("Like", 0);
+            assert!(d.contains_rect(like), "{theme:?}: {d:?} {like:?}");
+            w.click(like.center());
+            assert_eq!(w.h.app.likes.get("d"), Some(&LikeState::Neutral));
+
+            // Up next, from the rows as they came.
+            let mut w = Window::new(theme);
+            w.h.act(Action::PlayTracks {
+                tracks: tracks.clone(),
+                start: 1,
+                source: None,
+            });
+            w.h.ready();
+            w.h.app.now_playing = true;
+            w.h.app.np_tab = NpTab::UpNext;
+            w.point(egui::pos2(5.0, 5.0));
+            w.settle();
+            assert_eq!(marked(&w), ["A", "D"], "{theme:?}: Up next");
+            crate::theme::set(Theme::YouTubeMusic);
+        }
     }
 
     /// In every theme, a song the pointer rests on (0.35 s) is found ahead

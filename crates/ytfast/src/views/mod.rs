@@ -61,6 +61,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
             .show(ui, |ui| signin::show(app, ui));
         return;
     }
+    // A sideways swipe: what the window is offered, before any of it
+    // scrolls.
+    app.swipe.borrow_mut().before(ui.ctx());
     // Panels first, in the order they take their space: the two bars span
     // the window, the menu sits between them, and the page fills the rest.
     if app.playback.entry.is_some() {
@@ -119,6 +122,16 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 ui.ctx()
                     .layer_painter(egui::LayerId::background())
                     .set(wash_slot, egui::Shape::Vec(behind));
+            }
+            // What the page left of a sideways swipe pulls Back or
+            // Forward, as in a browser; the arrow shows how far.
+            let open = !app.now_playing && !app.fullscreen && app.dialog.borrow().is_none();
+            let mut swipe = app.swipe.borrow_mut();
+            let way = swipe.after(ui.ctx(), open, app.can_go_back(), app.can_go_forward());
+            match way {
+                Some(crate::swipe::Way::Back) => app.act(crate::app::Action::Back),
+                Some(crate::swipe::Way::Forward) => app.act(crate::app::Action::Forward),
+                None => swipe.paint(ui, ui.max_rect()),
             }
         });
     notice(app, ui);
