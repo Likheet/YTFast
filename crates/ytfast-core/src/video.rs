@@ -1062,6 +1062,20 @@ mod tests {
         }
     }
 
+    /// When the picture after the one shown at `clock` is due, once the
+    /// thread has decoded it: just after a picture shows, the next may
+    /// still be on its way (on a slow machine, often).
+    fn next_after(video: &Video, clock: f64) -> f64 {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(next) = video.at(clock).next {
+                return next;
+            }
+            assert!(Instant::now() < deadline, "at {clock}: no next picture");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     #[test]
     fn reads_the_fragments_index_and_samples() {
         let bytes = video_file(3, 5, true);
@@ -1110,11 +1124,10 @@ mod tests {
         wait_for(&video, 0.0, 0);
         // As the music goes on, the picture due: 0.5 s is the 12th.
         wait_for(&video, 0.5, 12);
-        let shown = video.at(0.5);
-        assert!(
-            shown.next.is_some_and(|n| (n - 0.52).abs() < 1e-9),
-            "{shown:?}"
-        );
+        // And the next, the 13th, due at 0.52.
+        let next = next_after(&video, 0.5);
+        assert!((next - 0.52).abs() < 1e-9, "{next}");
+        assert_eq!(video.at(0.5).picture.as_deref().map(number), Some(12));
         // A jump on, into the last fragment.
         wait_for(&video, 1.3, 32);
         // A jump back.
@@ -1162,12 +1175,15 @@ mod tests {
     fn a_resting_video_decodes_nothing_more() {
         let video = Video::start_with(SongData::complete(video_file(4, 10, true)), numbers());
         wait_for(&video, 0.0, 0);
+        let ready = || video.shared.lock().ready.len();
         video.rest();
-        std::thread::sleep(Duration::from_millis(50));
-        let ready = video.shared.lock().ready.len();
-        assert!(ready <= AHEAD, "{ready}");
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(video.shared.lock().ready.len(), ready);
+        let rested = ready();
+        std::thread::sleep(Duration::from_millis(300));
+        // At most the picture being decoded when it rested, however slow
+        // the machine.
+        let later = ready();
+        assert!(later <= rested + 1, "{rested} then {later}");
+        assert!(later <= AHEAD, "{later}");
     }
 
     /// A real video, as YouTube serves it (H.264 in fragmented MP4, with
