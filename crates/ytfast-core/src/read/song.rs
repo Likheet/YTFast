@@ -8,7 +8,7 @@ use super::{PAGE_TYPE, collect, find_key, text, toggle_on};
 use crate::lyrics::{LyricLine, Lyrics, plain_lines};
 
 /// The account's rating of a song: thumbs up, thumbs down, or neither.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Rating {
     Like,
     Dislike,

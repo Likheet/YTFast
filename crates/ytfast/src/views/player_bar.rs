@@ -276,11 +276,11 @@ fn left_group(app: &App, ui: &mut egui::Ui, bar: Rect) -> f32 {
     }
     // "0:00 / 4:38", 12/400 #aaa, 8 after next (and its margin of 4).
     let mut x = next.right() + 4.0 + 8.0;
-    if app.audio_status.length > 0.0 {
+    if app.shown_length() > 0.0 {
         let time = format!(
             "{} / {}",
             theme::clock(app.shown_position()),
-            theme::clock(app.audio_status.length)
+            theme::clock(app.shown_length())
         );
         let at = ui.painter().text(
             pos2(x, y),
@@ -329,7 +329,7 @@ fn premium_times(app: &App, ui: &mut egui::Ui, track: Rect) -> bool {
             .on_hover_text(problem);
         return true;
     }
-    let length = app.audio_status.length;
+    let length = app.shown_length();
     let (played, mut total) = if length > 0.0 {
         (theme::clock(app.shown_position()), theme::clock(length))
     } else {
@@ -855,7 +855,7 @@ fn progress_line(app: &App, ui: &mut egui::Ui, bar: Rect) {
     } else {
         (red, pink)
     };
-    let length = app.audio_status.length.max(0.0);
+    let length = app.shown_length().max(0.0);
     let fraction = if length > 0.0 {
         (app.shown_position() / length).clamp(0.0, 1.0) as f32
     } else {
