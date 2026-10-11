@@ -4,8 +4,10 @@
 pub const TRANSLATE_TO: &str = "en";
 
 /// How much earlier than the song's position a word starts to light, in
-/// seconds: the eye needs a moment to follow.
-const WORD_LEAD: f64 = 0.1;
+/// seconds: what is drawn is seen a moment later (the next picture the
+/// screen shows, and the 0.04 s until the window is drawn again), so it
+/// lights as it is heard.
+const WORD_LEAD: f64 = 0.05;
 /// How much earlier a line lights: a little, so it lights as it is sung,
 /// not after.
 const LINE_LEAD: f64 = 0.2;
@@ -243,7 +245,7 @@ mod tests {
             to: 1,
         };
         assert_eq!(word.sung(1.0), 0.0);
-        assert!((word.sung(2.4) - 0.5).abs() < 1e-6);
+        assert!((word.sung(2.45) - 0.5).abs() < 1e-6);
         assert_eq!(word.sung(3.5), 1.0);
         // A word without length lights at once.
         let instant = Word { end: 2.0, ..word };
@@ -284,8 +286,8 @@ mod tests {
         assert!(close(lyrics.next_change(0.0), 0.8));
         // A word lighting: a frame's time.
         assert_eq!(lyrics.next_change(1.2), Some(WORD_FRAME));
-        // Between two words: when the next starts (0.1 s early).
-        assert!(close(lyrics.next_change(1.6), 0.3));
+        // Between two words: when the next starts (0.05 s early).
+        assert!(close(lyrics.next_change(1.6), 0.35));
         // The line sung: when the next line lights.
         assert!(close(lyrics.next_change(3.0), 2.8));
         // After the last line: nothing more.

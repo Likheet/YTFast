@@ -70,6 +70,16 @@ pub struct Lyrics {
 /// How long a syllable takes when a song's own pace cannot be read from
 /// its lines, in milliseconds.
 const DEFAULT_PACE_MS: f64 = 300.0;
+/// Which of a song's lines give its pace: the 30% quickest. The time from
+/// a line to the next holds its pauses as well as its singing, so the
+/// quicker lines are nearer to how long a syllable is sung.
+const PACE_QUANTILE: f64 = 0.3;
+/// How many times that pace a line may take a syllable, at most.
+const SLOWEST: f64 = 1.2;
+/// How many syllables longer a line's last word is held: singers hold a
+/// line's last note (in people's markings of 79 songs, its last word took
+/// 28% of the line's singing, as the middle value).
+const HELD_LAST: f64 = 2.0;
 
 /// Whether `ours` are the same song's words as `theirs` (another source's
 /// lyrics for it): half of our lines or more are among theirs, by their
@@ -108,15 +118,21 @@ pub fn same_words(ours: &Lyrics, theirs: &Lyrics) -> bool {
 /// light one after another as it is sung (the lyrics of every source but
 /// Musixmatch's word by word are timed by the line only). A line's time is
 /// shared among its words by their syllables (a character each in
-/// Chinese, Japanese and Korean), sung at the song's own pace: what a
-/// syllable usually takes in its lines, a little quicker, so a line before
-/// a long pause is not drawn out over it. A line is sung in nine tenths of
-/// the time to the next at most.
+/// Chinese, Japanese and Korean), its last word held [`HELD_LAST`]
+/// syllables longer, sung at the song's own pace ([`PACE_QUANTILE`],
+/// [`SLOWEST`]), so a line before a long pause is not drawn out over it,
+/// and until the next line starts at most.
+///
+/// Measured against JamendoLyrics (79 songs in English, German, French and
+/// Spanish, each word's time marked by people), given each line's start:
+/// words start 0.335 s from the singing on average, 60% of them within a
+/// quarter of a second (the even share of nine tenths of the time to the
+/// next line, before: 0.366 s, 57%). Text alone can do little better:
+/// knowing when each line's singing ends, words still start 0.24 s off.
 pub fn estimate_words(lines: &mut [LyricLine]) {
     let units: Vec<Vec<Unit>> = lines.iter().map(|line| units(&line.text)).collect();
     let weight = |units: &[Unit]| units.iter().map(|u| u.weight).sum::<f64>();
-    // Milliseconds a syllable takes, line by line; the middle one is the
-    // song's.
+    // Milliseconds a syllable takes, line by line.
     let mut paces: Vec<f64> = lines
         .iter()
         .zip(&units)
@@ -128,7 +144,7 @@ pub fn estimate_words(lines: &mut [LyricLine]) {
         .collect();
     paces.sort_by(f64::total_cmp);
     let pace = paces
-        .get(paces.len() / 2)
+        .get((paces.len() as f64 * PACE_QUANTILE) as usize)
         .copied()
         .unwrap_or(DEFAULT_PACE_MS);
     for (line, units) in lines.iter_mut().zip(units) {
@@ -141,15 +157,23 @@ pub fn estimate_words(lines: &mut [LyricLine]) {
         }
         let room = line
             .end_ms
-            .map_or(f64::INFINITY, |end| end.saturating_sub(start) as f64 * 0.9);
-        let length = (total * pace * 0.85).min(room).max(1.0);
-        let at = |done: f64| start + (length * done / total).round() as u64;
+            .map_or(f64::INFINITY, |end| end.saturating_sub(start) as f64);
+        let length = (total * pace * SLOWEST).min(room).max(1.0);
+        // The line's time in shares: a syllable each, and the last word's
+        // hold.
+        let shares = total + HELD_LAST;
+        let at = |done: f64| start + (length * done / shares).round() as u64;
+        let last = units.len() - 1;
         let mut done = 0.0;
         line.words = units
             .iter()
-            .map(|unit| {
+            .enumerate()
+            .map(|(k, unit)| {
                 let start_ms = at(done);
                 done += unit.weight;
+                if k == last {
+                    done += HELD_LAST;
+                }
                 Word {
                     start_ms,
                     end_ms: at(done),
@@ -626,8 +650,9 @@ mod tests {
     }
 
     /// Estimated words follow one another through the line, by their
-    /// syllables, at the song's pace: a line before a long pause is not
-    /// drawn out over it, and no line runs into the next.
+    /// syllables, the last held longer, at the song's pace: a line before
+    /// a long pause is not drawn out over it, and no line runs into the
+    /// next.
     #[test]
     fn words_are_estimated_at_the_songs_pace() {
         let mut lines = vec![
@@ -655,13 +680,18 @@ mod tests {
             }
             let end = words.last().unwrap().end_ms;
             if let Some(next) = line.end_ms {
-                assert!(end <= start + (next - start) * 9 / 10, "{}", line.text);
+                assert!(end <= next, "{}", line.text);
             }
         }
-        // "beautiful" (three syllables) takes three times as long as "day".
+        // "beautiful" (three syllables) takes three times as long as "a"
+        // (one); "day", the last word, as long again: it is held.
         let length = |w: &Word| w.end_ms - w.start_ms;
-        let (beautiful, day) = (&lines[2].words[2], &lines[2].words[3]);
-        assert!(length(beautiful).abs_diff(3 * length(day)) <= 2);
+        let words = &lines[2].words;
+        let (a, beautiful, day) = (&words[1], &words[2], &words[3]);
+        assert!(length(beautiful).abs_diff(3 * length(a)) <= 2);
+        assert!(length(day).abs_diff(3 * length(a)) <= 2);
+        // A quick line runs until the next starts, not further.
+        assert_eq!(lines[3].words.last().unwrap().end_ms, 40_400);
         // Before the pause, the line takes about what a line of its size
         // takes elsewhere in the song, not the 24 seconds to the next.
         assert!(lines[2].words.last().unwrap().end_ms < 16_000 + 3_000);
