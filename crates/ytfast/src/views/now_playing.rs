@@ -233,9 +233,17 @@ fn premium_cover(app: &App, ui: &mut egui::Ui, area: Rect, entry: &Entry) -> Rec
     cover_click(app, ui, shown);
     let highest = if art.top() <= place.top() { art } else { place };
     video::switch(app, ui, video::row_above(highest));
+    // The words under what shows: a fan's video's still is wide in the
+    // cover's square.
+    let visible = if video::shown(app) {
+        place
+    } else {
+        widgets::shape_in(art, entry.track.thumbnail.as_ref())
+    };
+    let width = art.width().max(visible.width());
     let words = Rect::from_min_size(
-        pos2(shown.left(), shown.bottom() + 24.0),
-        vec2(shown.width(), 80.0),
+        pos2(art.center().x - width / 2.0, visible.bottom() + 24.0),
+        vec2(width, 80.0),
     );
     let mut details = ui.new_child(
         UiBuilder::new()
