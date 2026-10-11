@@ -18,40 +18,17 @@ use crate::theme::{self, Icon, PALETTE};
 use crate::views::widgets::Row;
 use crate::views::{page, queue_panel, video, widgets};
 
-/// The theme's song rows: an album's and a playlist's 56 high, the cover
-/// (or the number) 38 with 24 after it; an artist's top songs 54 high;
-/// Up next 58 high and 8 apart, covers 42; no hairlines between rows
-/// (`--ytmusic-list-item-height: 54px`, measured with the theme on).
+/// The theme's song rows: the same sizes and places as YouTube Music's (so
+/// nothing moves when the look changes), covers r 4 and no hairlines
+/// between rows.
 pub fn row(row: Row) -> Row {
-    if row == Row::LIST || row == Row::PLAYLIST {
+    if row == Row::LIST || row == Row::PLAYLIST || row == Row::QUEUE {
         Row {
-            height: 56.0,
-            gap: 0.0,
-            art: 38.0,
-            corner: 4,
-            art_gap: 24.0,
-            pad: 8.0,
-            text_gap: 4.0,
-            ..row
-        }
-    } else if row == Row::SHELF {
-        Row {
-            height: 54.0,
-            gap: 0.0,
-            art: 38.0,
-            line: false,
-            ..row
-        }
-    } else if row == Row::QUEUE {
-        Row {
-            height: 58.0,
-            gap: 8.0,
-            art: 42.0,
             corner: 4,
             line: false,
             ..row
         }
-    } else if row == Row::SEARCH_ONLY {
+    } else if row == Row::SHELF || row == Row::SEARCH_ONLY {
         Row { line: false, ..row }
     } else {
         row
@@ -330,28 +307,30 @@ pub fn player_page(app: &App, ui: &mut egui::Ui) {
             .animate_bool_with_time(egui::Id::new("player-page-open"), app.now_playing, 0.3);
     ui.set_opacity(open.max(0.0));
 
-    // Full screen: the shared places, and no limit but the room's.
-    let (main, panel) = if app.fullscreen {
-        super::now_playing::fullscreen_places(area)
-    } else {
-        layout(ui.ctx().content_rect().width(), area)
-    };
-    let largest = if app.fullscreen { f32::INFINITY } else { 400.0 };
+    // The same places as every look's: the Song and Video switch at the
+    // top, and under it the cover (as large as YouTube Music's; any in full
+    // screen) or the video in its place, with the theme's corners and
+    // shadow.
+    let places = super::now_playing::places(ui.ctx().content_rect().width(), area, app.fullscreen);
+    let panel = places.panel;
+    let largest = if app.fullscreen { f32::INFINITY } else { 800.0 };
     let corners = CornerRadius::same(dynamic::RADIUS_ART_LG);
-    // The Song and Video switch over the cover, or in the video mode over
-    // the video in its place (16:9, at most 400 high).
+    video::switch(app, ui, places.switch);
     if video::shown(app) {
-        let (row, place) = video::stack(main, video::size_in(main, f32::INFINITY, largest));
-        video::switch(app, ui, row);
+        let place = super::now_playing::video_in(places.room);
         ui.painter().add(SHADOW.as_shape(place, corners));
         video::paint(app, ui, place, corners);
         cover_click(app, ui, place);
     } else {
-        let (row, art) = cover_in(main, largest);
-        video::switch(app, ui, row);
-        ui.painter().add(SHADOW.as_shape(art, corners));
-        ui.painter().rect_filled(art, corners, PALETTE.thumb);
-        widgets::picture(app, ui, art, entry.track.thumbnail.as_ref(), corners);
+        // A fan's video's still shows whole in the square, its shadow
+        // under the picture.
+        let art = super::now_playing::cover_in(places.room, largest);
+        let thumb = entry.track.thumbnail.as_ref();
+        let place = widgets::shape_in(art, thumb);
+        ui.painter().add(SHADOW.as_shape(place, corners));
+        if !widgets::big_picture(app, ui, art, thumb, corners) {
+            ui.painter().rect_filled(place, corners, PALETTE.thumb);
+        }
         cover_click(app, ui, art);
         video::note(app, ui, art);
     }
@@ -368,46 +347,6 @@ pub fn player_page(app: &App, ui: &mut egui::Ui) {
         NpTab::Lyrics => lyrics(app, &mut ui, entry),
         NpTab::Related => related(app, &mut ui, entry),
     }
-}
-
-/// YouTube Music's places on the player page, by the window's width (the
-/// space above, at the sides, between the cover and the panel, and the
-/// panel's share, at most 800). Returns the room left of the panel (for
-/// the cover, [`cover_in`]) and the panel.
-fn layout(window: f32, area: Rect) -> (Rect, Rect) {
-    let (top, side, gap, share) = if window >= 1800.0 {
-        (64.0, 96.0, 96.0, 0.36)
-    } else if window >= 1578.0 {
-        (48.0, 64.0, 64.0, 0.36)
-    } else if window >= 1364.0 {
-        (40.0, 56.0, 56.0, 0.36)
-    } else if window >= 1150.0 {
-        (32.0, 56.0, 56.0, 0.36)
-    } else {
-        (24.0, 48.0, 48.0, 0.40)
-    };
-    let inner = Rect::from_min_max(
-        pos2(area.left() + side, area.top() + top),
-        pos2(area.right() - side, area.bottom()),
-    );
-    let panel_width = (inner.width() * share).min(800.0);
-    let panel = Rect::from_min_max(pos2(inner.right() - panel_width, inner.top()), inner.max);
-    let main = Rect::from_min_max(
-        inner.min,
-        pos2((panel.left() - gap).max(inner.left()), inner.bottom() - top),
-    );
-    (main, panel)
-}
-
-/// The Song and Video switch's row and the cover under it, square and at
-/// most `largest` (400, `--album-art-size`; any in full screen), together
-/// centred in `main`.
-fn cover_in(main: Rect, largest: f32) -> (Rect, Rect) {
-    let length = main
-        .width()
-        .min(main.height() - video::SWITCH_ROOM)
-        .clamp(0.0, largest);
-    video::stack(main, Vec2::splat(length))
 }
 
 /// A click on the cover pauses and plays again, and shows what it did: a
@@ -820,16 +759,35 @@ fn related(app: &App, ui: &mut egui::Ui, entry: &Entry) {
 mod tests {
     use super::*;
 
+    /// The theme's rows are YouTube Music's sizes in the theme's own look
+    /// (covers r 4, no hairlines), so nothing moves when the look changes.
     #[test]
-    fn rows_are_the_themes_and_stay_so() {
+    fn rows_keep_their_places_in_the_themes_look() {
         crate::theme::set(crate::theme::Theme::DynamicBackground);
-        let list = Row::LIST.themed();
-        assert_eq!((list.height, list.gap, list.art), (56.0, 0.0, 38.0));
-        // Theming twice changes nothing (lists theme their rows, and each
-        // row again).
-        assert_eq!(list.themed(), list);
+        for plain in [
+            Row::LIST,
+            Row::PLAYLIST,
+            Row::QUEUE,
+            Row::SHELF,
+            Row::SEARCH,
+        ] {
+            let themed = plain.themed();
+            assert_eq!(
+                (
+                    themed.height,
+                    themed.gap,
+                    themed.art,
+                    themed.art_gap,
+                    themed.pad
+                ),
+                (plain.height, plain.gap, plain.art, plain.art_gap, plain.pad)
+            );
+            // Theming twice changes nothing (lists theme their rows, and
+            // each row again).
+            assert_eq!(themed.themed(), themed);
+        }
         assert!(!Row::QUEUE.themed().line && !Row::SHELF.themed().line);
-        assert_eq!(Row::QUEUE.themed().height + Row::QUEUE.themed().gap, 66.0);
+        assert_eq!(Row::LIST.themed().corner, 4);
         crate::theme::set(crate::theme::Theme::YouTubeMusic);
         assert_eq!(Row::LIST.themed(), Row::LIST);
     }
@@ -842,12 +800,12 @@ mod tests {
             (1920.0, 1680.0, 1000.0),
         ] {
             let area = Rect::from_min_size(pos2(240.0, 64.0), vec2(width, height));
-            let (main, panel) = layout(window, area);
-            let (row, art) = cover_in(main, 400.0);
-            assert!(area.contains_rect(art) && area.contains_rect(panel));
-            assert!(area.contains_rect(row));
-            assert!(art.right() + 24.0 <= panel.left());
-            assert!(art.width() <= 400.0 && (art.width() - art.height()).abs() < 0.01);
+            let places = super::super::now_playing::places(window, area, false);
+            let art = super::super::now_playing::cover_in(places.room, 800.0);
+            assert!(area.contains_rect(art) && area.contains_rect(places.panel));
+            assert!(area.contains_rect(places.switch));
+            assert!(art.right() + 24.0 <= places.panel.left());
+            assert!((art.width() - art.height()).abs() < 0.01);
         }
     }
 }

@@ -1151,7 +1151,8 @@ mod tests {
                 handle: Some("@samplelistener".into()),
                 photo: Some(Thumb {
                     url: "https://yt3.ggpht.com/sample".into(),
-                    width: 88
+                    width: 88,
+                    height: 88,
                 })
             })
         );

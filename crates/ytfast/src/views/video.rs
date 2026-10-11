@@ -1,6 +1,7 @@
 //! The video mode on the player page, as YouTube Music's Song and Video
-//! switch: the switch above the cover, and the song's music video in the
-//! cover's place, 16:9, as large as the cover's room allows. The video
+//! switch: the switch at the top of the cover's room (always at the same
+//! height, `now_playing::places`), and the song's music video in the
+//! cover's place, 16:9, as large as the room allows. The video
 //! follows the music ([`App::clock`]): the window is drawn again when its
 //! next picture is due, and only while the music plays.
 
@@ -38,38 +39,6 @@ pub fn shown(app: &App) -> bool {
             app.playback.state,
             PlayState::Preparing | PlayState::Playing
         )
-}
-
-/// The video's size in `room` under the switch: 16:9, at most `widest`
-/// wide and `tallest` high.
-pub fn size_in(room: Rect, widest: f32, tallest: f32) -> Vec2 {
-    let width = room
-        .width()
-        .min((room.height() - SWITCH_ROOM).max(0.0) * 16.0 / 9.0)
-        .min(widest)
-        .min(tallest * 16.0 / 9.0)
-        .max(0.0);
-    vec2(width, width * 9.0 / 16.0)
-}
-
-/// The switch's row and, under it, a picture of `size`, together centred
-/// in `room`.
-pub fn stack(room: Rect, size: Vec2) -> (Rect, Rect) {
-    let top = room.center().y - (SWITCH_ROOM + size.y) / 2.0;
-    let row = Rect::from_min_size(pos2(room.left(), top), vec2(room.width(), SWITCH_HEIGHT));
-    let picture = Rect::from_min_size(
-        pos2(room.center().x - size.x / 2.0, top + SWITCH_ROOM),
-        size,
-    );
-    (row, picture)
-}
-
-/// The switch's row over `picture` (the cover or the video).
-pub fn row_above(picture: Rect) -> Rect {
-    Rect::from_min_size(
-        pos2(picture.left(), picture.top() - SWITCH_ROOM),
-        vec2(picture.width(), SWITCH_HEIGHT),
-    )
 }
 
 /// The Song and Video switch, centred in `row`: a capsule 36 high of
@@ -298,28 +267,6 @@ fn stand_in(ui: &egui::Ui, rect: Rect, clock: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_video_is_16_by_9_under_the_switch_and_inside_its_room() {
-        for (width, height) in [
-            (692.0, 620.0),
-            (566.0, 632.0),
-            (1200.0, 500.0),
-            (300.0, 900.0),
-        ] {
-            let room = Rect::from_min_size(pos2(56.0, 96.0), vec2(width, height));
-            let size = size_in(room, 1280.0, 900.0);
-            assert!((size.x / size.y - 16.0 / 9.0).abs() < 0.001);
-            let (row, picture) = stack(room, size);
-            assert!(room.contains_rect(row), "{width} by {height}");
-            assert!(
-                room.contains_rect(picture.shrink(0.01)),
-                "{width} by {height}"
-            );
-            assert!((picture.top() - row.bottom() - 16.0).abs() < 0.01);
-            assert!((picture.center().x - room.center().x).abs() < 0.01);
-        }
-    }
 
     #[test]
     fn a_video_not_16_by_9_shows_whole() {

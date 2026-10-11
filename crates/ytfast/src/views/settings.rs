@@ -1,5 +1,6 @@
 //! YTFast's settings: a few switches, the account, and where problems are
-//! noted.
+//! noted. Every look puts each setting in the same place (Premium draws a
+//! glass card behind each, in the room between them).
 
 use egui::{Align, Layout, Rect, UiBuilder, pos2, vec2};
 
@@ -12,8 +13,8 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             // One column in the middle of the page, as much room either
-            // side of it: at most 640 wide (Premium's cards 760).
-            let most = if theme::premium() { 760.0 } else { 640.0 };
+            // side of it: at most 640 wide.
+            let most = 640.0;
             let full = ui.max_rect();
             // At least 24 clear of the menu and the window's edge.
             let width = (full.width() - 48.0).clamp(0.0, most);
@@ -35,15 +36,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
 
 /// Everything Settings shows, from its title down.
 fn contents(app: &App, ui: &mut egui::Ui) {
-    // Premium: a larger title, and each setting on a card.
-    let (above, size, below) = if theme::premium() {
-        (32.0, 36.0, 24.0)
-    } else {
-        (20.0, 30.0, 18.0)
-    };
-    ui.add_space(above);
-    theme::label(ui, "Settings", theme::bold(size), PALETTE.text);
-    ui.add_space(below);
+    ui.add_space(20.0);
+    theme::label(ui, "Settings", theme::bold(30.0), PALETTE.text);
+    ui.add_space(18.0);
 
     heading(ui, "Playback");
     switch(
@@ -148,24 +143,26 @@ fn text(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// A setting's row; on a glass card in the Premium theme (white@0.05, a
-/// white@0.06 edge, r 12, 16 in), so the page's colours show through.
-/// Returns its rectangle.
+/// A setting's row, 12 above the next. Premium: on a glass card (white@0.05,
+/// a white@0.06 edge, r 12) reaching 12 past it at the sides and 4 into the
+/// room above and below, so the page's colours show through and the row
+/// stays where it is in every look. Returns its rectangle.
 fn row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
-    if !theme::premium() {
-        let rect = ui.horizontal(add).response.rect;
-        ui.add_space(12.0);
-        return rect;
+    let card = theme::premium().then(|| ui.painter().add(egui::Shape::Noop));
+    let rect = ui.horizontal(add).response.rect;
+    if let Some(card) = card {
+        ui.painter().set(
+            card,
+            egui::epaint::RectShape::new(
+                rect.expand2(vec2(12.0, 4.0)),
+                egui::CornerRadius::same(12),
+                egui::Color32::from_white_alpha(13),
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(16)),
+                egui::StrokeKind::Inside,
+            ),
+        );
     }
-    let rect = egui::Frame::new()
-        .fill(egui::Color32::from_white_alpha(13))
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(16)))
-        .corner_radius(egui::CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(16))
-        .show(ui, |ui| ui.horizontal(add))
-        .response
-        .rect;
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     rect
 }
 
@@ -231,34 +228,39 @@ fn theme_choice(app: &App, ui: &mut egui::Ui, choice: Theme) {
     if response.clicked() && !chosen {
         app.act(Action::SetTheme(choice));
     }
-    // Dynamic Background's own switch, under it while it is worn.
-    if choice == Theme::DynamicBackground && chosen {
-        switch(
-            app,
-            ui,
-            "Moving background",
-            "The song's colours drift slowly while it plays. Off, they stay still, and YTFast draws the window less often.",
-            app.settings.moving_background,
-            Setting::MovingBackground,
-        );
+    // Dynamic Background's own switch, under it: in every look, so nothing
+    // under it moves, but only to be used while that look is worn.
+    if choice == Theme::DynamicBackground {
+        ui.add_enabled_ui(chosen, |ui| {
+            switch(
+                app,
+                ui,
+                "Moving background",
+                "The song's colours drift slowly while it plays (Dynamic Background). Off, they stay still, and YTFast draws the window less often.",
+                app.settings.moving_background,
+                Setting::MovingBackground,
+            );
+        });
     }
 }
 
 /// The updates switch, what the updater is doing, and the button that
 /// fits it: look now, install the version found, or restart to install
 /// the one downloaded.
+/// What "Download updates automatically" says, on Windows and on a Mac
+/// (where only a copy in Applications installs its updates).
+const UPDATES_ABOUT: [&str; 2] = [
+    "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it.",
+    "YTFast looks for a new version once a day and downloads it. The Update button at the top then shows it; Restart to update installs it. Keep YTFast in Applications for this.",
+];
+
 fn updates(app: &App, ui: &mut egui::Ui) {
     use crate::update::State;
-    let about = if cfg!(target_os = "macos") {
-        "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it. Keep YTFast in Applications for this."
-    } else {
-        "YTFast looks for a new version once a day and downloads it in the background. The Update button at the top then shows it; Restart to update installs it."
-    };
     switch(
         app,
         ui,
         "Download updates automatically",
-        about,
+        UPDATES_ABOUT[usize::from(cfg!(target_os = "macos"))],
         app.settings.auto_update,
         Setting::AutoUpdate,
     );
@@ -302,6 +304,54 @@ fn updates(app: &App, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         if theme::pill_button(ui, label, primary).clicked() {
             app.act(action);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How many lines a setting's explanation takes (13, in the 570 the
+    /// column leaves it beside its switch), in Roboto or in Dynamic
+    /// Background's Inter, on a screen of `pixels_per_point`.
+    fn lines(text: &str, inter: bool, pixels_per_point: f32) -> usize {
+        let ctx = egui::Context::default();
+        let mut fonts = theme::install(&ctx);
+        fonts.set_inter_first(inter);
+        ctx.set_pixels_per_point(pixels_per_point);
+        let mut count = 0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            count = ui
+                .fonts_mut(|f| {
+                    f.layout(
+                        text.to_string(),
+                        theme::regular(13.0),
+                        PALETTE.secondary,
+                        570.0,
+                    )
+                })
+                .rows
+                .len();
+        });
+        output.textures_delta.clear();
+        count
+    }
+
+    /// The explanation of updates takes as many lines in Dynamic
+    /// Background's font as in Roboto, on Windows and on a Mac (whose words
+    /// are longer), at the owner's screens' scales: so choosing that look
+    /// moves no setting under it (on the Mac it once took a line more).
+    #[test]
+    fn the_updates_explanation_takes_the_same_lines_in_every_look() {
+        for text in UPDATES_ABOUT {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                assert_eq!(
+                    lines(text, true, scale),
+                    lines(text, false, scale),
+                    "{scale}: {text}"
+                );
+            }
         }
     }
 }

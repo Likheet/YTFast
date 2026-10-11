@@ -103,6 +103,16 @@ impl Images {
         }
     }
 
+    /// Whether the picture at `url` was asked for and did not load. It is
+    /// not asked for again here.
+    pub fn failed(&mut self, url: &str) -> bool {
+        let frame = self.frame;
+        self.cache.get_mut(url).is_some_and(|cached| {
+            cached.used = frame;
+            matches!(cached.slot, Slot::Failed(_))
+        })
+    }
+
     /// The colours of the cover at `url`, asking for it the first time.
     pub fn summary(&mut self, url: &str, backend: &Backend) -> Option<crate::colors::Summary> {
         let _texture = self.get(url, backend)?;

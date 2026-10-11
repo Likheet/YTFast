@@ -19,6 +19,8 @@ use super::{
 pub struct Thumb {
     pub url: String,
     pub width: u32,
+    /// 0 when YouTube did not say.
+    pub height: u32,
 }
 
 impl Thumb {
@@ -37,9 +39,32 @@ impl Thumb {
                 url.starts_with("https://").then(|| Self {
                     url,
                     width: t.get("width").and_then(Value::as_u64).unwrap_or(0) as u32,
+                    height: t.get("height").and_then(Value::as_u64).unwrap_or(0) as u32,
                 })
             })
             .max_by_key(|t| t.width)
+    }
+
+    /// The picture's shape, its width over its height, as YouTube gave it.
+    /// Without a height, a video's still is taken as 16:9 (every still
+    /// YouTube's replies carry is), anything else as square. A song's
+    /// cover is square; a fan's video has only its still, 16:9.
+    pub fn aspect(&self) -> f32 {
+        if self.width > 0 && self.height > 0 {
+            self.width as f32 / self.height as f32
+        } else if video_id_of_still(&self.url).is_some() {
+            16.0 / 9.0
+        } else {
+            1.0
+        }
+    }
+
+    /// For a video's still, its whole frame as large as YouTube keeps it
+    /// (`hq720.jpg`, 1280 by 720), for the player page: the still a row
+    /// gives is often the frame's middle two thirds, zoomed (its `sqp`).
+    /// Not every video has one. None for other pictures.
+    pub fn whole_frame(&self) -> Option<String> {
+        video_id_of_still(&self.url).map(|id| format!("https://i.ytimg.com/vi/{id}/hq720.jpg"))
     }
 
     /// The address for a square picture of `pixels` pixels. Google's image
@@ -956,6 +981,7 @@ fn header(key: &str, h: &Value, reply: &Value) -> Header {
         .map(|url| Thumb {
             url: url.to_string(),
             width: 48,
+            height: 48,
         });
     // Its name is its text, or (several makers) what it says to screen
     // readers.
@@ -1775,6 +1801,7 @@ mod tests {
         let thumb = Thumb {
             url: "https://lh3.googleusercontent.com/abc=w226-h226-l90-rj".into(),
             width: 226,
+            height: 226,
         };
         assert_eq!(
             thumb.sized(96),
@@ -1785,6 +1812,7 @@ mod tests {
         let still = Thumb {
             url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/sddefault.jpg?sqp=-oaymwEWCJADEOEBIAQqCghqEJQEGHgg6AJIWg&rs=AMzJL3lNNudXg7f4Qf7PiE9tvCAkHTjJ0w".into(),
             width: 400,
+            height: 225,
         };
         assert_eq!(
             still.sized(120),
@@ -1797,19 +1825,58 @@ mod tests {
         let small = Thumb {
             url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg".into(),
             width: 120,
+            height: 90,
         };
         assert_eq!(small.sized(60), small.url);
         // Pictures elsewhere come as they are.
         let other = Thumb {
             url: "https://a.example/vi/x/hqdefault.jpg".into(),
             width: 480,
+            height: 360,
         };
         assert_eq!(other.sized(96), other.url);
         let best = Thumb::best(&serde_json::json!({ "thumbnails": [
-            { "url": "//a.example/small", "width": 60 },
-            { "url": "https://a.example/big", "width": 544 }
+            { "url": "//a.example/small", "width": 60, "height": 60 },
+            { "url": "https://a.example/big", "width": 544, "height": 544 }
         ]}));
         assert_eq!(best.unwrap().url, "https://a.example/big");
+    }
+
+    /// A picture keeps its shape: a song's cover square, a video's still
+    /// 16:9 (said by YouTube, or taken so when it did not say), and a
+    /// still's whole frame is asked for by its video.
+    #[test]
+    fn picture_shapes() {
+        let still = |url: &str, width, height| Thumb {
+            url: url.into(),
+            width,
+            height,
+        };
+        let sqp = "https://i.ytimg.com/vi/dQw4w9WgXcQ/sddefault.jpg?sqp=-oaymwEWCJADEOEBIAQqCghqEJQEGHgg6AJIWg";
+        assert!((still(sqp, 400, 225).aspect() - 16.0 / 9.0).abs() < 0.01);
+        assert!((still(sqp, 640, 0).aspect() - 16.0 / 9.0).abs() < 0.01);
+        assert_eq!(
+            still(sqp, 400, 225).whole_frame().as_deref(),
+            Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hq720.jpg")
+        );
+        let cover = "https://lh3.googleusercontent.com/abc=w544-h544-l90-rj";
+        assert_eq!(still(cover, 544, 544).aspect(), 1.0);
+        assert_eq!(still(cover, 544, 0).aspect(), 1.0);
+        assert_eq!(still(cover, 544, 544).whole_frame(), None);
+
+        // A music video's row on a real Explore page: its still, 16:9.
+        let found = page(&fixture("explore.json"));
+        let wide = found
+            .sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter_map(|item| match item {
+                Item::Track(track) => track.thumbnail.as_ref(),
+                _ => None,
+            })
+            .find(|thumb| thumb.whole_frame().is_some())
+            .expect("a video's row");
+        assert_eq!((wide.width, wide.height), (400, 225));
     }
 
     #[test]
