@@ -46,9 +46,14 @@ pub struct Images {
 const UPLOAD_PER_FRAME: usize = 1024 * 1024;
 
 /// The most memory covers may take (on the graphics card, and on a Mac in
-/// the app's own memory). A full-size cover (544 by 544) is about 1.2 MB;
-/// the covers on screen at once take about 15 to 25 MB on a 2x screen.
-const BUDGET: usize = 32 * 1024 * 1024;
+/// the app's own memory). A full-size cover (544 by 544) is about 1.2 MB,
+/// a Home card's at 150% (360 by 360) about 520 KB; the covers on screen
+/// at once take about 15 to 25 MB on a 2x screen. A whole Home at 150%
+/// (15 shelves, 6 cards across: about 45 to 50 MB) fits, so scrolling back
+/// over it finds its covers kept: at 32 MB they were let go of and fetched
+/// again on every pass, late. Those let go of come back from the
+/// backend's memory (`backend::PictureFiles`), not from YouTube.
+const BUDGET: usize = 64 * 1024 * 1024;
 /// The most addresses remembered (failed and loading ones included).
 const MAX_ENTRIES: usize = 2000;
 

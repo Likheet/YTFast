@@ -4154,6 +4154,151 @@ mod tests {
             .count()
     }
 
+    /// A long Home at the owner's window (1707 by 1019 at 150%), its covers
+    /// as large as YouTube's there (360 by 360): scrolled down to its end,
+    /// back to its top and down again, it asks for each cover once, as the
+    /// window keeps them all. With room for only 32 MB of covers it let go
+    /// of most and asked again on every pass; downloaded again, they came
+    /// in late, and the owner found such scrolls lagging.
+    #[test]
+    fn a_long_home_keeps_its_covers_when_scrolled_back_and_forth() {
+        use ytfast_core::read::{Card, CardLook, Shape, Thumb};
+        let mut h = Harness::new();
+        h.app.auth = Auth::SignedIn {
+            name: "Listener".into(),
+            handle: None,
+            photo: None,
+        };
+        h.ctx.set_pixels_per_point(1.5);
+        h.act(Action::Navigate(Route::Home));
+        h.app.load(Route::Home);
+        let load = h
+            .requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Page {
+                    route: Route::Home,
+                    load,
+                    ..
+                } => Some(load),
+                _ => None,
+            })
+            .last()
+            .expect("Home is asked for");
+        let card = |n: usize, i: usize| {
+            Item::Card(Card {
+                title: format!("Album {n}-{i}"),
+                subtitle: "Album • Artist".into(),
+                thumbnail: Some(Thumb {
+                    url: format!("https://lh3.googleusercontent.com/c{n}x{i}=w226-h226-l90-rj"),
+                    width: 226,
+                    height: 226,
+                }),
+                round: false,
+                open: None,
+                play: None,
+                podcast: None,
+                look: CardLook::default(),
+            })
+        };
+        let sections = (0..15)
+            .map(|n| Section {
+                title: format!("Shelf {n}"),
+                shape: Shape::Carousel,
+                items: (0..12).map(|i| card(n, i)).collect(),
+                ..Section::default()
+            })
+            .collect();
+        h.answer(Event::Page(
+            Route::Home,
+            load,
+            Ok(Page {
+                sections,
+                ..Page::default()
+            }),
+        ));
+        let mut asked: HashMap<String, usize> = HashMap::new();
+        let mut time = 0.0;
+        // Frames as the window draws them, the wheel turned `dy` in each,
+        // until the page stops moving; covers answered as YouTube's.
+        let mut scroll = |h: &mut Harness, asked: &mut HashMap<String, usize>, dy: f32| {
+            let (mut still, mut last) = (0, f32::NAN);
+            for _ in 0..2000 {
+                time += 1.0 / 60.0;
+                h.frame();
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1707.0, 1019.0),
+                    )),
+                    time: Some(time),
+                    events: vec![
+                        egui::Event::PointerMoved(egui::pos2(900.0, 500.0)),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, dy),
+                            phase: egui::TouchPhase::Move,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                };
+                let app = &h.app;
+                let mut output = h.ctx.run_ui(input, |ui| {
+                    crate::theme::set(app.settings.theme);
+                    app.images.borrow_mut().begin_frame(ui.ctx());
+                    views::show(app, ui);
+                });
+                output.textures_delta.clear();
+                h.app.apply_actions();
+                for request in h.requests() {
+                    match request {
+                        Request::Image(url) => {
+                            *asked.entry(url.clone()).or_default() += 1;
+                            let cover = egui::ColorImage::new(
+                                [360, 360],
+                                vec![egui::Color32::GRAY; 360 * 360],
+                            );
+                            let picture = crate::backend::Picture::new(cover);
+                            h.events.send(Event::Image(url, Some(picture))).unwrap();
+                        }
+                        Request::MoreResults { route, load } => {
+                            let none = Event::MoreSections {
+                                route,
+                                load,
+                                sections: Vec::new(),
+                                done: true,
+                            };
+                            h.events.send(none).unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+                let now = h.app.page_offset.get();
+                still = if now == last { still + 1 } else { 0 };
+                last = now;
+                if still >= 30 {
+                    break;
+                }
+            }
+        };
+        scroll(&mut h, &mut asked, -60.0);
+        let end = h.app.page_offset.get();
+        scroll(&mut h, &mut asked, 600.0);
+        assert!(h.app.page_offset.get() < 1.0, "back at the top");
+        scroll(&mut h, &mut asked, -300.0);
+        assert!(
+            (h.app.page_offset.get() - end).abs() < 1.0,
+            "at the end again"
+        );
+        // More covers were shown than 32 MB holds...
+        let covers = asked.len();
+        assert!(covers * 360 * 360 * 4 > 32 * 1024 * 1024, "{covers} covers");
+        // ...and none was asked for twice.
+        let again = asked.values().filter(|n| **n > 1).count();
+        assert_eq!(again, 0, "{again} of {covers} covers asked for again");
+    }
+
     /// Home's next shelves are asked for three screens before its end
     /// comes into view, not at its top.
     #[test]
