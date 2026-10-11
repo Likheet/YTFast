@@ -6,17 +6,19 @@ one. Premium was first made on `codex/premium-ui` (9 October 2026),
 became a setting on 10 October 2026, and was reworked twice that day at
 the owner's word.
 
-On 11 October 2026 it took YouTube Music's layout: the owner's brother
-found things moving around when the look changed (the player's buttons
-jumped 560 across, Settings' rows 229 down). Every part is now where
-YouTube Music's look puts it, at the same size, and Premium differs only
-in how it draws them: colours, glass, corners and its background. A test
-checks it (`every_look_puts_things_in_the_same_places` in `app.rs`).
+On 11 October 2026, version 1.2.0 gave Premium YouTube Music's layout, so
+that nothing moved when the look changed. The owner found Premium cramped
+and worse for it (the player's buttons no longer in the middle, buttons,
+badges and headers squeezed), so the same day it got its own layout back,
+as below. Two things stayed from that round: a fan's video, which has no
+cover, shows its 16:9 still whole (on the player page, in rows, 85 by 48
+in the player bar), and the Song and Video switch stays at one height
+over the cover, whether the cover or the video shows.
 
 - One neutral charcoal (`#111113`) behind everything. The menu and the
   top bar are see-through (the top bar stays so when the page scrolls,
-  with only a hairline under it), so there are no grey bands. Text
-  `#f5f5f7`, quieter text `#aeaeb4`.
+  with only a hairline under it: nothing scrolls under it), so there are
+  no grey bands. Text `#f5f5f7`, quieter text `#aeaeb4`.
 - A background of its own (`backdrop::ambient`): the playing song's
   colours across the window's top, fading out by 70% of its height; with
   nothing playing, a deep wine-to-indigo glow. Pages with a background of
@@ -26,9 +28,19 @@ checks it (`every_look_puts_things_in_the_same_places` in `app.rs`).
   cover kept at 16 by 16, drawn up to 48 by 48 and blurred, so its light
   and dark parts stay where they were, its colours made richer and kept
   dark enough for white words, darkened toward the foot and the corners.
-  The cover and the video have corners 16. The tabs are clear glass: a
-  capsule barely filled with no edge, the chosen tab a clear capsule with
-  one thin rim. Lyrics are larger and fade out at the column's top and
+  The cover (at most 480, r 16; a fan's video's still whole in its
+  square) with the Song and Video switch over it, at one height, and the
+  song's name and artist centred under it (up to a page 1520 wide, within at most 1280 in the middle; on
+  a large screen the margins stay 120 and the rest goes to what is shown,
+  so it does not huddle in the middle: the panel to at most 960, the cover
+  to at most 900 as the height allows, 160 between them, the song's name
+  to 34, the tabs' capsule to 560); beside it the tabs and what they show, straight on the song's
+  colours with no box round them, as YouTube Music sets a playlist's songs
+  beside its cover. The tabs are clear glass: a capsule barely filled with
+  no edge, the chosen tab a clear capsule with one thin rim. Up next's
+  covers are 48 (rows 64); the playing song keeps its cover, lightly
+  darkened, with a white disc and its mark on it (bars while it sounds).
+  Lyrics are large and fade out over the last 56 at the column's top and
   foot.
 - Everything stays still, so an idle window costs nothing (measured: 0%
   of a core over 10 s, paused on the player page).
@@ -36,22 +48,37 @@ checks it (`every_look_puts_things_in_the_same_places` in `app.rs`).
   the red logo: the main Play buttons (white icon on it), switches, the
   song's line, focus rings.
 - Glass for whatever can be pressed: the search box (white@0.07, more
-  under the pointer and while typing; solid while its suggestions show,
-  corners 12), New playlist, the menu's lit entry, the tabs, Settings'
-  cards (white@0.05 with a white@0.06 edge, in the room between the
-  settings, so the settings stay where they are).
-- The player bar is drawn as a glass panel over the page (4 in from the
-  bar's edges, corners 14, `#202024` at 90%, a white@0.12 edge, a light
-  along its top, a shadow), its buttons in YouTube Music's places. Play
-  is on a white disc; like, dislike and the menu are 22 and quieter, so
-  play stands out; the song's line is the accent.
+  under the pointer and while typing; solid while its suggestions show),
+  New playlist, the menu's lit entry, the Liked Music tile, the tabs,
+  Settings' cards (white@0.05 with a white@0.06 edge).
+- The top bar, balanced and on one middle line: back and forward just past
+  the menu, the search box (at most 560) in the middle of the page, the
+  account 16 before the window's buttons.
+- The player bar is a glass panel floating over the page (inset 12 and 8,
+  corners 16, `#202024` at 90%, a white@0.12 edge, a light along its top,
+  a shadow). The song at the left; a middle column (36% of the bar, 28%
+  under 1150 wide; 240 to 560) with previous, play on a white disc and
+  next, and under them the song's line (4 thick, 6 under the pointer, on
+  white@0.18, a knob only then) between the time played and the length,
+  12 in the quieter grey; the other buttons at the right. Like, dislike
+  and the menu are 22 and quieter, so play stands out; the player page's
+  button is a chevron drawn in lines, not a solid triangle.
 - Roboto and Material Symbols, as the default look; no new fonts.
-- Corners 8 to 16 everywhere (a row's cover 8, Up next's 6), no hairlines
-  between songs, an album's and a playlist's songs lit under the pointer,
-  and a thin accent line round whatever the keyboard is on.
-- Dialogs share one frame (corners 16, the window behind darker); the
-  playlist form has boxed fields, a little taller than YouTube Music's.
-  (No look can be chosen while a dialog is open, so nothing moves.)
+- Shelf titles 28 (24 under 1150); page titles 36; an album's or a
+  playlist's title 48 (32 in less room).
+- Even margins (56 from a window 1364 wide, 40 from 1150, else 24), at
+  most 1440 wide; covers about 200 wide, 20 apart; songs in up to three
+  columns. Settings' column is at most 760.
+- Corners 8 to 16 everywhere, no hairlines between songs, and a thin
+  accent line round whatever the keyboard is on.
+- The menu: "YOUR LIBRARY", each playlist a small cover and its name (who
+  made it shows under the pointer).
+- Albums and playlists: the cover (248, r 12) beside the words, which are
+  at most 760 wide (the description 3 lines), then the songs at full
+  width; in a narrow page the cover over the words. Their blurred cover at
+  the top is veiled less than YouTube Music's (black 43%, not 60%).
+- Dialogs share one frame (corners 16); the playlist form has boxed
+  fields.
 
 ## In every look
 
@@ -59,7 +86,8 @@ checks it (`every_look_puts_things_in_the_same_places` in `app.rs`).
   glyphs on its middle line with the bar's other buttons, in its white,
   the last 4 from the window's edge; close answers the pointer up to the
   window's top right corner.
-- Settings is one column in the middle of the page, at most 640 wide.
+- Settings is one column in the middle of the page (at most 640;
+  Premium's 760).
 - A mood button on Home (or a filter over Liked Music) keeps the page
   showing, dimmed, with the button lit at once, until the new page
   arrives (`page::stand_in`), instead of emptying it.
@@ -68,14 +96,13 @@ checks it (`every_look_puts_things_in_the_same_places` in `app.rs`).
 
 `theme::set` is called at the start of each frame with the chosen theme
 (`Settings.theme`); `theme::premium()` says which is drawn. `PALETTE`
-gives the chosen theme's colours. The sizes are YouTube Music's in every
-look (`top_bar_height()`, `player_bar_height()`, `guide_width()`,
-`page_foot()`, `theme::Grid`, `Row::themed` changes only corners, lines
-and the fill under the pointer). So:
+gives the chosen theme's colours, and the sizes that differ are functions
+(`top_bar_height()`, `player_bar_height()`, `guide_width()`,
+`page_foot()`, `menu_edge()`, `Row::themed`). So:
 
-- Read colours while drawing, never into a `const`.
-- A part that looks different in Premium is drawn differently behind
-  `theme::premium()`, in the same place and at the same size.
+- Read colours and those sizes while drawing, never into a `const`.
+- A screen that differs in Premium keeps YouTube Music's code as it is
+  and adds its own behind `theme::premium()`.
 - egui's own colours are set again when the theme changes
   (`theme::restyle`).
 - The panels and the page all paint on egui's background layer, in order,
@@ -86,4 +113,4 @@ and the fill under the pointer). So:
   then stay off.
 
 Playback, sign-in, account changes and the limits on requests are the
-same in every look.
+same in both.

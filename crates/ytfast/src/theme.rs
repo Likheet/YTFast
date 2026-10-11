@@ -186,24 +186,23 @@ const YOUTUBE_MUSIC: Palette = Palette {
     button: Color32::from_rgb(0xf1, 0xf1, 0xf1),
 };
 
-// Every look lays the window out as YouTube Music does: the looks differ
-// in colours, corners, glass and fonts, never in where things are, so
-// nothing moves when the look changes (the owner's word, 11 October 2026).
-// The sizes below are therefore the same in every look.
+// YouTube Music's look and Dynamic Background lay the window out alike,
+// so nothing moves between them; Premium has a layout of its own (the
+// owner's word, 11 October 2026), roomier, whose sizes follow here.
 
-/// The bar across the top: 64.
+/// The bar across the top: 64 (Premium 72).
 pub fn top_bar_height() -> f32 {
-    64.0
+    if premium() { 72.0 } else { 64.0 }
 }
 
-/// The player bar: 72.
+/// The player bar: 72 (Premium 96, floating inside it).
 pub fn player_bar_height() -> f32 {
-    72.0
+    if premium() { 96.0 } else { 72.0 }
 }
 
-/// The menu on the left, open (240) and closed.
+/// The menu on the left, open (240, Premium 220) and closed.
 pub fn guide_width() -> f32 {
-    240.0
+    if premium() { 220.0 } else { 240.0 }
 }
 pub const GUIDE_MINI_WIDTH: f32 = 72.0;
 
@@ -230,6 +229,19 @@ impl Grid {
     /// For a window `window` wide whose page area (the window less the
     /// menu) is `area` wide.
     pub fn new(window: f32, area: f32) -> Self {
+        // Premium: even margins (56 from a window 1364 wide, 40 from 1150,
+        // else 24), at most 1440 wide.
+        if premium() {
+            let margin = if window >= 1364.0 {
+                56.0
+            } else if window >= 1150.0 {
+                40.0
+            } else {
+                24.0
+            };
+            let width = (area - margin * 2.0 - SCROLL_BAR).min(1440.0);
+            return Self::centred(window, area, width);
+        }
         let width = if window >= 1150.0 {
             (area - 200.0 - SCROLL_BAR).min(1478.0)
         } else if window >= 616.0 {
@@ -250,7 +262,9 @@ impl Grid {
         } else {
             560.0
         };
-        let width = if window >= 616.0 {
+        let width = if premium() {
+            most.min(Self::new(window, area).width)
+        } else if window >= 616.0 {
             most.min(area - 112.0 - SCROLL_BAR)
         } else {
             window - 32.0
@@ -279,6 +293,12 @@ impl Grid {
         if beside_header {
             return (160.0, if self.window >= 1364.0 { 24.0 } else { 16.0 });
         }
+        // Premium: covers near 180-220, as many whole ones as fit, 20 apart.
+        if premium() {
+            let gap = 20.0;
+            let across = ((width + gap) / 200.0).floor().clamp(1.0, 7.0);
+            return ((width - (across - 1.0) * gap) / across, gap);
+        }
         let across: f32 = if self.window >= 1364.0 {
             6.0
         } else if self.window >= 1150.0 {
@@ -295,6 +315,17 @@ impl Grid {
     /// (Quick picks, Trending), with its padding of 8 each side: 436 under
     /// 1364 (measured at 1280), else a third of the shelf.
     pub fn song_column(&self, width: f32) -> f32 {
+        // Premium: one, two or three columns, by the room there is.
+        if premium() {
+            let across = if width >= 1100.0 {
+                3.0
+            } else if width >= 650.0 {
+                2.0
+            } else {
+                1.0
+            };
+            return ((width - (across - 1.0) * 24.0) / across).max(0.0);
+        }
         if self.window >= 1364.0 {
             (width - 96.0) / 3.0 + 16.0
         } else if self.window >= 616.0 {
@@ -311,26 +342,46 @@ impl Grid {
 
     /// The space above a shelf's title (`--ytmusic-header-padding`).
     pub fn above_title(&self) -> f32 {
-        if self.window >= 1150.0 { 32.0 } else { 16.0 }
+        if premium() {
+            24.0
+        } else if self.window >= 1150.0 {
+            32.0
+        } else {
+            16.0
+        }
     }
 
     /// The space after each shelf but the last
     /// (`--ytmusic-divider-height`).
     pub fn between_shelves(&self) -> f32 {
-        if self.window >= 616.0 { 24.0 } else { 16.0 }
+        if premium() {
+            32.0
+        } else if self.window >= 616.0 {
+            24.0
+        } else {
+            16.0
+        }
     }
 }
 
-/// The space under a page's last row (`--ytmusic-base-page-padding-bottom`).
+/// The space under a page's last row (`--ytmusic-base-page-padding-bottom`;
+/// Premium 48).
 pub fn page_foot() -> f32 {
-    112.0
+    if premium() { 48.0 } else { 112.0 }
 }
 
 /// YouTube Music's `--ytmusic-responsive-font-size`: 14, and 16 from a
-/// window 1364 wide. Cards, song rows, Up next, the player bar's song and
-/// the suggestions take it; their lines are 1.2 times as tall.
+/// window 1364 wide (Premium: 15 from 1150). Cards, song rows, Up next,
+/// the player bar's song and the suggestions take it; their lines are 1.2
+/// times as tall.
 pub fn responsive(window: f32) -> f32 {
-    if window >= 1364.0 { 16.0 } else { 14.0 }
+    if premium() {
+        if window >= 1150.0 { 15.0 } else { 14.0 }
+    } else if window >= 1364.0 {
+        16.0
+    } else {
+        14.0
+    }
 }
 
 /// [`responsive`] for the window `ui` is in.
@@ -340,8 +391,12 @@ pub fn text_size(ui: &egui::Ui) -> f32 {
 
 /// YouTube Music's large titles (`display-1`: shelves, pages, an album's
 /// or an artist's name) in a window `window` wide: 24 under 1150, 28 to
-/// 1363 (measured at 1280), 34 to 1577, 45 from 1578.
+/// 1363 (measured at 1280), 34 to 1577, 45 from 1578 (Premium: 28, 36
+/// from 1150).
 pub fn display1(window: f32) -> f32 {
+    if premium() {
+        return if window >= 1150.0 { 36.0 } else { 28.0 };
+    }
     if window >= 1578.0 {
         45.0
     } else if window >= 1364.0 {
@@ -356,7 +411,8 @@ pub fn display1(window: f32) -> f32 {
 /// Its smaller titles (`display-2`: lists such as Top songs, the top
 /// result's name, dialogs): 20 under 1150, 24 from.
 pub fn display2(window: f32) -> f32 {
-    if window >= 1150.0 { 24.0 } else { 20.0 }
+    let wide = if premium() { 22.0 } else { 24.0 };
+    if window >= 1150.0 { wide } else { 20.0 }
 }
 
 fastframe_icons::icons! {
@@ -812,8 +868,7 @@ pub fn menu_edge() -> Color32 {
 
 /// YouTube Music's menu frame: `#212121`, a 1 point white@0.10 border,
 /// corners 2, 16 above and below the entries, and no shadow.
-/// Premium: the menu colour, corners 12, the entries where YouTube Music's
-/// are.
+/// Premium: the menu colour, corners 12, 6 all round.
 pub fn menu_frame() -> egui::Frame {
     if dynamic() {
         return crate::dynamic::menu_frame();
@@ -823,7 +878,7 @@ pub fn menu_frame() -> egui::Frame {
             .fill(PALETTE.menu)
             .stroke(Stroke::new(1.0, menu_edge()))
             .corner_radius(CornerRadius::same(12))
-            .inner_margin(egui::Margin::symmetric(0, 16));
+            .inner_margin(egui::Margin::same(6));
     }
     egui::Frame::new()
         .fill(PALETTE.panel)
@@ -1425,11 +1480,34 @@ mod tests {
         assert_eq!(grid.cards(546.0, true), (160.0, 16.0));
     }
 
-    /// Every look lays pages out on YouTube Music's grid, with its bars:
-    /// the same margins, cards and columns at every window width, the menu
-    /// open or closed.
     #[test]
-    fn every_look_lays_pages_on_youtube_musics_grid() {
+    fn premium_content_and_cards_fit_open_and_closed_menus() {
+        set(Theme::Premium);
+        for window in [780.0, 960.0, 1150.0, 1280.0, 1707.0, 1920.0] {
+            for menu in [guide_width(), GUIDE_MINI_WIDTH] {
+                let area = window - menu;
+                let grid = Grid::new(window, area);
+                assert!(grid.left >= 24.0);
+                assert!(grid.left + grid.width + SCROLL_BAR <= area);
+                assert!(grid.width <= 1440.0);
+                let search = Grid::search(window, area);
+                assert!(search.width <= grid.width);
+                let (card, gap) = grid.cards(grid.width, false);
+                assert!((160.0..=240.0).contains(&card));
+                let across = ((grid.width + gap) / (card + gap)).round();
+                assert!((across * card + (across - 1.0) * gap - grid.width).abs() < 0.01);
+                assert!(grid.song_column(grid.width) <= grid.width);
+            }
+        }
+        set(Theme::YouTubeMusic);
+        assert_eq!(top_bar_height(), 64.0);
+    }
+
+    /// Dynamic Background lays pages out on YouTube Music's grid, with its
+    /// bars: the same margins, cards and columns at every window width, the
+    /// menu open or closed.
+    #[test]
+    fn dynamic_background_lays_pages_on_youtube_musics_grid() {
         let laid_out = |theme, window: f32, menu: f32| {
             set(theme);
             let grid = Grid::new(window, window - menu);
@@ -1448,9 +1526,8 @@ mod tests {
         for window in [780.0, 960.0, 1150.0, 1280.0, 1707.0, 1920.0] {
             for menu in [240.0, GUIDE_MINI_WIDTH] {
                 let youtube = laid_out(Theme::YouTubeMusic, window, menu);
-                for theme in [Theme::Premium, Theme::DynamicBackground] {
-                    assert_eq!(laid_out(theme, window, menu), youtube, "{theme:?} {window}");
-                }
+                let dynamic = laid_out(Theme::DynamicBackground, window, menu);
+                assert_eq!(dynamic, youtube, "{window}");
             }
         }
         set(Theme::YouTubeMusic);

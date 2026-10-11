@@ -1,14 +1,14 @@
 //! The menu on the left, as YouTube Music's: Home, Explore and Library,
 //! then New playlist and the playlists in the library. The button in the
-//! top bar closes it to a strip of icons. Every look puts its parts in the
-//! same places; Premium's is see-through, its pages not showing quieter.
+//! top bar closes it to a strip of icons.
 
 use egui::{Align2, CornerRadius, Frame, Rect, Sense, Vec2, pos2, vec2};
-use ytfast_core::read::{Item, Target};
+use ytfast_core::read::{Item, Target, Thumb};
 
 use crate::app::{Action, App, Dialog, Loadable};
 use crate::backend::Route;
 use crate::theme::{self, Icon, PALETTE};
+use crate::views::widgets;
 
 /// How wide the menu is now.
 pub fn width(app: &App) -> f32 {
@@ -82,7 +82,21 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 egui::Stroke::new(1.0, PALETTE.divider),
             );
             // The divider is a border, a point high, then 24.
-            ui.add_space(25.0);
+            if theme::premium() {
+                // Premium: "YOUR LIBRARY" over New playlist.
+                ui.add_space(20.0);
+                let (heading, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+                ui.painter().text(
+                    pos2(heading.left() + 24.0, heading.center().y),
+                    Align2::LEFT_CENTER,
+                    "YOUR LIBRARY",
+                    theme::medium(11.0),
+                    PALETTE.dim,
+                );
+            } else {
+                ui.add_space(25.0);
+            }
             new_playlist(app, ui);
             ui.add_space(16.0);
 
@@ -91,7 +105,7 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    playlist_item(app, ui, "Liked Music", "Auto playlist", Route::Liked);
+                    playlist_item(app, ui, "Liked Music", "Auto playlist", None, Route::Liked);
                     if let Some(Loadable::Ready(page)) = app.pages.get(&Route::Library) {
                         for section in &page.sections {
                             for item in &section.items {
@@ -104,7 +118,14 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
                                     continue;
                                 }
                                 let route = Route::browse(id.clone(), params.clone());
-                                playlist_item(app, ui, &card.title, &card.subtitle, route);
+                                playlist_item(
+                                    app,
+                                    ui,
+                                    &card.title,
+                                    &card.subtitle,
+                                    card.thumbnail.as_ref(),
+                                    route,
+                                );
                             }
                         }
                     }
@@ -144,7 +165,11 @@ fn showing(app: &App, route: &Route) -> bool {
 fn nav_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route) {
     let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::hover());
     let premium = theme::premium();
-    let rect = slot.shrink2(vec2(8.0, 0.0));
+    let rect = slot.shrink2(if premium {
+        vec2(12.0, 2.0)
+    } else {
+        vec2(8.0, 0.0)
+    });
     let response = ui.interact(rect, ui.id().with(("nav", text)), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
     theme::pointing(ui, &response);
@@ -155,11 +180,13 @@ fn nav_item(app: &App, ui: &mut egui::Ui, icon: Icon, text: &str, route: Route) 
         Vec2::splat(24.0),
     );
     theme::paint_icon(ui, icon, icon_rect, 24.0, PALETTE.text);
-    // 16/400, and 500 for the page showing (Premium: the others quieter).
+    // 16/400, and 500 for the page showing (Premium: 15, the others
+    // quieter).
+    let size = if premium { 15.0 } else { 16.0 };
     let font = if lit {
-        theme::medium(16.0)
+        theme::medium(size)
     } else {
-        theme::regular(16.0)
+        theme::regular(size)
     };
     let color = if premium && !lit {
         PALETTE.secondary
@@ -246,10 +273,19 @@ fn new_playlist(app: &App, ui: &mut egui::Ui) {
 }
 
 /// A playlist: its name over a quieter line (who made it), 56 high
-/// (measured signed in: padding 4 16, the two lines centred).
-fn playlist_item(app: &App, ui: &mut egui::Ui, title: &str, subtitle: &str, route: Route) {
+/// (measured signed in: padding 4 16, the two lines centred). Premium: its
+/// cover and its name, 52 high, who made it under the pointer.
+fn playlist_item(
+    app: &App,
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: &str,
+    thumbnail: Option<&Thumb>,
+    route: Route,
+) {
     let premium = theme::premium();
-    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
+    let height = if premium { 52.0 } else { 56.0 };
+    let (slot, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     if !ui.is_rect_visible(slot) {
         return;
     }
@@ -301,6 +337,38 @@ fn playlist_item(app: &App, ui: &mut egui::Ui, title: &str, subtitle: &str, rout
                 crate::app::QueueMode::Play,
             ));
         }
+    }
+    if premium {
+        let art = Rect::from_min_size(
+            pos2(rect.left() + 12.0, rect.center().y - 17.0),
+            Vec2::splat(34.0),
+        );
+        if route == Route::Liked {
+            // Liked Music has no cover: a glass tile with its thumb.
+            ui.painter().rect_filled(
+                art,
+                CornerRadius::same(7),
+                egui::Color32::from_white_alpha(20),
+            );
+            theme::paint_icon(ui, Icon::ThumbsUpFilled, art, 18.0, PALETTE.accent);
+        } else {
+            widgets::cover_with(app, ui, art, thumbnail, CornerRadius::same(7));
+        }
+        let left = art.right() + 12.0;
+        let width = (rect.right() - left - if hovered { 50.0 } else { 12.0 }).max(0.0);
+        theme::paint_line(
+            ui,
+            pos2(left, rect.center().y - 8.4),
+            title,
+            theme::medium(14.0),
+            PALETTE.text,
+            width,
+        );
+        if response.clicked() && !pressed {
+            app.act(Action::Navigate(route));
+        }
+        response.on_hover_text(subtitle);
+        return;
     }
     let left = rect.left() + 16.0;
     let width = rect.width() - 16.0 - if hovered { 50.0 } else { 16.0 };

@@ -3,10 +3,11 @@
 A third look, chosen in Settings (Theme), beside YouTube Music's own and
 Premium. Added on 10 October 2026.
 
-Since 11 October 2026 it keeps YouTube Music's layout, as Premium does:
-every part where YouTube Music's look puts it, at the same size (its rows
-and its player page had their own sizes before, and things moved when the
-look changed). It differs only in colours, glass, corners and its font.
+Since 11 October 2026 it keeps YouTube Music's layout: every part where
+YouTube Music's look puts it, at the same size (its rows and its player
+page had their own sizes before, and things moved when the look
+changed). It differs only in colours, glass, corners and its font.
+(Premium keeps a layout of its own.)
 
 It recreates chengggit's "Dynamic Background" theme for the Better Lyrics
 extension (<https://github.com/chengggit/YouTube-Music-Dynamic-Theme>, MIT

@@ -163,6 +163,23 @@ pub fn big_picture(
     }
 }
 
+/// [`big_picture`], with the quiet placeholder of [`cover`] in its shape
+/// until it arrives.
+pub fn big_cover(
+    app: &App,
+    ui: &egui::Ui,
+    rect: Rect,
+    thumb: Option<&Thumb>,
+    radius: CornerRadius,
+) {
+    if !big_picture(app, ui, rect, thumb, radius) {
+        let place = shape_in(rect, thumb);
+        ui.painter().rect_filled(place, radius, PALETTE.surface);
+        let icon = place.width().min(place.height()) * 0.35;
+        theme::paint_icon(ui, Icon::Music, place, icon, PALETTE.faint);
+    }
+}
+
 /// Where a picture of `thumb`'s shape shows whole in `rect`, as YouTube
 /// said it is: for its placeholder, before it arrives.
 pub fn shape_in(rect: Rect, thumb: Option<&Thumb>) -> Rect {
@@ -276,10 +293,10 @@ pub enum Under {
 }
 
 impl Row {
-    /// The same rows in the theme being drawn, every one the same size and
-    /// in the same place as YouTube Music's (only how they look differs).
-    /// Premium: corners 8 (Up next's covers 6) and no hairlines between
-    /// rows; an album's and a playlist's songs lit under the pointer.
+    /// The same rows in the theme being drawn: Dynamic Background's are
+    /// YouTube Music's sizes in its own corners. Premium: corners 8 and no
+    /// hairlines between them; an album's and a playlist's songs closer
+    /// together and lit under the pointer; a shelf's songs taller and apart.
     pub fn themed(self) -> Self {
         if theme::dynamic() {
             return super::dynamic::row(self);
@@ -288,12 +305,33 @@ impl Row {
             return self;
         }
         let mut row = Self {
-            corner: if self == Self::QUEUE { 6 } else { 8 },
+            corner: 8,
             line: false,
             ..self
         };
+        // Up next: the covers larger (48, r 6), the rows 64 high.
+        if self == Self::QUEUE {
+            row = Self {
+                height: 64.0,
+                gap: 2.0,
+                art: 48.0,
+                corner: 6,
+                art_gap: 14.0,
+                ..row
+            };
+        }
         if self == Self::LIST || self == Self::PLAYLIST {
+            row.text_gap = 4.0;
             row.hover = ROW_HOVER;
+        } else if self == Self::SHELF {
+            row = Self {
+                height: 60.0,
+                gap: 4.0,
+                art: 40.0,
+                art_gap: 16.0,
+                line: false,
+                ..row
+            };
         }
         row
     }

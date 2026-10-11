@@ -41,6 +41,14 @@ pub fn shown(app: &App) -> bool {
         )
 }
 
+/// The switch's row over `picture` (Premium's cover or video).
+pub fn row_above(picture: Rect) -> Rect {
+    Rect::from_min_size(
+        pos2(picture.left(), picture.top() - SWITCH_ROOM),
+        vec2(picture.width(), SWITCH_HEIGHT),
+    )
+}
+
 /// The Song and Video switch, centred in `row`: a capsule 36 high of
 /// white@0.10 (Premium: clear glass) holding two halves 88 wide, the
 /// chosen one white@0.20 (Premium: glass with a rim of light) with white
