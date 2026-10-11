@@ -575,8 +575,8 @@ const BLURRED: f32 = 1.0;
 /// rest at 30% and blurred (those sung fainter still), each change easing
 /// over 0.6 s (the blur over 0.8 s); the line being sung glows as it
 /// starts, its words lit one by one as they are sung. The sung line stays
-/// a third of the way down, moving in 0.5 s. A click on a line jumps
-/// there; the pointer on a line lights it. Under each line, with
+/// a third of the way down, gliding there (`lyric_lines::Follower`). A
+/// click on a line jumps there; the pointer on a line lights it. Under each line, with
 /// Translate on, it in Latin letters and in English.
 fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let id = ui.id().with(("lyrics", video_id));
@@ -607,12 +607,11 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
     let manual_until: f64 = ui.data(|d| d.get_temp(id.with("manual"))).unwrap_or(0.0);
     let manual = now <= manual_until;
     let follow = lyrics.synced && !manual;
-    let target = current
-        .and_then(|i| tops.get(i))
-        .map_or(0.0, |top| (top - viewport * 0.3).max(0.0));
-    let offset = ui
-        .ctx()
-        .animate_value_with_time(id.with("scroll"), target, 0.5);
+    let target = match current {
+        Some(i) => tops.get(i).map(|top| (top - viewport * 0.3).max(0.0)),
+        None => Some(0.0),
+    };
+    let offset = super::lyric_lines::follow(ui, id.with("scroll"), target, follow);
     // When the line being sung changed, for its glow.
     let (lit_line, lit_at): (Option<usize>, f64) = ui
         .data(|d| d.get_temp(id.with("lit")))
@@ -632,10 +631,10 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         .id_salt(id)
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
-    if follow {
+    if let Some(offset) = offset {
         area = area.vertical_scroll_offset(offset);
     }
-    area.show(ui, |ui| {
+    let drawn = area.show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let origin = ui.min_rect().top();
         ui.add_space(20.0);
@@ -751,6 +750,7 @@ fn lines(app: &App, ui: &mut egui::Ui, lyrics: &Lyrics, video_id: &str) {
         ui.add_space(if lyrics.synced { viewport * 0.6 } else { 40.0 });
         ui.data_mut(|d| d.insert_temp(id, new_tops));
     });
+    super::lyric_lines::drawn(ui, id.with("scroll"), drawn.state.offset.y);
 }
 
 /// Text in white at `bright`, blurred by `blur` (0 sharp, 1 the theme's

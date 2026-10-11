@@ -95,6 +95,114 @@ pub(super) fn sung(
     Arc::new(sung)
 }
 
+/// How quickly lyrics that follow the song move to a new place, in
+/// seconds: most of the way in about twice this, settled in about three
+/// times it (a spring's smooth time).
+const GLIDE: f32 = 0.2;
+/// The longest step of time one frame moves them by: the first frame after
+/// the window rested starts the move gently.
+const LONGEST_STEP: f32 = 0.05;
+
+/// Where lyrics that follow the song are scrolled. They move to each new
+/// place (the line being sung a third of the way down) as a spring
+/// settles, easing in and out, and a new place met on the way changes
+/// their course without a jolt. Following again after a scroll by hand (or
+/// a click on a line) they start from where they were drawn, so a line
+/// clicked glides into place without first jumping back to the line that
+/// was being sung.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct Follower {
+    /// Where the spring is, while following.
+    position: Option<f32>,
+    /// How fast it moves, in points a second.
+    speed: f32,
+    /// When it last moved (the input's time).
+    at: f64,
+    /// Following when last drawn, not scrolled by hand.
+    following: bool,
+    /// Where the scroll area last drew the lyrics.
+    drawn: Option<f32>,
+}
+
+impl Follower {
+    /// Where to scroll at `now` for `target`, or `None` while the lyrics
+    /// are scrolled by hand (`follow` false).
+    pub(super) fn step(&mut self, now: f64, target: f32, follow: bool) -> Option<f32> {
+        let dt = ((now - self.at) as f32).clamp(0.0, LONGEST_STEP);
+        self.at = now;
+        if !follow {
+            self.following = false;
+            self.speed = 0.0;
+            return None;
+        }
+        let from = match (self.following, self.position, self.drawn) {
+            (true, Some(position), _) => position,
+            // Following again: from where they were drawn, at rest.
+            (false, _, Some(drawn)) => drawn,
+            (false, Some(position), None) => position,
+            // Drawn for the first time: in place at once.
+            _ => target,
+        };
+        if !self.following {
+            self.speed = 0.0;
+            self.following = true;
+        }
+        // A critically damped spring, stepped exactly for any frame rate
+        // (as Game Programming Gems 4's SmoothDamp).
+        let omega = 2.0 / GLIDE;
+        let x = omega * dt;
+        let decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x);
+        let change = from - target;
+        let pull = (self.speed + omega * change) * dt;
+        self.speed = (self.speed - omega * pull) * decay;
+        let mut position = target + (change + pull) * decay;
+        if (position - target).abs() < 0.5 && self.speed.abs() < 5.0 {
+            position = target;
+            self.speed = 0.0;
+        }
+        self.position = Some(position);
+        Some(position)
+    }
+
+    /// Still on its way: the window must be drawn again.
+    pub(super) fn moving(&self) -> bool {
+        self.following && self.speed != 0.0
+    }
+
+    /// Where the scroll area drew the lyrics this frame (where they were
+    /// scrolled by hand, or where it could follow to).
+    pub(super) fn drawn_at(&mut self, offset: f32) {
+        self.drawn = Some(offset);
+    }
+}
+
+/// [`Follower::step`] for the lyrics `id`, kept between frames; the window
+/// is drawn again while they move. `target` is `None` while it is not
+/// known (the lines not yet placed, drawn for the first time): then they
+/// are in place at once the frame after, not moving there from the top.
+/// Call [`drawn`] after the scroll area.
+pub(super) fn follow(
+    ui: &egui::Ui,
+    id: egui::Id,
+    target: Option<f32>,
+    follow: bool,
+) -> Option<f32> {
+    let target = target?;
+    let now = ui.input(|i| i.time);
+    let mut follower: Follower = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let offset = follower.step(now, target, follow);
+    if follower.moving() {
+        ui.ctx().request_repaint();
+    }
+    ui.data_mut(|d| d.insert_temp(id, follower));
+    offset
+}
+
+/// Where the scroll area drew the lyrics `id` this frame: its offset.
+pub(super) fn drawn(ui: &egui::Ui, id: egui::Id, offset: f32) {
+    ui.data_mut(|d| d.get_temp_mut_or_default::<Follower>(id).drawn_at(offset));
+}
+
 /// The lyrics' translation when Translate is on and it is in, a line for
 /// each of theirs.
 pub(super) fn translation<'a>(
@@ -192,6 +300,89 @@ pub(super) fn translate_bar(app: &App, ui: &mut egui::Ui, video_id: &str, margin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FRAME: f64 = 1.0 / 60.0;
+
+    /// Steps `follower` a frame at a time toward `target`, drawn where it
+    /// says (or at `drawn` when given, as a scroll area that cannot go
+    /// that far), and returns where it was each frame.
+    fn glide(
+        follower: &mut Follower,
+        now: &mut f64,
+        frames: usize,
+        target: f32,
+        drawn: Option<f32>,
+    ) -> Vec<f32> {
+        (0..frames)
+            .map(|_| {
+                *now += FRAME;
+                let at = follower.step(*now, target, true).unwrap();
+                follower.drawn_at(drawn.unwrap_or(at));
+                at
+            })
+            .collect()
+    }
+
+    /// Scrolled by hand, then a line clicked: the lyrics glide from where
+    /// they were to the line clicked, without first jumping back to the
+    /// line that was being sung, and come to rest there.
+    #[test]
+    fn a_line_clicked_after_scrolling_glides_there_from_where_it_was() {
+        let mut follower = Follower::default();
+        let mut now = 10.0;
+        // Following, at rest on the line being sung (its place 200).
+        glide(&mut follower, &mut now, 60, 200.0, None);
+        assert!(!follower.moving());
+        // Scrolled by hand down to 900.
+        for k in 1..=30 {
+            now += FRAME;
+            assert_eq!(follower.step(now, 200.0, false), None);
+            follower.drawn_at(200.0 + k as f32 * 700.0 / 30.0);
+        }
+        // A line clicked: following again, to its place, 600.
+        let path = glide(&mut follower, &mut now, 90, 600.0, None);
+        assert!((path[0] - 900.0).abs() < 10.0, "first frame at {}", path[0]);
+        assert!(path.windows(2).all(|w| w[1] <= w[0]), "{path:?}");
+        assert!(path.iter().all(|&at| at >= 600.0), "{path:?}");
+        assert_eq!(path.last(), Some(&600.0));
+        assert!(!follower.moving(), "it rests, and the window with it");
+    }
+
+    /// The next line while moving to this one: the course changes with
+    /// no jolt, and the lyrics rest at the new place.
+    #[test]
+    fn a_new_place_on_the_way_changes_course_smoothly() {
+        let mut follower = Follower::default();
+        let mut now = 10.0;
+        glide(&mut follower, &mut now, 1, 0.0, None);
+        let mut path = glide(&mut follower, &mut now, 12, 300.0, None);
+        path.extend(glide(&mut follower, &mut now, 90, 500.0, None));
+        let steps: Vec<f32> = path.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            steps.iter().all(|&step| (0.0..40.0).contains(&step)),
+            "{steps:?}"
+        );
+        // Each frame's step differs from the last by little: no jolt.
+        assert!(
+            steps.windows(2).all(|w| (w[1] - w[0]).abs() < 8.0),
+            "{steps:?}"
+        );
+        assert_eq!(path.last(), Some(&500.0));
+        assert!(!follower.moving());
+    }
+
+    /// Drawn for the first time, the lyrics are in place at once; and a
+    /// place the scroll area cannot reach (near the end) still lets them
+    /// rest, so the window is not drawn again and again.
+    #[test]
+    fn in_place_at_once_and_at_rest_where_the_area_stops() {
+        let mut follower = Follower::default();
+        assert_eq!(follower.step(3.0, 350.0, true), Some(350.0));
+        assert!(!follower.moving());
+        let mut now = 3.0;
+        glide(&mut follower, &mut now, 120, 1000.0, Some(800.0));
+        assert!(!follower.moving());
+    }
 
     /// The line being sung: its first word lit, the next lit to half way
     /// (dim beyond the soft edge), the last not yet.
