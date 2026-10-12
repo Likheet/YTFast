@@ -1266,11 +1266,12 @@ installer files, the Move to Applications question before signing in), and
 the demo off the screen on the owner's laptop (release build): its window
 closed and the demo running on (the measurements above), a hidden start
 with no window and a second one ending at once, `--quit` ending it in 0.4
-s. Not yet tested: the window brought back for real (it shows on the
-screen), the icon clicked by hand, the installer on the owner's laptop,
-starting with the computer for real, anything with the owner's account,
-and the Mac (its menu bar icon, the Dock, Move to Applications, the login
-item).
+s, and, with the owner's leave (it shows on the screen), the window
+brought back by a second launch (handed over in 0.13 s), drawn whole
+again, the song playing on. Not yet tested: the icon clicked by hand, the
+installer on the owner's laptop, starting with the computer for real,
+anything with the owner's account, and the Mac (its menu bar icon, the
+Dock, Move to Applications, the login item).
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
