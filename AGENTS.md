@@ -1279,7 +1279,7 @@ installer on the owner's laptop, starting with the computer for real,
 anything with the owner's account, and the Mac (its menu bar icon, the
 Dock, Move to Applications, the login item).
 
-Then (13 October 2026, not yet released), at the owner's word: the
+Then (13 October 2026, version 1.3.1), at the owner's word: the
 folders finished updates leave beside the program are removed as YTFast
 starts (above, Updates). The owner's Downloads held 9 of them, 411 MB,
 which were moved to the Recycle Bin by hand. Tested: the unit tests (a
