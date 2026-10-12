@@ -149,7 +149,10 @@ impl Updates {
         let (shared, auto) = (Arc::clone(&state), Arc::clone(&automatic));
         let started = std::thread::Builder::new()
             .name("ytfast-updates".into())
-            .spawn(move || run(&receiver, &shared, &auto, &wake));
+            .spawn(move || {
+                clear_finished_updates();
+                run(&receiver, &shared, &auto, &wake);
+            });
         if let Err(e) = started {
             log::warn!("updates: could not start: {e}");
         }
@@ -434,6 +437,77 @@ fn mark_portable() {
     }
 }
 
+/// How long the helper's last word (`result.txt`) must be on disk before
+/// its folder goes: it writes it just before it ends.
+const FINISHED_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// On Windows each update stages in a folder of its own beside the program
+/// (fastframe-update's `.ytfast-update-` and 16 hex digits), never used
+/// again and never removed: about 45 MB each, the old program among them
+/// (the owner's Downloads held 9, 411 MB). As YTFast starts, before it
+/// looks for a new version, it lets go of those it no longer needs.
+fn clear_finished_updates() {
+    if !cfg!(windows) {
+        return;
+    }
+    let Some(folder) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    for name in clear_finished(&folder, SystemTime::now()) {
+        log::info!("updates: removed {name}, a finished update's folder");
+    }
+}
+
+/// Removes the update folders in `folder` that nothing needs any more, and
+/// returns their names:
+/// - an update that finished, its helper's `result.txt` (written last,
+///   "Updated to ..." or why it was undone) at least [`FINISHED_FOR`] old;
+/// - a download an earlier run never installed (no `handoff.json`): this
+///   run's own come after (it looks a minute after starting), and a new
+///   download always gets a new folder.
+///
+/// Kept: an update handed over and not finished (this very run may be the
+/// version it started, before it confirms that it opened: the helper reads
+/// the folder until then), one finished just now, and anything else.
+fn clear_finished(folder: &std::path::Path, now: SystemTime) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let staged = name
+            .strip_prefix(".ytfast-update-")
+            .is_some_and(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()));
+        // A folder itself: never one reached through a link.
+        let real_folder = entry
+            .file_type()
+            .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink());
+        if !staged || !real_folder {
+            continue;
+        }
+        let path = entry.path();
+        let finished = std::fs::metadata(path.join("result.txt"))
+            .and_then(|result| result.modified())
+            .is_ok_and(|written| {
+                now.duration_since(written)
+                    .is_ok_and(|age| age >= FINISHED_FOR)
+            });
+        let never_handed_over = !path.join("handoff.json").exists();
+        if !(finished || never_handed_over) {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed.push(name),
+            Err(e) => log::warn!("updates: could not remove {name}: {e}"),
+        }
+    }
+    removed
+}
+
 /// `--update-dry-run`: looks for the newest release as if this were the
 /// oldest version, downloads and checks it as an update would (signature,
 /// checksum, its `--version`), says what happened, and installs nothing.
@@ -550,5 +624,69 @@ mod tests {
         assert_eq!(next.wait(put_back), GLANCE);
         assert!(!next.due(put_back + 23 * HOUR));
         assert!(next.due(put_back + 24 * HOUR));
+    }
+
+    /// The update folders beside the program that nothing needs go, and
+    /// nothing else: in a folder of the test's own.
+    #[test]
+    fn finished_updates_folders_are_let_go_of() {
+        let beside = tempfile::tempdir().unwrap();
+        let folder = |id: &str, files: &[&str]| {
+            let path = beside.path().join(format!(".ytfast-update-{id}"));
+            std::fs::create_dir(&path).unwrap();
+            for file in files {
+                std::fs::write(path.join(file), b"x").unwrap();
+            }
+        };
+        let done = [
+            "handoff.json",
+            "helper.exe",
+            "helper.log",
+            "previous",
+            "ready",
+            "started",
+            "result.txt",
+        ];
+        // Updated (or undone): the helper has ended.
+        folder("33bfc1294b0636a9", &done);
+        // Downloaded by an earlier run and never installed.
+        folder("0123456789abcdef", &["ytfast.exe"]);
+        // Handed over, not finished: this run may be the version it started.
+        folder(
+            "aa88eedcdb942873",
+            &["handoff.json", "helper.exe", "ready", "previous"],
+        );
+        // Not fastframe-update's, or not a folder.
+        folder("not-hex-digits00", &done);
+        std::fs::write(beside.path().join(".ytfast-update-778e8edf6746a522"), b"x").unwrap();
+        std::fs::create_dir(beside.path().join(".sample-update-0000000000000000")).unwrap();
+        std::fs::write(beside.path().join("YTFast.exe"), b"the program").unwrap();
+        std::fs::write(beside.path().join("ytfast-portable.txt"), b"x").unwrap();
+
+        // Just finished: the helper may still be ending.
+        let now = SystemTime::now();
+        let mut removed = clear_finished(beside.path(), now);
+        assert_eq!(removed, [".ytfast-update-0123456789abcdef"]);
+        // Ten minutes on, the finished one goes too.
+        removed = clear_finished(beside.path(), now + FINISHED_FOR);
+        assert_eq!(removed, [".ytfast-update-33bfc1294b0636a9"]);
+        let mut left: Vec<String> = std::fs::read_dir(beside.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                ".sample-update-0000000000000000",
+                ".ytfast-update-778e8edf6746a522",
+                ".ytfast-update-aa88eedcdb942873",
+                ".ytfast-update-not-hex-digits00",
+                "YTFast.exe",
+                "ytfast-portable.txt",
+            ]
+        );
+        // A folder that cannot be read lets nothing go.
+        assert!(clear_finished(&beside.path().join("missing"), now).is_empty());
     }
 }
