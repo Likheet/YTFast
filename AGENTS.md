@@ -436,7 +436,13 @@ Paolino), as `audio.rs` does.
   "Restart to update"). `YTFAST_DEMO_UPDATE=downloading` (or `ready`)
   shows them in the demo. fastframe-update's helper swaps the program
   while YTFast is closed and puts the old one back if the new one does
-  not start. On a Mac fastframe-update installs only apps signed with a
+  not start. Each update works in a folder of its own beside the program
+  (`.ytfast-update-` and 16 hex digits, about 45 MB with the old program
+  in it), which fastframe-update never removes: as YTFast starts, before
+  it looks for a new version, it removes those of updates that finished
+  (their helper's `result.txt` at least 10 minutes old) and downloads an
+  earlier run never installed (no `handoff.json`), keeping an update
+  under way (`update::clear_finished`). On a Mac fastframe-update installs only apps signed with a
   paid Apple developer certificate, so YTFast does it itself there
   (`update_mac.rs`, from 0.6.4): it downloads the release's `YTFast.dmg`,
   checks `checksums.txt`'s signature and the image's checksum as
@@ -1272,6 +1278,15 @@ again, the song playing on. Not yet tested: the icon clicked by hand, the
 installer on the owner's laptop, starting with the computer for real,
 anything with the owner's account, and the Mac (its menu bar icon, the
 Dock, Move to Applications, the login item).
+
+Then (13 October 2026, not yet released), at the owner's word: the
+folders finished updates leave beside the program are removed as YTFast
+starts (above, Updates). The owner's Downloads held 9 of them, 411 MB,
+which were moved to the Recycle Bin by hand. Tested: the unit tests (a
+finished update's folder kept while its helper may still be ending and
+removed 10 minutes on, a download never installed removed, an update
+under way kept, and nothing else touched, in a folder of the test's own).
+Not yet tested: on the owner's laptop, after a real update.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
