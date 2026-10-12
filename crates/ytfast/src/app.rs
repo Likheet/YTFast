@@ -59,11 +59,18 @@ pub struct Settings {
     /// does.
     pub skip_disliked: bool,
     /// Closing the window while a song plays asks first
-    /// ([`Dialog::ConfirmClose`]).
+    /// ([`Dialog::ConfirmClose`]). Only with `keep_running` off: on, closing
+    /// stops nothing.
     pub confirm_close: bool,
     /// Lyrics show each line in English too, and in Latin letters when
     /// written in another script (the Lyrics tab's Translate).
     pub translate_lyrics: bool,
+    /// Closing the window leaves YTFast running, the music playing, its
+    /// icon by the clock (`tray`), whose menu quits. Off: closing quits.
+    pub keep_running: bool,
+    /// YTFast opens when the user signs in to the computer, without its
+    /// window (`login`).
+    pub open_at_login: bool,
 }
 
 impl Settings {
@@ -101,6 +108,8 @@ impl Default for Settings {
             skip_disliked: true,
             confirm_close: true,
             translate_lyrics: false,
+            keep_running: true,
+            open_at_login: false,
         }
     }
 }
@@ -287,6 +296,8 @@ pub enum Setting {
     SkipDisliked,
     ConfirmClose,
     TranslateLyrics,
+    KeepRunning,
+    OpenAtLogin,
 }
 
 /// A small window asking one thing.
@@ -332,6 +343,9 @@ pub enum Dialog {
     ConfirmClose {
         dont_ask: bool,
     },
+    /// A Mac's YTFast opened from its disk image offers to move itself to
+    /// Applications (`update_mac::move_to_applications`).
+    MoveToApplications,
 }
 
 /// The player page's tabs.
@@ -436,6 +450,9 @@ pub enum Action {
     ConfirmClose {
         dont_ask: bool,
     },
+    /// A Mac's YTFast moves itself from its disk image to Applications,
+    /// closes, and opens there.
+    MoveToApplications,
     OpenDialog(Dialog),
     RenamePlaylist {
         playlist_id: String,
@@ -566,6 +583,33 @@ pub struct App {
     /// `close_now` has asked it to), without asking again.
     closing: bool,
     close_now: bool,
+    /// Draws whichever window is open again, or wakes YTFast running
+    /// without one (fastframe-shell): what the threads and the icon hold.
+    pub waker: fastframe_shell::Waker,
+    /// The icon by the clock (`tray`); none in the tests, or where it
+    /// cannot be made.
+    tray: Option<fastframe_tray::Tray>,
+    /// What the icon's menu and tooltip say now.
+    tray_shown: crate::tray::Shown,
+    /// The icon is shown, so a window closed can leave YTFast running.
+    pub has_tray: bool,
+    /// A window is open; none while YTFast runs on, closed (or started
+    /// with the computer).
+    pub window_open: bool,
+    /// The window is closing and YTFast runs on without it.
+    hide_intent: bool,
+    /// A window is wanted (the icon, the Dock, another launch).
+    wants_show: bool,
+    /// YTFast is quitting: the icon's Quit, the close question's Yes, an
+    /// update, or with "Keep playing when closed" off, the window's close.
+    quit_requested: bool,
+    /// What other launches asked for (`instance`).
+    asked: std::sync::Arc<crate::instance::Asked>,
+    /// Where the settings and the queue are saved while no window is open
+    /// (eframe saves them while one is); none in the tests.
+    store: Option<crate::store::Store>,
+    /// What was saved while no window was open, last, and when.
+    saved_headless: Option<(Instant, Vec<(&'static str, String)>)>,
     pub settings: Settings,
     pub auth: Auth,
     pub route: Route,
@@ -718,34 +762,33 @@ fn default_browser() -> Browser {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, demo: bool, startup: Startup) -> Self {
-        let script_fonts = crate::theme::install(&cc.egui_ctx);
-        // The demo laid out as on another screen (`YTFAST_DEMO_ZOOM`): 0.67
-        // shows a laptop's window as a 2560 wide screen's, smaller, for
-        // pictures of large screens on a small one. Set every time, as the
-        // demo's saved window state would otherwise keep the last one.
-        if demo {
-            let zoom = std::env::var("YTFAST_DEMO_ZOOM")
-                .ok()
-                .and_then(|z| z.parse::<f32>().ok())
-                .filter(|z| (0.25..=4.0).contains(z))
-                .unwrap_or(1.0);
-            cc.egui_ctx.set_zoom_factor(zoom);
-        }
-        let settings: Settings = cc
-            .storage
-            .and_then(|s| eframe::get_value::<Settings>(s, "ytfast"))
+    /// The app, before any window: it may run without one from the start
+    /// (with the computer). Its settings and queue come from `store`, as
+    /// eframe kept them; `waker` wakes it, with or without a window.
+    pub fn new(
+        waker: &fastframe_shell::Waker,
+        demo: bool,
+        startup: Startup,
+        store: Option<crate::store::Store>,
+        asked: std::sync::Arc<crate::instance::Asked>,
+    ) -> Self {
+        let settings: Settings = store
+            .as_ref()
+            .and_then(|s| s.get::<Settings>("ytfast"))
             .map(Settings::loaded)
             .unwrap_or_default();
 
-        let ctx = cc.egui_ctx.clone();
-        let wake = move || ctx.request_repaint();
+        let wake = {
+            let waker = waker.clone();
+            move || waker.wake()
+        };
         let backend = Backend::start(wake.clone(), demo).expect("YtFast's folders can be made");
         let audio = Audio::start(wake.clone(), demo);
 
         let mut info = now_playing::App::new("ytfast", "YTFast");
         info.can_raise = true;
-        let controls = Some(now_playing::NowPlaying::start(info, wake));
+        let controls = Some(now_playing::NowPlaying::start(info, wake.clone()));
+        let tray = crate::tray::spawn(demo, wake.clone());
         let updates = if demo {
             // The demo looks for nothing; `YTFAST_DEMO_UPDATE` (downloading
             // or ready) shows the update badge and window as they would be.
@@ -762,27 +805,67 @@ impl App {
                 })
             })
         } else {
-            let ctx = cc.egui_ctx.clone();
-            Some(crate::update::Updates::start(
-                settings.auto_update,
-                move || ctx.request_repaint(),
-            ))
+            Some(crate::update::Updates::start(settings.auto_update, wake))
         };
-        let mut app = Self::with(backend, audio, controls, script_fonts, settings, demo);
+        // This copy starts with the computer while the setting is on.
+        if !demo {
+            crate::login::set(settings.open_at_login);
+        }
+        let fonts = crate::theme::ScriptFonts::new();
+        let mut app = Self::with(backend, audio, controls, fonts, settings, demo);
         // Where the music was when YTFast was last closed: taken up once
         // signed in.
         if !demo {
-            app.left_off = cc
-                .storage
-                .and_then(|s| eframe::get_value::<Option<LeftOff>>(s, LEFT_OFF_KEY))
+            app.left_off = store
+                .as_ref()
+                .and_then(|s| s.get::<Option<LeftOff>>(LEFT_OFF_KEY))
                 .flatten();
         }
+        // A Mac's YTFast opened from its disk image offers to move itself.
+        if !demo && crate::update_mac::from_disk_image() {
+            *app.dialog.get_mut() = Some(Dialog::MoveToApplications);
+        }
+        app.waker = waker.clone();
+        app.has_tray = tray.as_ref().is_some_and(fastframe_tray::Tray::is_shown);
+        app.tray = tray;
+        app.asked = asked;
+        app.store = store;
         app.updates = updates;
         app.receipt = startup.receipt;
         if let Some(error) = startup.update_error {
             app.notify(error);
         }
         app
+    }
+
+    /// A window opened (the first, or one asked for after YTFast ran on
+    /// without one): what egui needs in it, set up again, as the window
+    /// before took all it held.
+    pub fn attach(&mut self, ctx: &egui::Context) {
+        crate::theme::install_in(ctx, &mut self.script_fonts);
+        // The demo laid out as on another screen (`YTFAST_DEMO_ZOOM`): 0.67
+        // shows a laptop's window as a 2560 wide screen's, smaller, for
+        // pictures of large screens on a small one. Set every time, as the
+        // demo's saved window state would otherwise keep the last one.
+        if self.demo {
+            let zoom = std::env::var("YTFAST_DEMO_ZOOM")
+                .ok()
+                .and_then(|z| z.parse::<f32>().ok())
+                .filter(|z| (0.25..=4.0).contains(z))
+                .unwrap_or(1.0);
+            ctx.set_zoom_factor(zoom);
+        }
+        // egui's colours and the look's fonts, set for this window.
+        self.styled = None;
+        self.window_checked = false;
+        self.window_open = true;
+        self.hide_intent = false;
+        self.wants_show = false;
+        // A Mac's menu bar item is made with the first window, and each
+        // window brings YTFast forward.
+        if let Some(tray) = &mut self.tray {
+            tray.attach();
+        }
     }
 
     /// The app around a backend and a player already started (stand-ins,
@@ -840,6 +923,18 @@ impl App {
             restarting: false,
             closing: false,
             close_now: false,
+            waker: fastframe_shell::Waker::default(),
+            tray: None,
+            tray_shown: crate::tray::Shown::default(),
+            has_tray: false,
+            // The tests' window; from the first window on, the shell's.
+            window_open: true,
+            hide_intent: false,
+            wants_show: false,
+            quit_requested: false,
+            asked: std::sync::Arc::default(),
+            store: None,
+            saved_headless: None,
             settings,
             auth,
             route: Route::Home,
@@ -3011,6 +3106,13 @@ impl App {
                     Setting::SkipDisliked => s.skip_disliked = !s.skip_disliked,
                     Setting::ConfirmClose => s.confirm_close = !s.confirm_close,
                     Setting::TranslateLyrics => s.translate_lyrics = !s.translate_lyrics,
+                    Setting::KeepRunning => s.keep_running = !s.keep_running,
+                    Setting::OpenAtLogin => {
+                        s.open_at_login = !s.open_at_login;
+                        if !self.demo {
+                            crate::login::set(s.open_at_login);
+                        }
+                    }
                     Setting::AutoUpdate => {
                         s.auto_update = !s.auto_update;
                         if let Some(updates) = &self.updates {
@@ -3050,7 +3152,16 @@ impl App {
                 }
                 self.closing = true;
                 self.close_now = true;
+                self.quit_requested = true;
             }
+            Action::MoveToApplications => match crate::update_mac::move_to_applications() {
+                // The helper waits for YTFast to end, then opens the copy.
+                Ok(()) => {
+                    self.quit_requested = true;
+                    self.close_now = true;
+                }
+                Err(e) => self.notify(e),
+            },
             Action::RenamePlaylist {
                 playlist_id,
                 name,
@@ -3403,18 +3514,29 @@ impl App {
         }
     }
 
-    /// The window asked to close (its ×, Alt+F4, the taskbar, a Mac's
-    /// red button) while a song plays: it stays, and asks first
-    /// ([`Dialog::ConfirmClose`]), unless Settings says not to, an update
-    /// is closing YTFast, or the question was answered Yes.
+    /// The window asked to close (its ×, Alt+F4, the taskbar, a Mac's red
+    /// button). With "Keep playing when closed" on, it closes and YTFast
+    /// runs on without it, its icon by the clock (`hide_intent`, which the
+    /// shell reads). Otherwise, while a song plays, it stays and asks first
+    /// ([`Dialog::ConfirmClose`]), unless Settings says not to. Quitting
+    /// (the icon's Quit, the question answered Yes, an update) closes it
+    /// for good. Read in `logic`, which eframe also runs for a minimized
+    /// window (closed from the taskbar).
     fn ask_before_closing(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.close_now) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        if self.quit_requested || !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if self.keeps_running() {
+            self.hide_intent = true;
+            return;
+        }
         let sounding = self.playback.state == PlayState::Playing && !self.audio_status.paused;
         let ask = self.settings.confirm_close && sounding && !self.closing && !self.restarting;
-        if !ask || !ctx.input(|i| i.viewport().close_requested()) {
+        if !ask {
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -3424,6 +3546,194 @@ impl App {
         if !matches!(*self.dialog.get_mut(), Some(Dialog::ConfirmClose { .. })) {
             self.apply(Action::OpenDialog(Dialog::ConfirmClose { dont_ask: true }));
         }
+    }
+
+    /// Closing the window leaves YTFast running: the setting is on, and
+    /// the icon is there to bring the window back and to quit.
+    pub fn keeps_running(&self) -> bool {
+        self.settings.keep_running && self.has_tray
+    }
+
+    /// What keeps YTFast going, with a window or none: the backend's and
+    /// the player's news, the updater, the media keys, the icon by the
+    /// clock and other launches, and what they asked for.
+    fn background(&mut self, ctx: &egui::Context) {
+        self.script_fonts.add_when_read();
+        self.handle_events();
+        self.watch_updates();
+        self.media_controls();
+        self.tray_and_launches(ctx);
+        // A media key pressed while the window is hidden acts at once.
+        self.apply_actions();
+        self.show_in_tray();
+    }
+
+    /// The icon's clicks (`tray`), and what other launches asked for
+    /// (`instance`).
+    fn tray_and_launches(&mut self, ctx: &egui::Context) {
+        let events = self
+            .tray
+            .as_ref()
+            .map(fastframe_tray::Tray::events)
+            .unwrap_or_default();
+        for event in events {
+            self.tray_event(event, ctx);
+        }
+        if self.asked.take_show() {
+            self.show_window(ctx);
+        }
+        if self.asked.take_quit() {
+            self.quit(ctx);
+        }
+        if let Some(tray) = &self.tray {
+            self.has_tray = tray.is_shown();
+        }
+    }
+
+    /// A click on the icon, or one of its menu's entries.
+    fn tray_event(&mut self, event: fastframe_tray::Event, ctx: &egui::Context) {
+        use fastframe_tray::Event;
+        match event {
+            // Windows' click and a Mac's Dock: the window; a Mac's click
+            // on its menu bar item too.
+            Event::Show | Event::Toggle | Event::Menu(crate::tray::SHOW) => self.show_window(ctx),
+            Event::Menu(crate::tray::PLAY_PAUSE) => self.act(Action::TogglePause),
+            Event::Menu(crate::tray::NEXT) => self.act(Action::Next),
+            Event::Menu(crate::tray::PREVIOUS) => self.act(Action::Previous),
+            Event::Menu(crate::tray::QUIT) => self.quit(ctx),
+            Event::Menu(_) => {}
+        }
+    }
+
+    /// Brings the window back: a new one when none is open (the shell
+    /// makes it), else the one open, from the taskbar or the Dock too.
+    fn show_window(&mut self, ctx: &egui::Context) {
+        if self.window_open {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        } else {
+            self.wants_show = true;
+        }
+    }
+
+    /// Quits YTFast (the icon's Quit, `--quit`), without asking: the
+    /// window closes for good, or YTFast ends without one.
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quit_requested = true;
+        if self.window_open {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// The icon's menu (Play or Pause, what can be chosen) and its tooltip
+    /// (the song), told what changed.
+    fn show_in_tray(&mut self) {
+        let Some(tray) = &mut self.tray else {
+            return;
+        };
+        let entry = self.playback.entry.as_ref();
+        let shown = crate::tray::Shown {
+            sounding: self.playback.state == PlayState::Playing && !self.audio_status.paused,
+            song: entry.is_some(),
+            tooltip: crate::tray::tooltip(
+                crate::tray::name(self.demo),
+                entry.map(|e| (e.track.title.as_str(), e.track.artists.as_str())),
+            ),
+        };
+        if shown != self.tray_shown {
+            shown.apply(&self.tray_shown, tray);
+            self.tray_shown = shown;
+        }
+    }
+
+    /// The window closed and YTFast runs on: what the window held (its
+    /// pictures on the graphics card, its fonts, a question it asked) went
+    /// with it, and the next window starts afresh. Covers come back from
+    /// the backend's memory, not from YouTube.
+    fn window_gone(&mut self) {
+        self.window_open = false;
+        self.hide_intent = false;
+        self.wants_show = false;
+        *self.images.get_mut() = Images::default();
+        *self.page_cover.get_mut() = None;
+        *self.listening_wash.get_mut() = None;
+        if let Some(VideoShow {
+            state: VideoState::Playing { video, shown },
+            ..
+        }) = &mut self.video
+        {
+            *shown.get_mut() = None;
+            video.rest();
+        }
+        self.video_drawn.set(false);
+        self.script_fonts.detach();
+        self.fullscreen = false;
+        self.fullscreen_wanted = None;
+        *self.dialog.get_mut() = None;
+        *self.pointed.get_mut() = None;
+        // eframe saved everything as the window closed.
+        self.saved_headless = Some((Instant::now(), Vec::new()));
+    }
+
+    /// With no window open, eframe saves nothing: the settings and the
+    /// queue are saved here when they changed, at most every
+    /// [`HEADLESS_SAVE`] (eframe's own pace), and at once as YTFast quits
+    /// (`now`).
+    fn save_headless(&mut self, now: bool) {
+        if self.store.is_none() || self.demo {
+            return;
+        }
+        let recent = self
+            .saved_headless
+            .as_ref()
+            .is_some_and(|(at, _)| at.elapsed() < HEADLESS_SAVE);
+        if recent && !now {
+            return;
+        }
+        let left_off = self.left_off.clone().or_else(|| self.left_off());
+        let values: Vec<(&'static str, String)> = [
+            ("ytfast", crate::store::text(self.settings.for_saving())),
+            (LEFT_OFF_KEY, crate::store::text(&left_off)),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| Some((key, value?)))
+        .collect();
+        if self
+            .saved_headless
+            .as_ref()
+            .is_some_and(|(_, saved)| *saved == values)
+        {
+            return;
+        }
+        if let Some(store) = &self.store {
+            store.set(&values);
+        }
+        self.saved_headless = Some((Instant::now(), values));
+    }
+
+    /// A freshly installed version is up: its receipt tells the helper to
+    /// keep it (else it puts the old version back).
+    fn acknowledge_update(&mut self) {
+        if let Some(receipt) = self.receipt.take() {
+            std::thread::spawn(move || {
+                if let Err(e) = receipt.acknowledge() {
+                    log::warn!("updates: could not confirm the new version: {e:#}");
+                }
+            });
+        }
+    }
+
+    /// YTFast ends: the last song's report goes to YouTube, and the
+    /// sign-in's copy goes. Quit with no window open, the settings and the
+    /// queue are saved here (eframe saved them as a window closed).
+    fn shutdown(&mut self) {
+        if !self.window_open {
+            self.save_headless(true);
+        }
+        if let Some(url) = self.listened_report() {
+            self.backend.report_before_closing(url);
+        }
+        self.backend.forget_sign_in();
     }
 
     /// The desktop's media keys and Now Playing panel.
@@ -3627,6 +3937,15 @@ const MAX_SKIPS: usize = 5;
 /// How long a notice shows: 3 s, as YouTube Music's, and 0.3 s to go.
 const NOTICE_TIME: Duration = Duration::from_millis(3300);
 
+/// The most often the settings and the queue are saved while no window is
+/// open: as often as eframe saves them with one (every 30 s).
+const HEADLESS_SAVE: Duration = Duration::from_secs(30);
+
+/// How often YTFast, running without a window, looks at the song playing
+/// (for the media overlay's time, and the queue to save). The player says
+/// itself when a song ends, and media keys and the icon wake it at once.
+const HEADLESS_PLAYING: Duration = Duration::from_secs(1);
+
 /// The widest texture egui makes (see `raw_input_hook`). The covers are
 /// far smaller.
 const MAX_TEXTURE_SIDE: usize = 4096;
@@ -3653,12 +3972,7 @@ impl eframe::App for App {
     /// hidden, when eframe draws nothing: what keeps the music going (the
     /// next song, the media keys) must not wait for the window to show.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.script_fonts.add_when_read();
-        self.handle_events();
-        self.watch_updates();
-        self.media_controls();
-        // A media key pressed while the window is hidden acts at once.
-        self.apply_actions();
+        self.background(ctx);
         self.ask_before_closing(ctx);
         // Keep the progress bar moving, and hear when the song ends, while
         // a song plays.
@@ -3677,21 +3991,15 @@ impl eframe::App for App {
             // Dynamic Background sets everything in Inter.
             self.script_fonts.set_inter_first(crate::theme::dynamic());
         }
-        // A freshly installed version is up: its receipt tells the helper
-        // to keep it.
-        if let Some(receipt) = self.receipt.take() {
-            std::thread::spawn(move || {
-                if let Err(e) = receipt.acknowledge() {
-                    log::warn!("updates: could not confirm the new version: {e:#}");
-                }
-            });
-        }
-        // The helper waits for this window to close to install the update.
+        // A freshly installed version is up, its window drawn.
+        self.acknowledge_update();
+        // The helper waits for YTFast to end to install the update.
         if !self.restarting
             && self.updates.as_ref().map(crate::update::Updates::state)
                 == Some(crate::update::State::Restarting)
         {
             self.restarting = true;
+            self.quit_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.scrolling.apply(&ctx);
@@ -3759,13 +4067,95 @@ impl eframe::App for App {
             eframe::set_value(storage, LEFT_OFF_KEY, &left_off);
         }
     }
+}
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Sent before the backend stops with the window.
-        if let Some(url) = self.listened_report() {
-            self.backend.report_before_closing(url);
+/// What fastframe-shell does with the app between windows: a window
+/// closed with "Keep playing when closed" on leaves YTFast running without
+/// one, the music playing, until the icon, the Dock or another launch asks
+/// for a window again, or its Quit ends it.
+impl fastframe_shell::Resident for App {
+    fn closed(&self) -> fastframe_shell::Closed {
+        if self.hide_intent && !self.quit_requested {
+            fastframe_shell::Closed::Hide
+        } else {
+            fastframe_shell::Closed::Quit
         }
-        self.backend.forget_sign_in();
+    }
+
+    fn window_gone(&mut self) {
+        App::window_gone(self);
+    }
+
+    /// What a frame does to keep the music going, without drawing; then
+    /// asleep until the player, the backend, a media key, the icon or
+    /// another launch wakes it (the song playing looked at each second).
+    fn headless_frame(&mut self, ctx: &egui::Context) -> fastframe_shell::Headless {
+        use fastframe_shell::Headless;
+        self.background(ctx);
+        self.save_headless(false);
+        if self.quit_requested {
+            Headless::Quit
+        } else if self.wants_show {
+            Headless::Show
+        } else if self.playback.state == PlayState::Playing && !self.audio_status.paused {
+            Headless::WaitFor(HEADLESS_PLAYING)
+        } else {
+            Headless::WaitFor(Duration::MAX)
+        }
+    }
+
+    /// Started with the computer: no window, only the icon, when there is
+    /// one to bring the window back with.
+    fn start_hidden(&mut self) -> bool {
+        if !self.has_tray {
+            return false;
+        }
+        // A Mac's menu bar item, made without bringing YTFast forward.
+        if let Some(tray) = &mut self.tray {
+            tray.create_item();
+        }
+        // A version installed just now is up: no window to wait for.
+        self.acknowledge_update();
+        true
+    }
+
+    fn shutdown(&mut self) {
+        App::shutdown(self);
+    }
+}
+
+/// A window around the app (fastframe-shell): eframe drops it with the
+/// window, handing the app back to the shell, which runs it on without a
+/// window or ends it.
+pub struct AppWindow {
+    app: fastframe_shell::Held<App>,
+}
+
+impl AppWindow {
+    pub fn new(app: fastframe_shell::Held<App>) -> Self {
+        Self { app }
+    }
+}
+
+impl eframe::App for AppWindow {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        eframe::App::logic(&mut *self.app, ctx, frame);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        eframe::App::ui(&mut *self.app, ui, frame);
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        eframe::App::raw_input_hook(&mut *self.app, ctx, raw_input);
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        eframe::App::persist_egui_memory(&*self.app)
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::App::save(&mut *self.app, storage);
     }
 }
 
@@ -6324,6 +6714,149 @@ mod tests {
         assert!(!cancels(&w.close_request()));
     }
 
+    /// With "Keep playing when closed" on and the icon by the clock, the
+    /// window closes and YTFast runs on: nothing asks, nothing stops, and
+    /// the shell keeps the app. Without the icon (no way back), or with the
+    /// switch off, closing quits, asking first while a song plays, as
+    /// before; the icon's Quit quits without asking.
+    #[test]
+    fn closing_leaves_ytfast_running_by_the_clock() {
+        use fastframe_shell::{Closed, Resident};
+        let cancels = |commands: &[egui::ViewportCommand]| {
+            commands.contains(&egui::ViewportCommand::CancelClose)
+        };
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.app.has_tray = true;
+        w.h.play(&["a", "b"]);
+        w.h.commands();
+        assert!(!cancels(&w.close_request()));
+        assert!(w.h.app.dialog.borrow().is_none(), "nothing asks");
+        assert_eq!(Resident::closed(&w.h.app), Closed::Hide);
+        assert!(w.h.commands().is_empty(), "the music goes on");
+
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.play(&["a"]);
+        assert!(cancels(&w.close_request()), "no icon: it asks");
+        assert_eq!(Resident::closed(&w.h.app), Closed::Quit);
+
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.app.has_tray = true;
+        w.h.app.settings.keep_running = false;
+        w.h.play(&["a"]);
+        assert!(cancels(&w.close_request()), "switched off: it asks");
+        assert_eq!(Resident::closed(&w.h.app), Closed::Quit);
+
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.app.has_tray = true;
+        w.h.play(&["a"]);
+        let ctx = w.h.ctx.clone();
+        w.h.app
+            .tray_event(fastframe_tray::Event::Menu(crate::tray::QUIT), &ctx);
+        assert!(!cancels(&w.close_request()), "Quit asks nothing");
+        assert_eq!(Resident::closed(&w.h.app), Closed::Quit);
+    }
+
+    /// The window gone, YTFast plays on without one: a song that ends
+    /// moves on to the next, the icon's Previous and Pause act, YTFast
+    /// sleeps while nothing plays, a window comes back when another launch
+    /// (or the icon) asks for one, and the icon's Quit ends YTFast.
+    #[test]
+    fn without_a_window_the_music_goes_on() {
+        use fastframe_shell::{Headless, Resident};
+        use fastframe_tray::Event as Click;
+        let mut h = Harness::new();
+        h.app.has_tray = true;
+        h.play(&["a", "b"]);
+        Resident::window_gone(&mut h.app);
+        assert!(!h.app.window_open);
+        let headless = egui::Context::default();
+        assert_eq!(
+            Resident::headless_frame(&mut h.app, &headless),
+            Headless::WaitFor(HEADLESS_PLAYING),
+            "playing: looked at each second"
+        );
+
+        let (first, _) = h.entry();
+        h.app.audio.set_status(|s| s.ended = Some(first));
+        Resident::headless_frame(&mut h.app, &headless);
+        assert_eq!(h.entry().1, "b", "the next song, without a window");
+        h.ready();
+
+        h.app
+            .tray_event(Click::Menu(crate::tray::PREVIOUS), &headless);
+        Resident::headless_frame(&mut h.app, &headless);
+        assert_eq!(h.entry().1, "a");
+        h.ready();
+        h.commands();
+        h.app
+            .tray_event(Click::Menu(crate::tray::PLAY_PAUSE), &headless);
+        Resident::headless_frame(&mut h.app, &headless);
+        assert!(h.commands().iter().any(|c| matches!(c, Command::Pause)));
+        h.app.audio.set_status(|s| s.paused = true);
+        assert_eq!(
+            Resident::headless_frame(&mut h.app, &headless),
+            Headless::WaitFor(Duration::MAX),
+            "paused: asleep until woken"
+        );
+
+        h.app.asked.handle(crate::instance::request::SHOW, &|| {});
+        assert_eq!(
+            Resident::headless_frame(&mut h.app, &headless),
+            Headless::Show
+        );
+        let ctx = h.ctx.clone();
+        h.app.attach(&ctx);
+        assert!(h.app.window_open);
+
+        Resident::window_gone(&mut h.app);
+        h.app.tray_event(Click::Show, &headless);
+        assert_eq!(
+            Resident::headless_frame(&mut h.app, &headless),
+            Headless::Show,
+            "the icon's click"
+        );
+        h.app.attach(&ctx);
+        Resident::window_gone(&mut h.app);
+        h.app.tray_event(Click::Menu(crate::tray::QUIT), &headless);
+        assert_eq!(
+            Resident::headless_frame(&mut h.app, &headless),
+            Headless::Quit
+        );
+    }
+
+    /// Started with the computer, YTFast opens no window only when the
+    /// icon is there to bring one back.
+    #[test]
+    fn starting_hidden_needs_the_icon() {
+        use fastframe_shell::Resident;
+        let mut h = Harness::new();
+        assert!(!Resident::start_hidden(&mut h.app));
+        h.app.has_tray = true;
+        assert!(Resident::start_hidden(&mut h.app));
+    }
+
+    /// With no window open, eframe saves nothing: YTFast saves the settings
+    /// and the queue itself when they changed (not again just after the
+    /// window saved them), and as it quits.
+    #[test]
+    fn without_a_window_the_queue_is_kept_for_the_next_run() {
+        use fastframe_shell::Resident;
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("app.ron");
+        let mut h = Harness::new();
+        h.app.has_tray = true;
+        h.app.store = Some(crate::store::Store::at(path.clone()));
+        h.play(&["a", "b"]);
+        Resident::window_gone(&mut h.app);
+        h.app.save_headless(false);
+        assert!(!path.exists(), "the window saved it as it closed");
+        Resident::shutdown(&mut h.app);
+        let store = crate::store::Store::at(path);
+        let kept = store.get::<Option<LeftOff>>(LEFT_OFF_KEY).flatten();
+        assert_eq!(kept.map(|k| k.tracks.len()), Some(2));
+        assert!(store.get::<Settings>("ytfast").is_some());
+    }
+
     /// The close question in each look: drawn, and answered.
     #[test]
     fn the_close_question_in_each_look() {
@@ -6344,6 +6877,34 @@ mod tests {
             w.click(yes.center());
             w.settle();
             assert!(!w.h.app.settings.confirm_close, "{theme:?}");
+        }
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// A Mac's Move to Applications question shows at once, before
+    /// signing in, in each look; Cancel leaves YTFast where it is.
+    #[test]
+    fn the_move_question_shows_before_signing_in() {
+        use crate::theme::Theme;
+        for theme in [
+            Theme::YouTubeMusic,
+            Theme::Premium,
+            Theme::DynamicBackground,
+        ] {
+            let mut w = Window::new(theme);
+            w.h.app.auth = Auth::Choosing {
+                browser: Browser::Firefox,
+            };
+            *w.h.app.dialog.borrow_mut() = Some(Dialog::MoveToApplications);
+            w.settle();
+            for name in ["Move", "Cancel"] {
+                assert!(w.shows(name), "{theme:?}: {name}");
+            }
+            let cancel = w.find("Cancel", 0);
+            w.click(cancel.center());
+            w.settle();
+            assert!(w.h.app.dialog.borrow().is_none(), "{theme:?}");
+            assert!(!w.h.app.quit_requested, "{theme:?}");
         }
         crate::theme::set(Theme::YouTubeMusic);
     }

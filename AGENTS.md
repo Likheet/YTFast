@@ -59,8 +59,16 @@ crates/ytfast-core/   the engine (no user interface)
   src/redact.rs       keeping secrets out of messages
   tests/fixtures/     saved YouTube replies (see its README)
 crates/ytfast/        the app: an egui window on fastframe
-  src/main.rs         starts the window (`--demo`, `--verbose`); the
-                      updater's helper and `--version` first
+  src/main.rs         starts YTFast (`--demo`, `--verbose`, `--hidden`,
+                      `--quit`): one copy at a time, then its windows;
+                      the updaters' helpers and `--version` first
+  src/store.rs        the settings and the queue saved while no window
+                      is open, in eframe's own file
+  src/tray.rs         the icon by the clock (Windows' notification area,
+                      a Mac's menu bar) and its menu
+  src/instance.rs     one YTFast at a time: a second launch shows the
+                      first one's window
+  src/login.rs        "Start with the computer"
   src/update.rs       updates from the GitHub releases (fastframe-update)
   src/update_mac.rs   the Mac's updates, done by YTFast itself
   src/app.rs          the app's state, and what every action does
@@ -90,6 +98,7 @@ crates/ytfast-release/ making a release: the signing key, the update
                       (docs/releasing.md)
 packaging/            app icon files, the Mac Info.plist and its
                       build-and-install script, the Windows resource file
+                      and installer (ytfast.iss, Inno Setup)
 docs/                 plan, how to run the app and the check
 docs/look/            the look: how YouTube Music is measured (README),
                       its sizes (reference.md), and every difference
@@ -299,13 +308,54 @@ Paolino), as `audio.rs` does.
   (fastframe-now-playing's `claim`); nothing is asked of YouTube until
   Play, which gets the song ready and starts it at that second. A jump
   before Play moves where it starts.
-- Closing the window while a song plays (its ×, Alt+F4, the taskbar, a
-  Mac's red button: one close request, `App::ask_before_closing`) keeps
-  it open and asks first ("Do you really want to close? There's a song
-  playing.", `Dialog::ConfirmClose`), with "Do not ask again" ticked: Yes
-  with it ticked turns the question off (Settings, "Ask before closing
-  while a song plays", turns it back on). Paused, or an update closing
-  YTFast, never asks.
+- Closing the window leaves YTFast running (Settings, "Keep playing when
+  closed", on by default), as Spotifast does, with fastframe-shell: the
+  window is destroyed with what it held (its textures and fonts), and
+  `App` lives on, `App::background` doing what keeps the music going (the
+  backend's and the player's news, media keys, the updater) with no window
+  (`Resident::headless_frame`), asleep until a thread, a media key or the
+  icon wakes it (the song playing looked at each second). The icon by the
+  clock (`tray.rs`, fastframe-tray: Windows' notification area, a Mac's
+  menu bar, and a Mac's Dock icon too) brings the window back, made anew
+  (`App::attach`), and its menu plays, pauses, skips and quits. One YTFast
+  runs at a time (`instance.rs`, fastframe-instance): a second launch asks
+  the first for its window and ends, before its log (which would empty the
+  first one's); the demo has a slot of its own. `--quit` asks the one
+  running to quit (`tools/look/demo.ps1 stop` uses it). With no window
+  eframe saves nothing, so `store.rs` writes the settings and the queue
+  into eframe's own file itself (at most every 30 s, and as YTFast quits).
+  Measured in the demo on the owner's laptop (release build, a song
+  playing): 1.9% of one core and 120 MB private with the window, 0.00% and
+  83 MB with it closed; started hidden and idle, 0% and 6 MB.
+- With "Keep playing when closed" off (or no icon), closing while a song
+  plays (its ×, Alt+F4, the taskbar, a Mac's red button: one close
+  request, `App::ask_before_closing`) keeps the window open and asks first
+  ("Do you really want to close? There's a song playing.",
+  `Dialog::ConfirmClose`), with "Do not ask again" ticked: Yes with it
+  ticked turns the question off (Settings, "Ask before closing while a
+  song plays", shown only then, turns it back on). Paused, the icon's
+  Quit, or an update closing YTFast, never asks.
+- "Start with the computer" (Settings, off by default; `login.rs`): YTFast
+  opens without its window (`--hidden`, only the icon) when the user signs
+  in: an entry in the user's own Run list in the registry on Windows (the
+  installer takes it away when YTFast is uninstalled), a LaunchAgent on a
+  Mac (`open -g`). Each start points it at the copy running.
+- YTFast installs as an app. On Windows `YTFast-Setup.exe`
+  (`packaging/windows/ytfast.iss`, Inno Setup, adapted from Spotifast's,
+  built, installed, run and uninstalled in CI) needs no administrator: the
+  user's own Programs folder (`%LOCALAPPDATA%\Programs\YTFast`), the Start
+  menu, a shortcut on the desktop (ticked), and Settings > Apps to
+  uninstall it. It offers to close a YTFast running first (one opened from
+  Downloads would keep the new one from opening). `ytfast-installer.txt`
+  beside the program makes fastframe-update install updates by running
+  the next release's installer silently
+  (`ytfast-v<version>-x86_64-pc-windows-msvc-setup.exe`); `YTFast.exe`
+  alone stays on each release, a portable copy. On a Mac, YTFast opened
+  from its disk image (or the Mac's copy of an app opened where it was
+  downloaded) offers to move itself to Applications
+  (`update_mac::move_to_applications`: copied, signed as an update is, and
+  put in place once YTFast has closed by the helper `--finish-mac-move`, an
+  older copy there put back if that fails).
 - F (and the shortcut list) puts the player page in full screen: the
   window fills the screen (`ViewportCommand::Fullscreen`), the top bar and
   menu go, and in every look the cover or video takes the room left of a
@@ -368,7 +418,9 @@ Paolino), as `audio.rs` does.
   beside YTFast in real use without disturbing it: it keeps a log of its
   own (`ytfast-demo.log`), leaves the sign-in folders alone, saves no
   settings, and keeps its window's size in a file of its own
-  (`demo-window.ron` in the cache folder).
+  (`demo-window.ron` in the cache folder). Its window closed, it runs on
+  as YTFast does (its icon says "YTFast demo"): `ytfast --demo --quit` ends
+  it.
 - Updates come from the repository's GitHub releases (public): a minute
   after starting and once a day YTFast looks (one request, about 12 KB),
   the day counted by the computer's clock, not by time awake, and the
@@ -1196,6 +1248,29 @@ meant; the lyrics' fades eased at 30 frames a second), and the demo off
 the screen (the measurements above). Not yet tested: the queue kept
 with the owner's account, the lyrics at 30 frames a second by the
 owner's eye, a Mac's media keys, and the Mac.
+
+Then (12 and 13 October 2026, not yet released), at the owner's word:
+YTFast keeps running with its window closed, its icon by the clock (the
+owner chose it on by default), starts with the computer when asked (a
+switch, off by default), and installs as an app (above). fastframe moved
+from 0.4.1 to 0.5.0 (the egui and winit forks unchanged): its shell sleeps
+between background ticks until woken, and it maps the fonts for other
+scripts from disk instead of reading them whole. Tested: the unit tests
+(336, among them closing to the background with the icon and without, the
+icon's menu with no window, a song ending with no window, the window asked
+back by another launch, a hidden start only with the icon, the queue saved
+with no window, eframe's file read and written as eframe does, the fonts
+for other scripts back with a new window, the icon's tooltip and pictures,
+the Run list's command and the Mac's login item, the release tool's
+installer files, the Move to Applications question before signing in), and
+the demo off the screen on the owner's laptop (release build): its window
+closed and the demo running on (the measurements above), a hidden start
+with no window and a second one ending at once, `--quit` ending it in 0.4
+s. Not yet tested: the window brought back for real (it shows on the
+screen), the icon clicked by hand, the installer on the owner's laptop,
+starting with the computer for real, anything with the owner's account,
+and the Mac (its menu bar icon, the Dock, Move to Applications, the login
+item).
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

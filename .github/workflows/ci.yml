@@ -61,6 +61,10 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace --locked
+        env:
+          # "Start with the computer" writes the registry and reads it back,
+          # under a key of its own: here, never on a person's computer.
+          YTFAST_TEST_REGISTRY: "1"
 
       - name: Build
         if: matrix.app != ''
@@ -139,6 +143,64 @@ jobs:
           cp target/release/ytfast-check.exe dist/check/
           cp docs/run-the-check.md dist/check/HOW-TO-RUN.md
           cp THIRD-PARTY-NOTICES.txt dist/check/
+
+      # The installer (packaging/windows/ytfast.iss): YTFast as an app, in
+      # the user's own Programs folder, the Start menu and Settings > Apps.
+      # Inno Setup comes with GitHub's Windows machines. PowerShell, as bash
+      # on Windows reads the /D... arguments as paths. Saved under the name
+      # the updater looks for (ytfast-v<version>-...-setup.exe) and as
+      # YTFast-Setup.exe, the download people choose.
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$version" "/DBinary=$PWD\target\release\ytfast.exe" `
+            "/DNotices=$PWD\THIRD-PARTY-NOTICES.txt" "/DOutputDir=$PWD\dist\setup" `
+            packaging\windows\ytfast.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "dist\setup\ytfast-v$version-x86_64-pc-windows-msvc-setup.exe" dist\app\YTFast-Setup.exe
+
+      # The installer installs (the program, its shortcuts, its entry in
+      # Settings > Apps), the program installed runs, and the uninstaller
+      # takes it all away, "Start with the computer" too: on GitHub's
+      # machine, never on a person's.
+      - name: Installer test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\YTFast'
+          $start = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\YTFast.lnk'
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'YTFast.lnk'
+          $apps = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{E5C965A4-1C85-441A-8585-6AE2BA46004E}_is1'
+          $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $log = Join-Path $env:RUNNER_TEMP 'install.log'
+          $setup = Start-Process dist\app\YTFast-Setup.exe -Wait -PassThru `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log"
+          if ($setup.ExitCode -ne 0) { Get-Content $log; throw "the installer failed: $($setup.ExitCode)" }
+          foreach ($file in "$dir\YTFast.exe", "$dir\ytfast-installer.txt", "$dir\THIRD-PARTY-NOTICES.txt", $start, $desktop) {
+            if (-not (Test-Path $file)) { throw "not there after installing: $file" }
+          }
+          if (-not (Test-Path $apps)) { throw 'not in Settings > Apps' }
+          "Settings > Apps: $((Get-ItemProperty $apps).DisplayName) $((Get-ItemProperty $apps).DisplayVersion)"
+          $said = Join-Path $env:RUNNER_TEMP 'version.txt'
+          Start-Process "$dir\YTFast.exe" -ArgumentList '--version' -RedirectStandardOutput $said -NoNewWindow -Wait
+          if ((Get-Content $said) -notmatch '^ytfast \d') { throw "the program installed said: $(Get-Content $said)" }
+          # As "Start with the computer" leaves it.
+          New-Item -Force $run | Out-Null
+          New-ItemProperty -Force -Path $run -Name YTFast -Value "`"$dir\YTFast.exe`" --hidden" | Out-Null
+          # The uninstaller hands over to a copy of itself and returns: its
+          # work is done once the folder is gone.
+          Start-Process "$dir\unins000.exe" -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          for ($i = 0; $i -lt 60 -and (Test-Path $dir); $i++) { Start-Sleep -Milliseconds 500 }
+          foreach ($file in $dir, $start, $desktop) {
+            if (Test-Path $file) { throw "still there after uninstalling: $file" }
+          }
+          if (Test-Path $apps) { throw 'still in Settings > Apps' }
+          if ((Get-ItemProperty $run).YTFast) { throw 'still starting with the computer' }
+          'installed, ran and uninstalled'
 
       - name: Upload the app
         if: matrix.app != ''

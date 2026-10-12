@@ -9,8 +9,11 @@
 //! the old one back if the new one does not start. Releases are made with
 //! `ytfast-release` (docs/releasing.md).
 //!
-//! On Windows any copy can update itself: the `ytfast-portable.txt` marker
-//! beside the program says so, and YTFast writes it there. On a Mac,
+//! On Windows any copy can update itself. One installed by the installer
+//! (`packaging/windows/ytfast.iss`, which puts `ytfast-installer.txt` beside
+//! it) runs the next release's installer silently; any other is a portable
+//! copy, the program swapped in place (the `ytfast-portable.txt` marker
+//! beside it says so, and YTFast writes it there). On a Mac,
 //! fastframe-update installs only apps signed by Apple, which YTFast's are
 //! not: YTFast takes the same steps itself there (`update_mac`), for a copy
 //! in a folder it may write in (Applications).
@@ -401,9 +404,11 @@ fn download(
 }
 
 /// On Windows, says beside the program that this copy may update itself
-/// (fastframe-update's `ytfast-portable.txt`): YTFast has no installer, so
-/// a copy anywhere is a portable one. Not for programs under Program Files
-/// or the Store's folder, nor for development builds.
+/// (fastframe-update's `ytfast-portable.txt`): a copy anywhere but where
+/// the installer put it is a portable one. Not for an installed copy
+/// (`ytfast-installer.txt` beside it: it updates by the next installer),
+/// programs under Program Files or the Store's folder, nor for development
+/// builds.
 fn mark_portable() {
     if !cfg!(windows) || cfg!(debug_assertions) {
         return;
@@ -415,7 +420,10 @@ fn mark_portable() {
         return;
     };
     let lower = folder.to_string_lossy().to_lowercase();
-    if lower.contains("\\program files") || lower.contains("\\windowsapps") {
+    if lower.contains("\\program files")
+        || lower.contains("\\windowsapps")
+        || folder.join("ytfast-installer.txt").exists()
+    {
         return;
     }
     let marker = folder.join("ytfast-portable.txt");

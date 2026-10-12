@@ -13,10 +13,14 @@ mod colors;
 mod demo;
 mod dynamic;
 mod images;
+mod instance;
+mod login;
 mod lyrics;
 mod queue;
+mod store;
 mod swipe;
 mod theme;
+mod tray;
 mod update;
 mod update_mac;
 mod views;
@@ -92,8 +96,31 @@ fn main() -> eframe::Result<()> {
     if args.first().map(String::as_str) == Some("--finish-mac-update") {
         std::process::exit(update_mac::finish(&args[1..]));
     }
+    // And the one that moves YTFast from its disk image to Applications.
+    if args.first().map(String::as_str) == Some("--finish-mac-move") {
+        std::process::exit(update_mac::finish_move(&args[1..]));
+    }
     let demo = args.iter().any(|a| a == "--demo");
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    // The YTFast running (the demo, with `--demo`) quits: for scripts.
+    if args.iter().any(|a| a == "--quit") {
+        instance::quit_running(demo);
+        return Ok(());
+    }
+    // Started with the computer: no window, only the icon by the clock.
+    let hidden = args.iter().any(|a| a == login::HIDDEN);
+    // One YTFast at a time: a second launch shows the first one's window
+    // and ends here, before its log (which would empty the first one's).
+    let waker = fastframe_shell::Waker::default();
+    let asked = std::sync::Arc::new(instance::Asked::default());
+    let request = if hidden {
+        instance::request::START
+    } else {
+        instance::request::SHOW
+    };
+    let Some(_running) = instance::claim(demo, request, &asked, &waker) else {
+        return Ok(());
+    };
     start_log(verbose, demo);
     if let Some(error) = &launch.error {
         log::warn!("updates: {error}");
@@ -109,6 +136,44 @@ fn main() -> eframe::Result<()> {
         receipt: launch.receipt,
     };
 
+    // The settings and the queue, as eframe kept them; the demo keeps its
+    // window size and the like in a file of its own: it may be open beside
+    // YTFast in real use, and the real app's file holds its settings,
+    // which the demo would write back as they were when it opened.
+    let store = store::Store::for_app(demo);
+    let persistence_path = store
+        .as_ref()
+        .filter(|_| demo)
+        .map(|store| store.path().to_path_buf());
+    let app = app::App::new(&waker, demo, startup, store, asked);
+    // Each window is made by `run_native`; closed with "Keep playing when
+    // closed" on, YTFast runs on without one until a window is wanted.
+    let shell = fastframe_shell::Shell::new(app, &waker).start_hidden(hidden);
+    // A Mac's menu bar item answers only while AppKit runs. Elsewhere the
+    // shell sleeps, waking when the player, a media key or the icon wakes it.
+    #[cfg(target_os = "macos")]
+    let shell = shell.idle(fastframe_tray::idle);
+    let result = shell.run(|lease| {
+        eframe::run_native(
+            "YtFast",
+            native_options(persistence_path.clone()),
+            Box::new(move |cc| {
+                let mut app = lease.take(&cc.egui_ctx);
+                app.attach(&cc.egui_ctx);
+                Ok(Box::new(app::AppWindow::new(app)))
+            }),
+        )
+    });
+    // On Windows there is no console to see this on.
+    if let Err(e) = &result {
+        log::error!("the window stopped: {e}");
+    }
+    log::info!("closed");
+    result
+}
+
+/// How each window is made.
+fn native_options(persistence_path: Option<std::path::PathBuf>) -> eframe::NativeOptions {
     // On the Mac the app's own icon (YTFast.app's, with the margins every
     // Mac icon has) stays in the Dock: eframe would put this one, which
     // fills its square, in its place while YTFast runs. The default icon
@@ -119,19 +184,11 @@ fn main() -> eframe::Result<()> {
         eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png"))
             .expect("the icon is a PNG")
     };
-    // The demo keeps its window size and the like in a file of its own: it
-    // may be open beside YTFast in real use, and the real app's file holds
-    // its settings, which the demo would write back as they were when it
-    // opened.
-    let persistence_path = demo
-        .then(|| directories::ProjectDirs::from("", "", "YtFast"))
-        .flatten()
-        .map(|dirs| dirs.cache_dir().join("demo-window.ron"));
-    let options = eframe::NativeOptions {
+    eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("YTFast")
             .with_icon(std::sync::Arc::new(icon))
-            .with_app_id("ytfast")
+            .with_app_id(store::APP_ID)
             .with_inner_size(app::WINDOW_SIZE)
             .with_min_inner_size(app::MIN_WINDOW_SIZE)
             // On Windows, YTFast's top bar is the title bar, with buttons of
@@ -139,16 +196,5 @@ fn main() -> eframe::Result<()> {
             .with_decorations(!cfg!(windows)),
         persistence_path,
         ..Default::default()
-    };
-    let result = eframe::run_native(
-        "YtFast",
-        options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, demo, startup)))),
-    );
-    // On Windows there is no console to see this on.
-    if let Err(e) = &result {
-        log::error!("the window stopped: {e}");
     }
-    log::info!("closed");
-    result
 }
