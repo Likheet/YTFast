@@ -81,10 +81,29 @@ fn contents(app: &App, ui: &mut egui::Ui) {
     switch(
         app,
         ui,
-        "Ask before closing while a song plays",
-        "Closing YTFast while a song plays asks first.",
-        app.settings.confirm_close,
-        Setting::ConfirmClose,
+        "Keep playing when closed",
+        KEEP_RUNNING_ABOUT[usize::from(cfg!(target_os = "macos"))],
+        app.settings.keep_running,
+        Setting::KeepRunning,
+    );
+    // Closing stops the music only with the switch above off.
+    if !app.settings.keep_running {
+        switch(
+            app,
+            ui,
+            "Ask before closing while a song plays",
+            "Closing YTFast while a song plays asks first.",
+            app.settings.confirm_close,
+            Setting::ConfirmClose,
+        );
+    }
+    switch(
+        app,
+        ui,
+        "Start with the computer",
+        OPEN_AT_LOGIN_ABOUT[usize::from(cfg!(target_os = "macos"))],
+        app.settings.open_at_login,
+        Setting::OpenAtLogin,
     );
 
     if !app.demo {
@@ -251,6 +270,19 @@ fn looks(app: &App, ui: &mut egui::Ui) {
     });
 }
 
+/// What "Keep playing when closed" says, on Windows (its icon by the
+/// clock) and on a Mac (in the menu bar).
+const KEEP_RUNNING_ABOUT: [&str; 2] = [
+    "Closing the window leaves the music on; the icon by the clock reopens it.",
+    "Closing the window leaves the music on; the menu bar icon reopens it.",
+];
+
+/// What "Start with the computer" says, on Windows and on a Mac.
+const OPEN_AT_LOGIN_ABOUT: [&str; 2] = [
+    "YTFast opens by the clock when you sign in, without its window.",
+    "YTFast opens in the menu bar when you log in, without its window.",
+];
+
 /// What "Download updates automatically" says, on Windows and on a Mac
 /// (where only a copy in Applications installs its updates).
 const UPDATES_ABOUT: [&str; 2] = [
@@ -358,7 +390,11 @@ mod tests {
     #[test]
     fn settings_words_take_one_line_in_every_look() {
         // A switch's explanation: 13, in the 570 the column leaves it.
-        let explanations = UPDATES_ABOUT.iter().map(|text| (*text, 13.0, 570.0));
+        let explanations = UPDATES_ABOUT
+            .iter()
+            .chain(&KEEP_RUNNING_ABOUT)
+            .chain(&OPEN_AT_LOGIN_ABOUT)
+            .map(|text| (*text, 13.0, 570.0));
         // Words beside a button: 14.
         let beside = [(LOG_WORDS, 14.0, WORDS_BESIDE_BUTTON)];
         for (text, size, width) in explanations.chain(beside) {

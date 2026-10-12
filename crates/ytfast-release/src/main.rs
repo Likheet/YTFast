@@ -4,17 +4,21 @@
 //! ```text
 //! ytfast-release key <key file>         make the signing key (once; keep it safe)
 //! ytfast-release public <key file>      print its public half, for the app
-//! ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<YTFast.dmg>]
+//! ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<YTFast.dmg>] [<YTFast-Setup.exe>]
 //! ```
 //!
 //! `pack` writes, in the out folder:
-//! - `YTFast.exe`, the Windows program, and `YTFast.dmg`, the Mac disk
-//!   image (CI's, when given): what people download;
+//! - `YTFast-Setup.exe`, the Windows installer, `YTFast.exe`, the Windows
+//!   program on its own, and `YTFast.dmg`, the Mac disk image (CI's, when
+//!   given): what people download;
+//! - `ytfast-v<version>-x86_64-pc-windows-msvc-setup.exe`: the installer
+//!   again, under the name an installed copy's updater looks for (it runs
+//!   it silently);
 //! - `ytfast-v<version>-x86_64-pc-windows-msvc.zip`: a folder of that name
 //!   holding `ytfast.exe` and the `ytfast-portable.txt` marker, the
-//!   updater's portable layout, which every installed Windows copy looks
-//!   for (the Mac updates by hand for now). It carries no clock time, so
-//!   the same program always packs to the same bytes;
+//!   updater's portable layout, which every portable Windows copy looks
+//!   for. It carries no clock time, so the same program always packs to
+//!   the same bytes;
 //! - `checksums.txt`, every file's SHA-256 in `sha256sum` form;
 //! - `checksums.txt.sig`, the raw 64-byte Ed25519 signature of exactly
 //!   `checksums.txt`'s bytes, which the app checks against the public key it
@@ -54,13 +58,26 @@ fn main() -> Result<()> {
         }
         ["public", path] => println!("{}", public_key(&read_key(Path::new(path))?)),
         ["pack", version, key, out, windows, rest @ ..] => {
-            let mac = rest.first().map(PathBuf::from);
+            // The Mac's disk image and the Windows installer, told apart by
+            // their endings.
+            let (mut mac, mut setup) = (None, None);
+            for file in rest {
+                let path = PathBuf::from(file);
+                let ending = path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_ascii_lowercase());
+                match ending.as_deref() {
+                    Some("exe") => setup = Some(path),
+                    _ => mac = Some(path),
+                }
+            }
             let files = pack(
                 version,
                 &read_key(Path::new(key))?,
                 Path::new(out),
                 Path::new(windows),
                 mac.as_deref(),
+                setup.as_deref(),
             )?;
             for file in files {
                 println!("{}", file.display());
@@ -68,7 +85,8 @@ fn main() -> Result<()> {
         }
         _ => bail!(
             "usage:\n  ytfast-release key <key file>\n  ytfast-release public <key file>\n  \
-             ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<YTFast.dmg>]"
+             ytfast-release pack <version> <key file> <out folder> <ytfast.exe> [<YTFast.dmg>] \
+             [<YTFast-Setup.exe>]"
         ),
     }
     Ok(())
@@ -108,6 +126,7 @@ fn pack(
     out: &Path,
     windows: &Path,
     mac: Option<&Path>,
+    setup: Option<&Path>,
 ) -> Result<Vec<PathBuf>> {
     ensure!(
         !version.is_empty()
@@ -135,6 +154,19 @@ fn pack(
     let download = out.join("YTFast.exe");
     fs::write(&download, &program)?;
     files.push(download);
+
+    if let Some(setup) = setup {
+        let installer = fs::read(setup).with_context(|| format!("reading {}", setup.display()))?;
+        ensure!(
+            installer.starts_with(b"MZ"),
+            "the Windows installer is CI's program, YTFast-Setup.exe"
+        );
+        for name in [format!("{stem}-setup.exe"), "YTFast-Setup.exe".to_string()] {
+            let copy = out.join(name);
+            fs::write(&copy, &installer)?;
+            files.push(copy);
+        }
+    }
 
     if let Some(mac) = mac {
         ensure!(
@@ -203,8 +235,10 @@ mod tests {
         fs::write(&exe, b"not really a program").unwrap();
         let mac = dir.path().join("mac.dmg");
         fs::write(&mac, b"not really a Mac app").unwrap();
+        let setup = dir.path().join("YTFast-Setup.exe");
+        fs::write(&setup, b"MZ not really an installer").unwrap();
         let out = dir.path().join("out");
-        let files = pack("0.6.0", &key, &out, &exe, Some(&mac)).unwrap();
+        let files = pack("0.6.0", &key, &out, &exe, Some(&mac), Some(&setup)).unwrap();
         let names: Vec<String> = files
             .iter()
             .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
@@ -214,12 +248,17 @@ mod tests {
             [
                 "ytfast-v0.6.0-x86_64-pc-windows-msvc.zip",
                 "YTFast.exe",
+                "ytfast-v0.6.0-x86_64-pc-windows-msvc-setup.exe",
+                "YTFast-Setup.exe",
                 "YTFast.dmg",
                 "checksums.txt",
                 "checksums.txt.sig",
             ]
         );
         assert_eq!(fs::read(&files[1]).unwrap(), b"not really a program");
+        // The installer under both names, the same bytes.
+        assert_eq!(fs::read(&files[2]).unwrap(), b"MZ not really an installer");
+        assert_eq!(fs::read(&files[3]).unwrap(), b"MZ not really an installer");
 
         // The archive holds the program and the marker in the updater's
         // folder.
@@ -239,15 +278,20 @@ mod tests {
 
         // checksums.txt names each file once, in sha256sum form, and its
         // signature verifies with the public key alone.
-        let checksums = fs::read_to_string(&files[3]).unwrap();
+        let checksums = fs::read_to_string(&files[5]).unwrap();
         let lines: Vec<&str> = checksums.lines().collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 5);
         let digest = hex(&Sha256::digest(fs::read(&files[0]).unwrap()));
         assert_eq!(
             lines[0],
             format!("{digest}  ytfast-v0.6.0-x86_64-pc-windows-msvc.zip")
         );
-        let signature = fs::read(&files[4]).unwrap();
+        let digest = hex(&Sha256::digest(b"MZ not really an installer"));
+        assert_eq!(
+            lines[2],
+            format!("{digest}  ytfast-v0.6.0-x86_64-pc-windows-msvc-setup.exe")
+        );
+        let signature = fs::read(&files[6]).unwrap();
         assert_eq!(signature.len(), 64);
         let public = unhex(&public).unwrap();
         assert!(
@@ -264,12 +308,15 @@ mod tests {
         // files can be added to a release without changing it.
         let archive = fs::read(&files[0]).unwrap();
         let again = dir.path().join("again");
-        let repacked = pack("0.6.0", &key, &again, &exe, None).unwrap();
+        let repacked = pack("0.6.0", &key, &again, &exe, None, None).unwrap();
         assert_eq!(fs::read(&repacked[0]).unwrap(), archive);
 
-        assert!(pack("0.6", &key, &out, &exe, None).is_ok());
-        assert!(pack("v0.6.0", &key, &out, &exe, None).is_err());
+        assert!(pack("0.6", &key, &out, &exe, None, None).is_ok());
+        assert!(pack("v0.6.0", &key, &out, &exe, None, None).is_err());
         // The Mac build is a disk image, not a zip.
-        assert!(pack("0.6.0", &key, &out, &exe, Some(&dir.path().join("mac.zip"))).is_err());
+        let zip = dir.path().join("mac.zip");
+        assert!(pack("0.6.0", &key, &out, &exe, Some(&zip), None).is_err());
+        // The installer is a Windows program.
+        assert!(pack("0.6.0", &key, &out, &exe, None, Some(&mac)).is_err());
     }
 }

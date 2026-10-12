@@ -90,6 +90,94 @@ pub fn bundle() -> Result<PathBuf, String> {
     Ok(app)
 }
 
+/// Where YTFast goes when it moves itself out of its disk image.
+const APPLICATIONS: &str = "/Applications/YTFast.app";
+
+/// YTFast runs from its disk image (or the Mac's copy of an app opened
+/// where it was downloaded): gone when the image closes, and it cannot
+/// update itself there. It offers to move itself to Applications.
+pub fn from_disk_image() -> bool {
+    cfg!(target_os = "macos")
+        && std::env::current_exe()
+            .ok()
+            .and_then(|exe| bundle_of(&exe))
+            .is_some_and(|app| passing(&app))
+}
+
+/// A place an app only passes through: a disk image, or the Mac's copy.
+fn passing(app: &Path) -> bool {
+    let shown = app.to_string_lossy();
+    shown.starts_with("/Volumes/") || shown.contains("/AppTranslocation/")
+}
+
+/// Copies this app into YTFast's cache, signed as an update is, and starts
+/// the helper that puts it in Applications once YTFast has closed (it
+/// closes next) and opens it there: an older YTFast there is replaced,
+/// and put back if that fails.
+pub fn move_to_applications() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let app = bundle_of(&exe).ok_or("YTFast is not running as an app")?;
+    let probe = Path::new("/Applications").join(format!(".ytfast-move-{}", std::process::id()));
+    fs::create_dir(&probe)
+        .and_then(|()| fs::remove_dir(&probe))
+        .map_err(|_| "YTFast may not write in Applications. Drag it there from its disk image.")?;
+    let folder = folder().ok_or("YTFast has no cache folder to copy itself into")?;
+    let _ = fs::remove_dir_all(&folder);
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let staged = folder.join("YTFast.app");
+    run(
+        Path::new("/usr/bin/ditto"),
+        &[&app.to_string_lossy(), &staged.to_string_lossy()],
+    )?;
+    sign(&staged)?;
+    Command::new(&exe)
+        .arg("--finish-mac-move")
+        .arg(std::process::id().to_string())
+        .arg(APPLICATIONS)
+        .arg(&staged)
+        .arg(&app)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("the helper could not start: {e}"))
+}
+
+/// `--finish-mac-move <pid> <app> <new app> <from>`: waits for YTFast
+/// (`pid`) to close, puts the new app at `app` (an older one there aside,
+/// and back if that fails), leaves the result for the next start, and
+/// opens YTFast: the one moved, or else the one it was (`from`).
+pub fn finish_move(args: &[String]) -> i32 {
+    let [pid, target, staged, from] = args else {
+        return 2;
+    };
+    let (target, staged) = (PathBuf::from(target), PathBuf::from(staged));
+    let result = wait_for_exit(pid).and_then(|()| {
+        if !target.exists() {
+            return move_folder(&staged, &target);
+        }
+        let previous = target.with_file_name(".YTFast-previous.app");
+        let _ = fs::remove_dir_all(&previous);
+        swap(&target, &staged, &previous)?;
+        let _ = fs::remove_dir_all(&previous);
+        Ok(())
+    });
+    let said = match &result {
+        Ok(()) => "YTFast is in Applications now. You can eject its disk image.".to_string(),
+        Err(e) if e.contains("not permitted") => "YTFast could not move to Applications: your Mac did not allow it. In System Settings, Privacy & Security, App Management, turn on YTFast, then try again.".to_string(),
+        Err(e) => format!("YTFast could not move to Applications: {e}"),
+    };
+    if let Some(folder) = folder() {
+        let _ = fs::create_dir_all(&folder);
+        let _ = fs::write(folder.join("result.txt"), &said);
+    }
+    let opened = if result.is_ok() {
+        target.as_path()
+    } else {
+        Path::new(from)
+    };
+    let _ = Command::new("/usr/bin/open").arg(opened).status();
+    i32::from(result.is_err())
+}
+
 /// The `.app` an executable sits in (`<name>.app/Contents/MacOS/<it>`).
 fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
@@ -431,6 +519,19 @@ fn move_folder(from: &Path, to: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use ring::signature::KeyPair;
+
+    /// An app opened from its disk image, or from the Mac's copy of an app
+    /// opened where it was downloaded, only passes through; one in an
+    /// Applications folder stays.
+    #[test]
+    fn a_disk_image_is_a_place_apps_pass_through() {
+        assert!(passing(Path::new("/Volumes/YTFast/YTFast.app")));
+        assert!(passing(Path::new(
+            "/private/var/folders/xy/T/AppTranslocation/1A2B/d/YTFast.app"
+        )));
+        assert!(!passing(Path::new("/Applications/YTFast.app")));
+        assert!(!passing(Path::new("/Users/a/Applications/YTFast.app")));
+    }
 
     #[test]
     fn a_signed_checksum_list_is_read_and_others_are_refused() {

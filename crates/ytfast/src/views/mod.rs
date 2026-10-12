@@ -59,6 +59,9 @@ pub fn show(app: &App, ui: &mut egui::Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new())
             .show(ui, |ui| signin::show(app, ui));
+        // A question asked before signing in (a Mac's Move to
+        // Applications), or while signed out (closing as a song plays).
+        dialogs::show(app, ui);
         return;
     }
     // A sideways swipe: what the window is offered, before any of it

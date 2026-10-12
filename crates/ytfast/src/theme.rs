@@ -536,11 +536,20 @@ pub fn restyle(ctx: &egui::Context) {
     });
 }
 
-/// Sets up fonts, icons and egui's colours. Call once, at start. The fonts
-/// for other scripts come later, when needed (see [`ScriptFonts`]).
+/// Sets up fonts, icons and egui's colours in a window, with fonts of its
+/// own: the tests' windows.
+#[cfg(test)]
 pub fn install(ctx: &egui::Context) -> ScriptFonts {
-    let rendering = fastframe_text::detect();
-    ctx.set_fonts(font_definitions(rendering, false, false));
+    let mut fonts = ScriptFonts::new();
+    install_in(ctx, &mut fonts);
+    fonts
+}
+
+/// Sets up fonts, icons and egui's colours in a window. Every window needs
+/// it: one closed while YTFast keeps playing goes with all it held, and the
+/// next is new. `fonts` come from the window before, so the fonts for other
+/// scripts come back when they were needed (see [`ScriptFonts`]).
+pub fn install_in(ctx: &egui::Context, fonts: &mut ScriptFonts) {
     egui_extras::install_image_loaders(ctx);
     fastframe_icons::install::<Icon>(ctx);
 
@@ -554,14 +563,9 @@ pub fn install(ctx: &egui::Context) -> ScriptFonts {
     });
     restyle(ctx);
     // fastframe-text's rendering settings, after the visuals.
+    let rendering = fonts.rendering;
     ctx.all_styles_mut(|style| rendering.apply_to_visuals(&mut style.visuals));
-    ScriptFonts {
-        ctx: ctx.clone(),
-        rendering,
-        state: Loading::NotWanted,
-        unsure: std::collections::BTreeSet::new(),
-        inter_first: false,
-    }
+    fonts.attach(ctx);
 }
 
 /// Inter at every weight and egui's own fonts (emoji among them), and with
@@ -710,8 +714,12 @@ fn roboto(fonts: &mut egui::FontDefinitions) {
 /// Korean, Arabic, the Indian scripts...) are the computer's own, read
 /// whole into memory: about 60 MB on Windows. They are added only once some
 /// words need them, so a library in Latin letters never pays for them.
+/// They outlive the window: with none open (YTFast playing on, closed),
+/// the characters seen are kept for the next, and fonts wanted before are
+/// added to it again.
 pub struct ScriptFonts {
-    ctx: egui::Context,
+    /// The window's egui, while one is open.
+    ctx: Option<egui::Context>,
     rendering: fastframe_text::TextRendering,
     state: Loading,
     /// Characters seen that Inter and egui's own fonts may not draw, to
@@ -725,13 +733,50 @@ enum Loading {
     NotWanted,
     /// Being read, on a thread of their own (a fraction of a second).
     Reading(std::sync::mpsc::Receiver<egui::FontDefinitions>),
+    /// In the window; with no window open, wanted by the next.
     Added,
 }
 
 /// The most characters kept to look up; past it, the fonts are read.
 const MAX_UNSURE: usize = 256;
 
+impl Default for ScriptFonts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScriptFonts {
+    /// No fonts for other scripts yet, and no window.
+    pub fn new() -> Self {
+        Self {
+            ctx: None,
+            rendering: fastframe_text::detect(),
+            state: Loading::NotWanted,
+            unsure: std::collections::BTreeSet::new(),
+            inter_first: false,
+        }
+    }
+
+    /// A window opened: its fonts, and the fonts for other scripts again
+    /// when they were wanted (read on their own thread).
+    fn attach(&mut self, ctx: &egui::Context) {
+        ctx.set_fonts(font_definitions(self.rendering, false, self.inter_first));
+        self.ctx = Some(ctx.clone());
+        if !matches!(self.state, Loading::NotWanted) {
+            self.read();
+        }
+    }
+
+    /// The window closed: what it held went with it. Fonts wanted (or
+    /// being read) are wanted by the next window.
+    pub fn detach(&mut self) {
+        self.ctx = None;
+        if matches!(self.state, Loading::Reading(_)) {
+            self.state = Loading::Added;
+        }
+    }
+
     /// Sets everything in Inter (the Dynamic Background theme), or in
     /// Roboto as YouTube Music does; the fonts change from the next frame.
     pub fn set_inter_first(&mut self, inter_first: bool) {
@@ -739,8 +784,10 @@ impl ScriptFonts {
             return;
         }
         self.inter_first = inter_first;
-        self.ctx
-            .set_fonts(font_definitions(self.rendering, false, inter_first));
+        let Some(ctx) = &self.ctx else {
+            return;
+        };
+        ctx.set_fonts(font_definitions(self.rendering, false, inter_first));
         // The fonts for other scripts, once wanted, are read again in the
         // new order on their own thread (a reading under way is let go).
         if !matches!(self.state, Loading::NotWanted) {
@@ -764,21 +811,26 @@ impl ScriptFonts {
         if self.unsure.is_empty() || !matches!(self.state, Loading::NotWanted) {
             return;
         }
+        let Some(ctx) = &self.ctx else {
+            return;
+        };
         let unsure = std::mem::take(&mut self.unsure);
         let font = FontId::proportional(14.0);
         let missing = unsure.len() > MAX_UNSURE
-            || self
-                .ctx
-                .fonts_mut(|fonts| unsure.iter().any(|c| !fonts.has_glyph(&font, *c)));
+            || ctx.fonts_mut(|fonts| unsure.iter().any(|c| !fonts.has_glyph(&font, *c)));
         if missing {
             self.read();
         }
     }
 
-    /// Reads the fonts for other scripts, on a thread of their own.
+    /// Reads the fonts for other scripts, on a thread of their own, for the
+    /// window open.
     fn read(&mut self) {
+        let Some(ctx) = self.ctx.clone() else {
+            return;
+        };
         let (sender, receiver) = std::sync::mpsc::channel();
-        let (ctx, rendering, inter_first) = (self.ctx.clone(), self.rendering, self.inter_first);
+        let (rendering, inter_first) = (self.rendering, self.inter_first);
         let reading = std::thread::Builder::new()
             .name("ytfast-fonts".into())
             .spawn(move || {
@@ -796,13 +848,13 @@ impl ScriptFonts {
 
     /// Hands the fonts to egui once read; they show from the next frame.
     pub fn add_when_read(&mut self) {
-        let Loading::Reading(receiver) = &self.state else {
+        let (Loading::Reading(receiver), Some(ctx)) = (&self.state, &self.ctx) else {
             return;
         };
         match receiver.try_recv() {
             Ok(fonts) => {
-                self.ctx.set_fonts(fonts);
-                self.ctx.request_repaint();
+                ctx.set_fonts(fonts);
+                ctx.request_repaint();
                 self.state = Loading::Added;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1687,5 +1739,32 @@ mod tests {
         ] {
             assert!(noted(text), "{text}");
         }
+    }
+
+    /// The fonts for other scripts outlive the window (YTFast playing on,
+    /// closed): with none open nothing is read, the characters seen are
+    /// kept, and fonts wanted by one window are read for the next.
+    #[test]
+    fn the_fonts_for_other_scripts_come_back_with_the_window() {
+        let first = egui::Context::default();
+        let mut fonts = install(&first);
+        fonts.read();
+        assert!(matches!(fonts.state, Loading::Reading(_)));
+        fonts.detach();
+        assert!(matches!(fonts.state, Loading::Added), "wanted by the next");
+        // No window: nothing to read them for.
+        fonts.read();
+        fonts.add_when_read();
+        assert!(matches!(fonts.state, Loading::Added));
+        let next = egui::Context::default();
+        install_in(&next, &mut fonts);
+        assert!(matches!(fonts.state, Loading::Reading(_)), "read again");
+
+        // Never wanted: the characters seen without a window wait for one.
+        let mut fonts = ScriptFonts::new();
+        fonts.want_for("東京");
+        fonts.check();
+        assert!(matches!(fonts.state, Loading::NotWanted));
+        assert!(!fonts.unsure.is_empty());
     }
 }

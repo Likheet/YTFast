@@ -24,7 +24,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking"] 
 # Updates from YTFast's GitHub releases, as Spotifast's: signed, checked,
 # installed by a helper while YTFast is closed, and rolled back if the new
 # version will not start.
-fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1", features = ["reqwest"] }
+fastframe-update = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0", features = ["reqwest"] }
 # The Mac's own updates (update_mac.rs): the release's signature and the
 # disk image's checksum, checked as fastframe-update checks them (the same
 # libraries and versions).
@@ -39,17 +39,31 @@ egui = "0.36"
 egui_extras = { version = "0.36", features = ["svg"] }
 # Album covers: YouTube serves JPEG and WebP.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-# Spotifast's shared foundation, at the version Spotifast 0.12 uses.
+# Spotifast's shared foundation, at the version Spotifast uses (0.5.0).
 # Interface font (Inter), following the desktop's font rendering.
-fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
-fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-fonts = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
+fastframe-text = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
 # Icons (Lucide), shared and our own.
-fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-icons = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
 # Media keys and the system's Now Playing panel (macOS) / media overlay
 # (Windows).
-fastframe-now-playing = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-now-playing = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
 # Scrolling that feels like the platform's.
-fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.4.1" }
+fastframe-scroll = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
+# Running on with the window closed, as Spotifast does: the loop that makes
+# a new window when one is wanted (shell), the icon by the clock (tray), and
+# one YTFast at a time, a second launch showing the first (instance).
+fastframe-shell = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
+fastframe-tray = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
+fastframe-instance = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
+# The settings and the queue saved while no window is open (`store`): in
+# eframe's own file and format (RON), written whole or not at all.
+fastframe-file = { git = "https://github.com/crmne/fastframe", tag = "v0.5.0" }
+ron = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+# "Start with the computer": the registry's Run list (`login`).
+winreg = "0.56"
 
 [dev-dependencies]
 tempfile = "3"

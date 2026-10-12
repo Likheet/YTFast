@@ -140,6 +140,19 @@ pub fn show(app: &App, ui: &egui::Ui) {
                     Some(false) => close = true,
                     None => {}
                 },
+                Dialog::MoveToApplications => match confirm(
+                    ui,
+                    "Move YTFast to Applications?",
+                    MOVE_WORDS,
+                    "Move",
+                ) {
+                    Some(true) => {
+                        app.act(Action::MoveToApplications);
+                        close = true;
+                    }
+                    Some(false) => close = true,
+                    None => {}
+                },
                 Dialog::Shortcuts => close = shortcuts(ui, window),
                 Dialog::Update => close = update_window(app, ui),
                 // The whole description (its look is not measured yet).
@@ -759,6 +772,9 @@ fn privacy_menu(ui: &mut egui::Ui, privacy: &mut Privacy) {
 /// question 16/400 white 24 from the top and 24 in, 16 under it the words
 /// 14 `#aaa`, then Cancel and `main` as blue words at the right (8 8 8 24
 /// around them). `Some(true)` when confirmed, `Some(false)` when cancelled.
+/// Why a Mac's YTFast opened from its disk image moves to Applications.
+const MOVE_WORDS: &str = "YTFast is running from its disk image. In Applications it stays when the disk image closes, updates itself, and can start with your Mac.";
+
 fn confirm(ui: &mut egui::Ui, question: &str, text: &str, main: &str) -> Option<bool> {
     let mut done = None;
     ui.set_max_width(400.0);

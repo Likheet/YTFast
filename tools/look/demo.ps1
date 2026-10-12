@@ -295,8 +295,11 @@ switch ($Action) {
         "memory: {0:0} MB private, {1:0} MB working set" -f ($demo.PrivateMemorySize64 / 1MB), ($demo.WorkingSet64 / 1MB)
     }
     'stop' {
+        # Closing the window leaves the demo running, its icon by the clock
+        # ("Keep playing when closed"): it is asked to quit instead, as the
+        # icon's Quit does, and only closed by force if it does not.
         $demo = Get-Demo
-        [void]$demo.CloseMainWindow()
+        Start-Process -FilePath $demo.Path -ArgumentList '--demo', '--quit' -WindowStyle Hidden -Wait
         if (-not $demo.WaitForExit(5000)) { $demo.Kill() }
         Remove-Item $pidFile -ErrorAction SilentlyContinue
         "closed the demo (process $($demo.Id))"

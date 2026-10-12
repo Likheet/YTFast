@@ -21,13 +21,16 @@ Open YTFast's newest release,
 [github.com/Likheet/YTFast/releases/latest](https://github.com/Likheet/YTFast/releases/latest),
 and under **Assets** download the file for your computer:
 
-- **Windows** (64-bit, Intel or AMD): **YTFast.exe**.
+- **Windows** (64-bit, Intel or AMD): **YTFast-Setup.exe**, which
+  installs YTFast as an app. (**YTFast.exe** is the same app without
+  installing, to run from a folder of your choice.)
 - **Mac** (Apple Silicon: M1 or newer): **YTFast.dmg**. Macs with an
   Intel processor are not supported yet.
 
-The other files there are for YTFast itself: installed copies update from
-the `ytfast-v…zip` and the two `checksums` files, and GitHub adds the
-"Source code" ones to every release. You need none of them.
+The other files there are for YTFast itself: copies already out there
+update from the `ytfast-v…` files and the two `checksums` files, and
+GitHub adds the "Source code" ones to every release. You need none of
+them.
 
 (Building it yourself: every push to the repository on GitHub builds both.
 Open its **Actions** tab, click the newest run with a green tick marked
@@ -39,22 +42,33 @@ the licences of the work YTFast is built with.)
 
 ## Windows
 
-1. Move **YTFast.exe** from Downloads to a folder of your choice (for
-   example Documents), then double-click it.
+1. Double-click **YTFast-Setup.exe** in Downloads.
 2. If Windows says "Windows protected your PC", click **More info**, then
    **Run anyway**. Windows asks this because YTFast is not signed with a
    paid certificate. It asks once for each new copy you download.
-3. Choose **Firefox** and click **Continue**.
+3. Click **Install**. No administrator password is needed: YTFast goes in
+   your own Programs folder. When it is done, YTFast opens.
+4. Choose **Firefox** and click **Continue**.
 
-To keep it handy, right-click **YTFast.exe** and choose **Pin to Start** or
-**Pin to taskbar**.
+YTFast is now an app like any other: in the Start menu (type "YTFast"),
+with a shortcut on the desktop (untick **Put a shortcut on the desktop**
+while installing for none). Right-click it in the Start menu to **Pin to
+taskbar**. To remove it: **Settings**, **Apps**, **Installed apps**,
+**YTFast**, **Uninstall**. Your settings and sign-in stay on the computer.
+
+Used **YTFast.exe** until now? Run **YTFast-Setup.exe** all the same: it
+offers to close the YTFast running, and the installed one keeps your
+settings, sign-in and queue. Then delete the old **YTFast.exe** and the
+`ytfast-portable.txt` beside it.
 
 YTFast updates itself: once a day it looks for a new version and
 downloads it in the background. An **Update** button then shows at the
-top; click it, then **Restart to update** to install it. It keeps a small
-file, `ytfast-portable.txt`, next to `YTFast.exe`: leave it there, it is
-what lets YTFast update itself. **Settings**, **Updates** turns automatic
-installs off.
+top; click it, then **Restart to update** to install it. **Settings**,
+**Updates** turns automatic downloads off.
+
+Without installing: move **YTFast.exe** to a folder of your choice (for
+example Documents) and double-click it. It updates itself too: leave the
+small file it keeps beside it, `ytfast-portable.txt`.
 
 ## Mac
 
@@ -62,7 +76,8 @@ installs off.
    **YTFast** and **Applications** in it.
 2. Drag **YTFast** onto **Applications**. Then eject the disk image (the
    ⏏ beside **YTFast** in the Finder's sidebar); YTFast.dmg can go in the
-   Bin.
+   Bin. (Opened from the disk image instead, YTFast asks to move itself
+   to Applications: click **Move**, and it opens again from there.)
 3. Open YTFast from Applications. The first time, your Mac says it could
    not verify the app, and offers only **Move to Bin** and **Done**. Click
    **Done** (not Move to Bin). Then open **System Settings**, click
@@ -245,15 +260,25 @@ it. F or Esc leaves it, and so does closing the player page.
 **Settings** (in your account's menu, at the top right): the look
 (YouTube Music, Premium or Dynamic Background), even out loudness, skip
 songs you dislike (on: disliking the song playing moves on to the next, as
-YouTube Music does), translate lyrics, ask before closing while a song
-plays, updates, sign out, and where problems are noted. **Autoplay**, at
-the end of Up next, keeps playing songs like the last one when the queue
-ends.
+YouTube Music does), translate lyrics, keep playing when closed, start
+with the computer, updates, sign out, and where problems are noted.
+**Autoplay**, at the end of Up next, keeps playing songs like the last one
+when the queue ends.
 
-**Closing while a song plays** asks first: "Do you really want to close?
-There's a song playing.", with **Do not ask again** ticked. Yes closes
-YTFast (and, ticked, it never asks again; Settings can turn the question
-back on); No keeps it playing.
+**Closing the window** leaves the music playing: YTFast keeps running,
+with its icon by the clock (on a Mac, in the menu bar at the top), and
+uses almost nothing while its window is closed. Click the icon, or open
+YTFast again, to bring the window back (on a Mac, its icon in the Dock
+does it too). Right-click the icon for **Play** or **Pause**, **Next**,
+**Previous** and **Quit YTFast**. The media keys keep working. (Windows
+may tuck the icon away under the **^** by the clock; drag it out beside
+the clock to keep it in sight.) With **Keep playing when closed** off in
+Settings, closing quits YTFast, and while a song plays it asks first,
+with **Do not ask again** ticked.
+
+**Start with the computer** (Settings, off at first): YTFast opens when
+you sign in to your computer, without its window, its icon by the clock,
+ready for the media keys. Your queue waits paused where you left it.
 
 Lyrics come from Musixmatch (timed word by word, for many songs), from
 YouTube Music, or from LRCLIB (lrclib.net, a free lyrics site). Lyrics

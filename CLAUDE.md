@@ -63,12 +63,15 @@ Nearly every feature is the same round trip through five places:
 5. Every backend task answers from `demo.rs` when `shared.demo` is set. A
    new `Request` needs that branch too, or `--demo` shows nothing for it.
 
-One frame runs `App::logic` first: events, media keys, and the actions
-they pushed. Then `App::ui`: shortcuts, cover colours, lyrics and related
-when wanted, the views, then the actions the views pushed. eframe also
-runs `App::logic` alone while the window is minimised or hidden (it draws
-nothing then), so whatever keeps the music going belongs there, not in
-`App::ui`.
+One frame runs `App::logic` first: `App::background` (events, media
+keys, the icon by the clock, other launches, and the actions they
+pushed), then the close request. Then `App::ui`: shortcuts, cover
+colours, lyrics and related when wanted, the views, then the actions the
+views pushed. eframe also runs `App::logic` alone while the window is
+minimised or hidden (it draws nothing then), and with the window closed
+(YTFast playing on) the shell runs `App::background` alone
+(`Resident::headless_frame`), so whatever keeps the music going belongs
+there, not in `App::ui`.
 
 ## Easy to get wrong
 
@@ -159,6 +162,25 @@ nothing then), so whatever keeps the music going belongs there, not in
   `request_repaint_after` runs faster than meant (66 ms became 49). Use
   `theme::repaint_in` for one; each drawn frame costs the processor a few
   ms in painting and the driver, whatever it shows.
+- **The window can go away; YTFast stays.** With "Keep playing when
+  closed" on, closing destroys the window (fastframe-shell) and `App`
+  runs on without one. Everything tied to a window's egui (textures,
+  fonts, loaders, its `Context`) is set up in `App::attach` and let go in
+  `App::window_gone`; threads wake YTFast through `App.waker`, never a
+  captured `egui::Context`. Read the close request in `logic` (eframe
+  skips `ui` for a minimized window, closed from the taskbar). With no
+  window eframe saves nothing: `store.rs` does, only then, never beside
+  eframe's own saving.
+- **One YTFast at a time.** A second launch hands its request to the
+  first (`instance.rs`) and ends before its log, which would empty the
+  first one's. Whatever must run beside YTFast (`--version`, the
+  updaters' helpers, `--update-dry-run`, `--quit`) runs before the claim.
+  The demo's slot is its own.
+- **The installer's `AppId` never changes** (`packaging/windows/ytfast.iss`):
+  Windows tells an update from a new program by it. Every release from
+  the first with the installer carries
+  `ytfast-v<version>-x86_64-pc-windows-msvc-setup.exe`: installed copies
+  update from it.
 - **Playlist IDs come in two forms.** A playlist's page is `VL` plus its ID
   (Liked Music is `VLLM`); changes to it take the ID without `VL`
   (`library::bare`). `Route::browse` turns `VLLM` into `Route::Liked`, so

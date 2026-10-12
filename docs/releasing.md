@@ -1,10 +1,12 @@
 # Releasing YTFast
 
 A release is a GitHub release on `Likheet/YTFast` (public). Every copy of
-YTFast on Windows looks at the newest one a minute after it starts and once
-a day, downloads it in the background, checks it, and installs it when the
-listener restarts (`crates/ytfast/src/update.rs`, fastframe-update). A Mac
-copy says a new version is out; it is installed by hand.
+YTFast looks at the newest one a minute after it starts and once a day,
+downloads it in the background, checks it, and installs it when the
+listener restarts (`crates/ytfast/src/update.rs`, fastframe-update; on a
+Mac, `update_mac.rs`, for a copy in Applications). A Windows copy put in
+place by the installer (`YTFast-Setup.exe`) updates by running the next
+release's installer silently; any other is swapped in place.
 
 ## The signing key
 
@@ -28,17 +30,23 @@ for builds made after its public half is put in the app.
    release), with `Cargo.lock`. Merge to `main` once the owner has tried
    the build.
 2. Wait for CI on that `main` commit, then download its two apps (each
-   can be downloaded as soon as its own job has finished):
+   can be downloaded as soon as its own job has finished). The Windows
+   one holds the installer too (`YTFast-Setup.exe`, made with Inno Setup
+   from `packaging/windows/ytfast.iss`, and installed, run and uninstalled
+   on CI's machine):
 
        gh run download <run id> -n YTFast-for-Windows -D dist/windows
        gh run download <run id> -n YTFast-for-Mac -D dist/mac
 
 3. Pack and sign (the version without a `v`):
 
-       cargo run -p ytfast-release -- pack 0.6.0 "%APPDATA%\YTFast-release\update-signing-key.hex" dist/release dist/windows/YTFast.exe dist/mac/YTFast.dmg
+       cargo run -p ytfast-release -- pack 0.6.0 "%APPDATA%\YTFast-release\update-signing-key.hex" dist/release dist/windows/YTFast.exe dist/mac/YTFast.dmg dist/windows/YTFast-Setup.exe
 
-   It writes the two downloads, `YTFast.exe` and `YTFast.dmg` (CI's disk
+   It writes the downloads, `YTFast-Setup.exe` (the installer: YTFast as
+   an app), `YTFast.exe` (the program alone) and `YTFast.dmg` (CI's disk
    image: the app beside a shortcut to Applications);
+   `ytfast-v0.6.0-x86_64-pc-windows-msvc-setup.exe` (the installer again,
+   under the name installed copies look for);
    `ytfast-v0.6.0-x86_64-pc-windows-msvc.zip` (a folder of that name with
    `ytfast.exe` and the `ytfast-portable.txt` marker: the updater's
    layout, which installed Windows copies look for, so it must be on every
@@ -74,8 +82,11 @@ for builds made after its public half is put in the app.
 - `ytfast --version` prints `ytfast <version>` (the helper asks the
   downloaded program before installing it).
 - On Windows the `ytfast-portable.txt` marker beside the program; YTFast
-  writes it itself (not in Program Files), so a copy sent as a bare
-  `YTFast.exe` updates too.
+  writes it itself (not in Program Files, nor beside an installed copy),
+  so a copy sent as a bare `YTFast.exe` updates too. An installed copy has
+  `ytfast-installer.txt` beside it instead, from the installer, and
+  updates from `ytfast-v<version>-x86_64-pc-windows-msvc-setup.exe`:
+  every release from the first with the installer must carry it.
 - Release files named as above; the tag is `v<version>`.
 - The update flags (`--apply-update`, `--update-receipt`, `--update-error`)
   are a contract between versions: see fastframe-update's README.
