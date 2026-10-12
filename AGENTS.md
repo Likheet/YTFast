@@ -1249,7 +1249,7 @@ the screen (the measurements above). Not yet tested: the queue kept
 with the owner's account, the lyrics at 30 frames a second by the
 owner's eye, a Mac's media keys, and the Mac.
 
-Then (12 and 13 October 2026, not yet released), at the owner's word:
+Then (12 and 13 October 2026, version 1.3.0), at the owner's word:
 YTFast keeps running with its window closed, its icon by the clock (the
 owner chose it on by default), starts with the computer when asked (a
 switch, off by default), and installs as an app (above). fastframe moved

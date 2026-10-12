@@ -32,6 +32,7 @@ pub fn set(on: bool) {
 }
 
 /// What the Run list starts: the program, quoted, and `--hidden`.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn command(program: &Path) -> String {
     format!("\"{}\" {HIDDEN}", program.display())
 }
@@ -94,8 +95,9 @@ mod mac {
     const LABEL: &str = "io.github.likheet.ytfast";
 
     pub fn set(on: bool, program: &Path) {
-        let Some(file) = std::env::home_dir().map(|home| {
-            home.join("Library/LaunchAgents")
+        let Some(file) = directories::BaseDirs::new().map(|dirs| {
+            dirs.home_dir()
+                .join("Library/LaunchAgents")
                 .join(format!("{LABEL}.plist"))
         }) else {
             return;
