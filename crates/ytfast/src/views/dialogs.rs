@@ -1,5 +1,5 @@
 //! Small windows that ask one thing: a new playlist's name, a new name,
-//! or "really delete?".
+//! "really delete?", or "replace your queue?".
 
 use crate::app::{Action, App, Dialog};
 use ytfast_core::library::Privacy;
@@ -34,7 +34,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
             .corner_radius(egui::CornerRadius::same(2)),
         // A confirmation (`yt-confirm-dialog-renderer`): `#282828`, an
         // outline of `#4e4e4e`.
-        Dialog::Delete { .. } => egui::Frame::new()
+        Dialog::Delete { .. } | Dialog::ReplaceQueue { .. } => egui::Frame::new()
             .fill(egui::Color32::from_rgb(0x28, 0x28, 0x28))
             .stroke(egui::Stroke::new(
                 1.0,
@@ -153,6 +153,19 @@ pub fn show(app: &App, ui: &egui::Ui) {
                     Some(false) => close = true,
                     None => {}
                 },
+                Dialog::ReplaceQueue { lined_up, then } => {
+                    let text = format!(
+                        "You've lined up {lined_up} songs that haven't played yet. Playing this will remove them."
+                    );
+                    match confirm(ui, "Replace your queue?", &text, "Play anyway") {
+                        Some(true) => {
+                            app.act(Action::Confirmed(then.clone()));
+                            close = true;
+                        }
+                        Some(false) => close = true,
+                        None => {}
+                    }
+                }
                 Dialog::Shortcuts => close = shortcuts(ui, window),
                 Dialog::Update => close = update_window(app, ui),
                 // The whole description (its look is not measured yet).

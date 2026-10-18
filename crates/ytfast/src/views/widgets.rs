@@ -1257,10 +1257,11 @@ fn described(track: &Track, under: Under) -> String {
 }
 
 /// What a right-click on a song (or its ⋮ button) offers, in YouTube
-/// Music's order and words (measured): Start mix, Play next, Add to queue,
-/// Add to liked songs, Save to playlist, Remove from queue, Go to album,
-/// Go to artist, Share. (Download, Report and Stats for nerds are left
-/// out.)
+/// Music's words (measured): Play next, Add to queue, Start mix, Add to
+/// liked songs, Save to playlist, Remove from queue, Go to album, Go to
+/// artist, Share. (Download, Report and Stats for nerds are left out.)
+/// YouTube Music puts Start mix first; the owner wanted Play next there,
+/// and Start mix, which replaces the queue, below the queue's items.
 pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
     theme::menu(ui);
     let item = |ui: &mut egui::Ui, icon: Icon, text: &str, action: Action| {
@@ -1271,18 +1272,6 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
     };
     // A song YouTube no longer offers can only be taken out of a playlist
     // (and unliked, or added elsewhere).
-    if track.playable {
-        let mix = Target::Watch {
-            video_id: Some(track.video_id.clone()),
-            playlist_id: None,
-        };
-        item(
-            ui,
-            Icon::Mix,
-            "Start mix",
-            Action::Play(mix, Some(track.clone())),
-        );
-    }
     match place {
         Place::Queue(id) => {
             // (Moved elsewhere by dragging its row, as on YouTube Music.)
@@ -1303,6 +1292,18 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
             );
         }
         Place::Page | Place::Playing => {}
+    }
+    if track.playable {
+        let mix = Target::Watch {
+            video_id: Some(track.video_id.clone()),
+            playlist_id: None,
+        };
+        item(
+            ui,
+            Icon::Mix,
+            "Start mix",
+            Action::Play(mix, Some(track.clone())),
+        );
     }
     let liked = shown_like(app, track, place) == crate::app::LikeState::Liked;
     if liked {

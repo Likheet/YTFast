@@ -185,17 +185,21 @@ once a song plays.
 
 - Menus look and read as YouTube Music's.
 - **Right-click a song**, or click the three dots that show at its right
-  when the pointer is on it: Start mix, Play next, Add to queue, Add to
+  when the pointer is on it: Play next, Add to queue, Start mix, Add to
   liked songs, Save to playlist, Go to album, Go to artist, Share. On
   your own playlists, also **Remove from playlist**. The three dots in the
   middle of the player bar give the same for the song playing.
+- With two or more songs lined up (Play next, Add to queue) and not yet
+  played, clicking something that would start a new queue asks **Replace
+  your queue?** first: **Cancel** (or Esc) keeps your songs, **Play
+  anyway** plays.
 - **Save to playlist** opens a window with your playlists (click one to
   add the song) and a **New playlist** button.
 - **Share** copies the song's link.
 - **Right-click an album or playlist**: Shuffle play, Start mix, Play
   next, Add to queue, Save album (or playlist) to library, Share.
-- **Right-click a song in Up next**: Start mix, Play next, Move up, Move
-  down, ..., Remove from queue.
+- **Right-click a song in Up next**: Play next, Start mix, ..., Remove
+  from queue (drag a row to move it).
 
 **Your music**
 

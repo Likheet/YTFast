@@ -346,6 +346,12 @@ pub enum Dialog {
     /// A Mac's YTFast opened from its disk image offers to move itself to
     /// Applications (`update_mac::move_to_applications`).
     MoveToApplications,
+    /// "Replace your queue?": `then` would remove the `lined_up` songs the
+    /// user put in the queue by hand ([`asks_first`]).
+    ReplaceQueue {
+        lined_up: usize,
+        then: Box<Action>,
+    },
 }
 
 /// The player page's tabs.
@@ -365,6 +371,7 @@ pub enum LikeState {
 }
 
 /// Everything a view can ask for.
+#[derive(Clone, Debug)]
 pub enum Action {
     Navigate(Route),
     Back,
@@ -510,6 +517,28 @@ pub enum Action {
     ChooseBrowser(Browser),
     SignIn,
     SignOut,
+    /// An action the user was asked about and said yes to: it replaces
+    /// songs they lined up.
+    Confirmed(Box<Action>),
+}
+
+/// From how many lined-up songs an action that would remove them asks
+/// first (the owner's choice: two Play nexts mean a queue being set up).
+const ASK_FROM: usize = 2;
+
+/// Whether `action` asks before it runs: it puts a new queue in place of
+/// one with `lined_up` songs the user put in by hand, which a stray click
+/// would lose.
+fn asks_first(action: &Action, lined_up: usize) -> bool {
+    lined_up >= ASK_FROM
+        && matches!(
+            action,
+            Action::PlayTracks { .. }
+                | Action::Shuffle { .. }
+                | Action::Open(Target::Watch { .. }, _)
+                | Action::Play(Target::Watch { .. }, _)
+                | Action::QueuePlaylist(_, QueueMode::Play | QueueMode::Shuffle)
+        )
 }
 
 /// The orders a playlist's Sort menu offers besides its own. (YouTube
@@ -1030,7 +1059,7 @@ impl App {
     fn apply_actions(&mut self) {
         let actions = std::mem::take(self.actions.get_mut());
         for action in actions {
-            self.apply(action);
+            self.apply_or_ask(action);
         }
         // Full screen is the player page's: leaving it leaves full screen.
         if self.fullscreen && !self.now_playing {
@@ -2846,6 +2875,20 @@ impl App {
         }
     }
 
+    /// Applies an action from a view. One that would remove songs the user
+    /// lined up asks first ([`Dialog::ReplaceQueue`]).
+    fn apply_or_ask(&mut self, action: Action) {
+        let lined_up = self.queue.lined_up();
+        if asks_first(&action, lined_up) {
+            self.apply(Action::OpenDialog(Dialog::ReplaceQueue {
+                lined_up,
+                then: Box::new(action),
+            }));
+        } else {
+            self.apply(action);
+        }
+    }
+
     fn apply(&mut self, action: Action) {
         match action {
             Action::Navigate(route) => self.navigate(route),
@@ -3303,6 +3346,7 @@ impl App {
                     browser: default_browser(),
                 };
             }
+            Action::Confirmed(action) => self.apply(*action),
         }
     }
 
@@ -6712,6 +6756,178 @@ mod tests {
         w.h.play(&["a"]);
         w.h.app.restarting = true;
         assert!(!cancels(&w.close_request()));
+    }
+
+    /// Which actions ask before they run: those that put a new queue in
+    /// place of one with two or more songs lined up by hand. Lining up
+    /// more, opening a page, or moving within the queue never asks.
+    #[test]
+    fn asks_before_replacing_two_or_more_lined_up_songs() {
+        let watch = |video_id: Option<&str>, playlist_id: Option<&str>| Target::Watch {
+            video_id: video_id.map(str::to_string),
+            playlist_id: playlist_id.map(str::to_string),
+        };
+        let album = Target::Browse {
+            id: "MPREb_a".into(),
+            kind: ytfast_core::read::PageKind::Album,
+            params: None,
+        };
+        let play = || Action::PlayTracks {
+            tracks: vec![song("a")],
+            start: 0,
+            source: None,
+        };
+        let cases = [
+            // A song clicked on a page, an album's Play and Shuffle, a
+            // song's tile, Start mix, a playlist's play button.
+            (play(), true),
+            (
+                Action::Shuffle {
+                    tracks: vec![song("a")],
+                    source: None,
+                },
+                true,
+            ),
+            (Action::Open(watch(Some("a"), None), Some(song("a"))), true),
+            (Action::Play(watch(Some("a"), None), Some(song("a"))), true),
+            (Action::Play(watch(None, Some("PL1")), None), true),
+            (Action::QueuePlaylist("PL1".into(), QueueMode::Play), true),
+            (
+                Action::QueuePlaylist("PL1".into(), QueueMode::Shuffle),
+                true,
+            ),
+            // These keep the queue.
+            (Action::Open(album.clone(), None), false),
+            (Action::Play(album, None), false),
+            (Action::QueuePlaylist("PL1".into(), QueueMode::Next), false),
+            (Action::QueuePlaylist("PL1".into(), QueueMode::End), false),
+            (Action::PlayNext(song("a")), false),
+            (Action::AddToQueue(song("a")), false),
+            (Action::PlayNextAll(vec![song("a")]), false),
+            (Action::AddToQueueAll(vec![song("a")]), false),
+            (Action::JumpTo(1), false),
+            (Action::MoveNextInQueue(1), false),
+            (Action::Next, false),
+            // The user was asked already.
+            (Action::Confirmed(Box::new(play())), false),
+        ];
+        for (action, asks) in cases {
+            assert_eq!(asks_first(&action, 2), asks, "{action:?}");
+            assert!(!asks_first(&action, 1), "one song lined up: {action:?}");
+        }
+    }
+
+    /// A song's menu offers Play next first, and Start mix after Add to
+    /// queue. With two or more songs lined up by hand, a click that would
+    /// put a new queue in their place asks first: Cancel (or Esc) keeps
+    /// them, Play anyway plays. With one, or in Up next, a click plays at
+    /// once.
+    #[test]
+    fn a_click_that_would_replace_lined_up_songs_asks_first() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        let route = Route::browse("VLPLx".into(), None);
+        w.h.act(Action::Navigate(route.clone()));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("the page is asked for");
+        let page = Page {
+            sections: vec![Section {
+                items: ["a", "b", "c", "d"]
+                    .into_iter()
+                    .map(|id| Item::Track(song(id)))
+                    .collect(),
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(route, load, Ok(page)));
+        w.point(egui::pos2(5.0, 5.0));
+        w.settle();
+        let a = w.find("A", 0);
+        w.click(a.center());
+        assert_eq!(w.h.entry().1, "a");
+
+        // The menu: Play next, Add to queue, then Start mix.
+        let b = w.find("B", 0);
+        w.right_click(b.center());
+        let next = w.find("Play next", 0);
+        let add = w.find("Add to queue", 0);
+        let mix = w.find("Start mix", 0);
+        assert!(next.top() < add.top() && add.top() < mix.top());
+        w.click(next.center());
+        // One song lined up: a click plays at once.
+        let c = w.find("C", 0);
+        w.click(c.center());
+        assert!(w.h.app.dialog.borrow().is_none());
+        assert_eq!(w.h.entry().1, "c");
+
+        // Two: it asks, and nothing changes meanwhile.
+        for (title, item) in [("B", "Play next"), ("D", "Add to queue")] {
+            let row = w.find(title, 0);
+            w.right_click(row.center());
+            let item = w.find(item, 0);
+            w.click(item.center());
+        }
+        let a = w.find("A", 0);
+        w.click(a.center());
+        w.settle();
+        assert!(matches!(
+            *w.h.app.dialog.borrow(),
+            Some(Dialog::ReplaceQueue { lined_up: 2, .. })
+        ));
+        assert!(w.says("Replace your queue?"));
+        assert!(w.says(
+            "You've lined up 2 songs that haven't played yet. Playing this will remove them."
+        ));
+        assert_eq!(w.h.entry().1, "c");
+        // Cancel keeps them.
+        let cancel = w.find("Cancel", 0);
+        w.click(cancel.center());
+        w.settle();
+        assert!(w.h.app.dialog.borrow().is_none());
+        assert_eq!(w.h.entry().1, "c");
+        assert_eq!(w.h.app.queue.lined_up(), 2);
+        // Play anyway plays.
+        let a = w.find("A", 0);
+        w.click(a.center());
+        w.settle();
+        let anyway = w.find("Play anyway", 0);
+        w.click(anyway.center());
+        w.settle();
+        assert!(w.h.app.dialog.borrow().is_none());
+        assert_eq!(w.h.entry().1, "a");
+        assert_eq!(w.h.app.queue.lined_up(), 0);
+
+        // In Up next a click moves within the queue: it never asks.
+        w.h.act(Action::PlayNext(song("b")));
+        w.h.act(Action::PlayNext(song("c")));
+        w.h.app.now_playing = true;
+        w.h.app.np_tab = NpTab::UpNext;
+        w.settle();
+        let d = w.find("D", 0);
+        w.click(d.center());
+        assert!(w.h.app.dialog.borrow().is_none());
+        assert_eq!(w.h.entry().1, "d");
+        // Esc closes the question, not the player page behind it.
+        w.h.act(Action::PlayNext(song("b")));
+        w.h.act(Action::PlayNext(song("c")));
+        w.h.app.act(Action::PlayTracks {
+            tracks: vec![song("a")],
+            start: 0,
+            source: None,
+        });
+        w.settle();
+        assert!(w.h.app.dialog.borrow().is_some());
+        w.press(egui::Key::Escape);
+        w.settle();
+        assert!(w.h.app.dialog.borrow().is_none());
+        assert!(w.h.app.now_playing);
+        assert_eq!(w.h.entry().1, "d");
     }
 
     /// With "Keep playing when closed" on and the icon by the clock, the

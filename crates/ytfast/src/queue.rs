@@ -40,6 +40,9 @@ pub fn fill_in(to: &mut Track, from: &Track) -> bool {
 pub struct Entry {
     pub id: u64,
     pub track: Track,
+    /// Put in the queue by hand (Play next, Add to queue), not with a
+    /// playlist or radio.
+    lined_up: bool,
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +73,7 @@ impl Queue {
         Entry {
             id: self.next_id,
             track,
+            lined_up: false,
         }
     }
 
@@ -155,6 +159,16 @@ impl Queue {
             .map_or(0, |i| self.entries.len().saturating_sub(i + 1))
     }
 
+    /// How many coming entries were put in the queue by hand.
+    pub fn lined_up(&self) -> usize {
+        let from = self.current.map_or(0, |i| i + 1);
+        self.entries
+            .iter()
+            .skip(from)
+            .filter(|e| e.lined_up)
+            .count()
+    }
+
     /// Moves to the next entry. `None` (and nothing moves) at the end.
     pub fn advance(&mut self) -> Option<&Entry> {
         let next = self.current? + 1;
@@ -213,7 +227,10 @@ impl Queue {
 
     /// Puts a song right after the current one.
     pub fn play_next(&mut self, track: Track) {
-        let entry = self.entry(track);
+        let entry = Entry {
+            lined_up: true,
+            ..self.entry(track)
+        };
         match self.current {
             Some(i) => self.entries.insert(i + 1, entry),
             None => {
@@ -227,7 +244,13 @@ impl Queue {
     /// "Play next"). With nothing queued, the first of them plays first.
     pub fn play_next_all(&mut self, tracks: Vec<Track>) {
         let at = self.current.map_or(self.entries.len(), |i| i + 1);
-        let entries: Vec<Entry> = tracks.into_iter().map(|t| self.entry(t)).collect();
+        let entries: Vec<Entry> = tracks
+            .into_iter()
+            .map(|t| Entry {
+                lined_up: true,
+                ..self.entry(t)
+            })
+            .collect();
         self.entries.splice(at..at, entries);
         if self.current.is_none() && !self.entries.is_empty() {
             self.current = Some(0);
@@ -236,7 +259,10 @@ impl Queue {
 
     /// Puts a song at the end.
     pub fn add_to_end(&mut self, track: Track) {
-        let entry = self.entry(track);
+        let entry = Entry {
+            lined_up: true,
+            ..self.entry(track)
+        };
         self.entries.push(entry);
         if self.current.is_none() {
             self.current = Some(0);
@@ -318,9 +344,10 @@ impl Queue {
     pub fn move_next(&mut self, id: u64) {
         let first = self.current.map_or(0, |c| c + 1);
         if let Some(i) = self.entries.iter().position(|e| e.id == id)
-            && i > first
+            && i >= first
         {
-            let entry = self.entries.remove(i);
+            let mut entry = self.entries.remove(i);
+            entry.lined_up = true;
             self.entries.insert(first, entry);
         }
     }
@@ -465,6 +492,38 @@ mod tests {
         let mut empty = Queue::default();
         empty.play_next(song("solo"));
         assert_eq!(empty.current().unwrap().track.video_id, "solo");
+    }
+
+    #[test]
+    fn counts_the_songs_lined_up_by_hand_still_to_come() {
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("b")], 0, None);
+        assert_eq!(q.lined_up(), 0, "a playlist's own songs are not lined up");
+        q.play_next(song("x"));
+        q.add_to_end(song("z"));
+        q.append(vec![song("r")]);
+        // a (playing), x, b, z, r: x and z were put in by hand.
+        assert_eq!(q.lined_up(), 2);
+        q.advance();
+        assert_eq!(q.lined_up(), 1, "x plays now, so only z is to come");
+        let z = q.entries()[3].id;
+        q.remove(z);
+        q.insert_shuffled(vec![song("s")]);
+        assert_eq!(q.lined_up(), 0, "more of a shuffled playlist is not");
+        q.play_next_all(vec![song("c"), song("d")]);
+        assert_eq!(q.lined_up(), 2, "an album's Play next counts each song");
+        q.replace(vec![song("e")], 0, None);
+        assert_eq!(q.lined_up(), 0, "a new queue has none");
+    }
+
+    #[test]
+    fn play_next_in_up_next_lines_a_song_up() {
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("b"), song("c")], 0, None);
+        let c = q.entries()[2].id;
+        q.move_next(c);
+        assert_eq!(ids(&q), ["a", "c", "b"]);
+        assert_eq!(q.lined_up(), 1);
     }
 
     #[test]

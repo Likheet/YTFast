@@ -130,6 +130,12 @@ Paolino), as `audio.rs` does.
   longer playing are ignored. Answers about the queue (more songs, a
   playlist to play) are tagged the same way, so a late one cannot change
   a queue the user has replaced.
+- Songs the user puts in the queue (Play next, Add to queue, the ticked
+  songs' bar, an album's Play next, Up next's Play next) are marked as
+  lined up. While two or more of them are still to play, anything that
+  would put a new queue in their place asks first ("Replace your
+  queue?", `asks_first` in `app.rs`; Cancel or Esc keeps them). A new
+  way to start playing belongs in `asks_first` too.
 - Songs are found the fast way (`direct.rs`): one `player` request
   carrying the player code's signature timestamp, then the stream address
   unlocked by the solver (`solver.rs`: yt-dlp's own EJS scripts, from
@@ -1288,6 +1294,14 @@ removed 10 minutes on, a download never installed removed, an update
 under way kept, and nothing else touched, in a folder of the test's own).
 Not yet tested: on the owner's laptop, after a real update.
 
+Then (18 October 2026), at the owner's word: a song's menu offers Play
+next first, then Add to queue, then Start mix (which replaces the
+queue), and with two or more songs lined up by hand, a click that would
+replace them asks first (above). Tested: the unit tests, among them the
+window drawn in a test: the menu's order, one song lined up playing at
+once, two asking, Cancel, Play anyway, Esc and Up next. Not yet tested:
+on the owner's laptops, with their account.
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
@@ -1302,7 +1316,9 @@ differently: clicking a song in History queues the rest of that list;
 the playlist form has no Collaborate switch; Up next shows the Autoplay
 switch for radios too; F puts the player page in full screen (YouTube
 Music's own full screen is the video's); Up next's rows show the open
-hand; a liked song shows its filled thumb in Up next too.
+hand; a liked song shows its filled thumb in Up next too; a song's menu
+has Play next first and Start mix third; a click that would replace two
+or more songs lined up by hand asks first.
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp
