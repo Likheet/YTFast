@@ -1294,13 +1294,13 @@ removed 10 minutes on, a download never installed removed, an update
 under way kept, and nothing else touched, in a folder of the test's own).
 Not yet tested: on the owner's laptop, after a real update.
 
-Then (18 October 2026), at the owner's word: a song's menu offers Play
-next first, then Add to queue, then Start mix (which replaces the
-queue), and with two or more songs lined up by hand, a click that would
-replace them asks first (above). Tested: the unit tests, among them the
-window drawn in a test: the menu's order, one song lined up playing at
-once, two asking, Cancel, Play anyway, Esc and Up next. Not yet tested:
-on the owner's laptops, with their account.
+Then (18 October 2026, version 1.3.2), at the owner's word: a song's
+menu offers Play next first, then Add to queue, then Start mix (which
+replaces the queue), and with two or more songs lined up by hand, a
+click that would replace them asks first (above). Tested: the unit
+tests, among them the window drawn in a test: the menu's order, one song
+lined up playing at once, two asking, Cancel, Play anyway, Esc and Up
+next. Not yet tested: on the owner's laptops, with their account.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
