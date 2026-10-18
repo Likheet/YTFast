@@ -27,8 +27,8 @@ for builds made after its public half is put in the app.
 
 1. Raise the version in `Cargo.toml`, `packaging/macos/Info.plist` and
    `packaging/windows/ytfast.rc` (three numbers, higher than the last
-   release), with `Cargo.lock`. Merge to `main` once the owner has tried
-   the build.
+   release), with `Cargo.lock`. Push to `main` once the checks pass (the
+   owner does not try builds before they ship).
 2. Wait for CI on that `main` commit, then download its two apps (each
    can be downloaded as soon as its own job has finished). The Windows
    one holds the installer too (`YTFast-Setup.exe`, made with Inno Setup
@@ -76,6 +76,26 @@ for builds made after its public half is put in the app.
    It finds the newest release as if it were the oldest version, downloads
    it, checks the signature, the checksum and the program's `--version`,
    and installs nothing. `dry-run.txt` should end with "all good".
+
+## Finishing a draft
+
+The key is only on the Windows laptop, so a release begun on the Mac
+waits there as a draft: its notes, no files, and the commit it is for.
+To finish it, on the Windows laptop:
+
+1. Read the draft: `gh release view v<version> --json targetCommitish,body`.
+   The commit is its `targetCommitish`; check that its `Cargo.toml` has
+   that version.
+2. Find CI's run on that commit (`gh run list --commit <commit>
+   --workflow CI`), wait until it has passed, and download its two apps
+   as in step 2.
+3. Pack and sign as in step 3.
+4. Put the files on the draft and publish it:
+
+       gh release upload v<version> dist/release/*
+       gh release edit v<version> --draft=false --latest
+
+5. Check it as in step 5.
 
 ## What the updater needs
 

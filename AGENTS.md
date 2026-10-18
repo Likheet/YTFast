@@ -2,6 +2,9 @@
 
 Read this before changing anything. [docs/plan.md](docs/plan.md) has the
 product decisions, phases and risks; this file is how to work in the code.
+In a new chat, follow [docs/new-chat.md](docs/new-chat.md) first: which
+laptop you are on, starting from GitHub's `main`, testing, shipping and
+releasing.
 
 ## Who you are working with
 

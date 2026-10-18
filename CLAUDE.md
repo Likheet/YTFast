@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @AGENTS.md
 
+@docs/new-chat.md
+
 AGENTS.md (above) is the guide every coding assistant reads: who the owner
 is, what YTFast is, the layout, the rules, and what has been tested. Keep it
 the source of truth. What follows is only what it leaves out.
