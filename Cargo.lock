@@ -6340,7 +6340,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast"
-version = "1.3.2"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -6376,7 +6376,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast-check"
-version = "1.3.2"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -6392,7 +6392,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast-core"
-version = "1.3.2"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -6419,7 +6419,7 @@ dependencies = [
 
 [[package]]
 name = "ytfast-release"
-version = "1.3.2"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "ring",

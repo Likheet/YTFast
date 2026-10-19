@@ -145,7 +145,8 @@ pub enum Request {
         order: Option<String>,
     },
     /// Get a song ready. With `play`, the window gets [`Event::Prepared`];
-    /// without, the song is only made ready ahead of time.
+    /// without, the song is made ready ahead of time, and the window gets
+    /// [`Event::ReadyAhead`] once it is.
     Prepare {
         entry: u64,
         video_id: String,
@@ -342,6 +343,15 @@ pub enum Event {
     Prepared {
         entry: u64,
         result: Result<Ready, Failure>,
+    },
+    /// A song made ready ahead ([`Request::Prepare`] without `play`), as
+    /// `video_id`: the player can take it, to follow the song playing with
+    /// nothing between them. Only when it is ready; a song that could not
+    /// be made ready is tried again when it plays.
+    ReadyAhead {
+        entry: u64,
+        video_id: String,
+        ready: Ready,
     },
     UpNext {
         video_id: String,
@@ -1501,23 +1511,30 @@ fn classify(error: PrepareError) -> Failure {
 
 async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
     if shared.demo {
-        if play {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            shared.send(Event::Prepared {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let ready = Ready {
+            data: SongData::complete(Vec::new()),
+            gain: 1.0,
+            info: PlayerInfo::default(),
+            format: "Demo (silent)".into(),
+            premium: true,
+            length: Some(demo::length(&video_id)),
+            find_time: std::time::Duration::ZERO,
+            start_time: std::time::Duration::ZERO,
+            direct: true,
+        };
+        shared.send(if play {
+            Event::Prepared {
                 entry,
-                result: Ok(Ready {
-                    data: SongData::complete(Vec::new()),
-                    gain: 1.0,
-                    info: PlayerInfo::default(),
-                    format: "Demo (silent)".into(),
-                    premium: true,
-                    length: Some(demo::length(&video_id)),
-                    find_time: std::time::Duration::ZERO,
-                    start_time: std::time::Duration::ZERO,
-                    direct: true,
-                }),
-            });
-        }
+                result: Ok(ready),
+            }
+        } else {
+            Event::ReadyAhead {
+                entry,
+                video_id,
+                ready,
+            }
+        });
         return;
     }
     let Some(preparer) = shared.preparer().await else {
@@ -1558,14 +1575,34 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
         })
         .await
         .clone();
+    let ready = |p: &ytfast_core::prepare::Prepared| Ready {
+        data: Arc::clone(&p.data),
+        gain: p.gain,
+        info: p.info.clone(),
+        format: p.format.clone(),
+        premium: p.premium,
+        length: p.duration_seconds,
+        find_time: p.find_time,
+        start_time: p.start_time,
+        direct: p.direct,
+    };
     if !play {
-        // A song that could not be made ready ahead is tried again when it
-        // is played, rather than failing from memory.
-        if result.is_err() {
-            let mut guard = shared.prepared.lock().await;
-            let (cells, order) = &mut *guard;
-            cells.remove(&video_id);
-            order.retain(|v| v != &video_id);
+        match &result {
+            // Kept here too: should the player not take it (another format),
+            // it is played from here, fetched once.
+            Ok(prepared) => shared.send(Event::ReadyAhead {
+                entry,
+                video_id,
+                ready: ready(prepared),
+            }),
+            // A song that could not be made ready ahead is tried again when
+            // it is played, rather than failing from memory.
+            Err(_) => {
+                let mut guard = shared.prepared.lock().await;
+                let (cells, order) = &mut *guard;
+                cells.remove(&video_id);
+                order.retain(|v| v != &video_id);
+            }
         }
         return;
     }
@@ -1581,17 +1618,7 @@ async fn prepare(shared: &Shared, entry: u64, video_id: String, play: bool) {
     {
         log::warn!("preparing a song failed: {}", failure.message);
     }
-    let result = result.map(|p| Ready {
-        data: Arc::clone(&p.data),
-        gain: p.gain,
-        info: p.info.clone(),
-        format: p.format.clone(),
-        premium: p.premium,
-        length: p.duration_seconds,
-        find_time: p.find_time,
-        start_time: p.start_time,
-        direct: p.direct,
-    });
+    let result = result.map(|p| ready(&p));
     shared.send(Event::Prepared { entry, result });
 }
 

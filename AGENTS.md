@@ -48,7 +48,10 @@ crates/ytfast-core/   the engine (no user interface)
   src/direct.rs       finding a song's audio the website's way (fast way)
   src/prepare.rs      getting a song ready: the fast way, else yt-dlp
   src/stream.rs       downloading a song while it plays
-  src/audio.rs        decoding, the player
+  src/audio.rs        decoding, the player; the next song following on
+                      (gapless) or fading in (crossfade)
+  src/eq.rs           the equalizer: ten bands and presets, kept from
+                      distorting (adapted from Spotifast's)
   src/video.rs        the video mode's pictures: YouTube's H.264 read as
                       it downloads, decoded (rusty_h264) in time with the
                       music
@@ -72,6 +75,8 @@ crates/ytfast/        the app: an egui window on fastframe
   src/instance.rs     one YTFast at a time: a second launch shows the
                       first one's window
   src/login.rs        "Start with the computer"
+  src/discord.rs      the song playing on the user's Discord profile,
+                      through Discord's local connection
   src/update.rs       updates from the GitHub releases (fastframe-update)
   src/update_mac.rs   the Mac's updates, done by YTFast itself
   src/app.rs          the app's state, and what every action does
@@ -167,6 +172,37 @@ Paolino), as `audio.rs` does.
   that byte the first piece took 0.05 to 0.9 s after a click (the slow
   ones, songs the server did not have at hand); after it, under 0.03 s
   (measured on the owner's laptop, 10 October 2026).
+- The next song follows on with nothing between (gapless), as an album
+  was made. Once made ready ahead (`Event::ReadyAhead`), it is given to
+  the player (`Command::Next`), which decodes it ahead and starts it on
+  the same stream at the sample after the last of the song before
+  (`Playing` and `Chain` in `audio.rs`); the window takes it up once it
+  is heard (`Status::moved_on`, `App::moved_on`), with no Stop or Play.
+  With Settings' crossfade (off by default, up to 12 s) it begins that
+  long before the end, the two mixed at equal power (`Playing::mix`), but
+  never between two songs of one album (`same_album`). Not in the video
+  mode (each song starts with its picture) nor while one song repeats; a
+  song in another format, or a queue changed meanwhile
+  (`App::keep_ahead`), starts the usual way. A song whose download broke
+  off is not followed: the player stops, as before (`Feed::broke_off`).
+  Measured at volume 0 on the owner's laptop: the next song heard 0.003 s
+  after the end of the one before, and a 1 s crossfade beginning on time.
+- The equalizer (Settings, off by default): Winamp's ten bands, ±12 dB,
+  and 14 presets. Each band's filter is solved so that the curve meets
+  the sliders at the bands' centres, and the whole is turned down by the
+  curve's highest point, so it never clips (`ytfast-core/src/eq.rs`,
+  adapted from Spotifast's, MIT). It runs on the device's thread, after
+  rodio's mixer (`MixerRender`), and never waits there for its settings
+  (`try_lock`).
+- The Discord status (Settings, off by default): the song playing on the
+  user's Discord profile, as listening, with its cover, artists and bar,
+  through the Discord desktop app's own local connection (a named pipe on
+  Windows, a socket on a Mac; Discord in a browser has none), on a thread
+  of its own (`discord.rs`), as YTFast's own Discord application
+  (`discord::APPLICATION_ID`, made by the owner; a public ID). Nothing
+  while paused. At most one change every 4 s (Discord takes five in
+  20 s), a Discord not found looked for every 15 s, and an older Discord
+  that refuses the listening form told it plainly. Never in the demo.
 - A song that cannot play is skipped only when the problem is that song's
   (removed, private, not offered here), and at most five in a row; any
   other problem stops and waits for Play (`App::song_failed`).
@@ -605,6 +641,14 @@ Paolino), as `audio.rs` does.
   reads the length as zero) and it waits for the audio thread, which does
   not run while the device is paused.
 - Turn loud songs down by YouTube's `loudnessDb`; never turn songs up.
+  Each song's own figure is played by its voice (`Voice` in `audio.rs`),
+  so two songs in a crossfade each keep theirs; the sink's volume is the
+  listener's alone.
+- A song queued to follow must be in the format of the one playing (its
+  rate and channels: `Player::queue_next`), as it plays on the same
+  stream; one in another follows the usual way, once the song before has
+  ended. Songs are decoded the crossfade and a second ahead (at least
+  two), so where one ends is known before its fade begins.
 - The interface is optimistic, as in Spotifast: a control shows its result
   at once, and a late answer from YouTube must not undo what the user just
   did. Tag requests so stale answers are ignored.
@@ -698,10 +742,12 @@ in `video.rs`) runs only when `YTFAST_TEST_VIDEO` names a YouTube H.264
 picture stream (720p, `yt-dlp -f 136`, as YouTube serves it); run it with
 `--release`. Such a file is never committed.
 
-Two tests ask the real services, and only when told to:
+Three tests ask the real services, and only when told to:
 `musixmatch_itself` when `YTFAST_TEST_MUSIXMATCH` names a folder for
-Musixmatch's session, and `google_translate_itself` when
-`YTFAST_TEST_TRANSLATE` is set. Neither sends anything of the owner's.
+Musixmatch's session, `google_translate_itself` when
+`YTFAST_TEST_TRANSLATE` is set, and `discord_itself` (the Discord app on
+the computer says hello and takes the status away: nothing shows) when
+`YTFAST_TEST_DISCORD` is set. None sends anything of the owner's.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and
 Linux, and uploads the app (`YTFast-for-Mac`: YTFast.app, signed ad hoc, in
@@ -1304,6 +1350,26 @@ click that would replace them asks first (above). Tested: the unit
 tests, among them the window drawn in a test: the menu's order, one song
 lined up playing at once, two asking, Cancel, Play anyway, Esc and Up
 next. Not yet tested: on the owner's laptops, with their account.
+
+Then (19 October 2026, version 1.4.0), at the owner's word, a sound
+upgrade: songs follow each other with nothing between them (gapless); a
+crossfade (Settings, off to 12 s, off by default, never within an
+album); an equalizer (ten bands and presets, off by default, kept from
+distorting); and the Discord status (off by default). The owner's next
+ideas wait in docs/plan.md (Ideas for later). Tested on the owner's
+Windows laptop: the unit tests (367, among them two songs joined exact
+to the sample, a crossfade's mix sample by sample, a broken download not
+followed, the equalizer meeting its sliders and never going over, the
+window taking up the next song with no Stop or Play, no crossfade within
+an album and a new one given to the song waiting, the next song let go
+when the queue changes or one song repeats, Settings' sliders and
+presets in each look, and what Discord is told and how often); the
+tests with the sound device at volume 0 (the next song heard 0.003 s
+after the end of the one before; a 1 s crossfade on time); and the demo
+off the screen (Settings' Sound, the presets' menu, a preset's bands).
+Not yet tested: by ear, with the owner's account, the Discord status
+with a real Discord (its app was not open on that laptop; the tests
+talk to a stand-in), and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

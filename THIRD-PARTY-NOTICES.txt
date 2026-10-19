@@ -351,8 +351,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ============================================================================
 
 YTFast is built on fastframe (sound output, fonts, icons, media controls),
-and part of its player is adapted from Spotifast's. Both are by Carmine
-Paolino, under this licence:
+and part of its player and its equalizer are adapted from Spotifast's.
+Both are by Carmine Paolino, under this licence:
 
 MIT License
 

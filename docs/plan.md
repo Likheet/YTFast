@@ -95,10 +95,30 @@ edits on a throwaway playlist first.
 
 ### Phase 5: polish and release builds (partly done)
 
-Done: packaged apps for both laptops, Settings, keyboard shortcuts.
-Still to do: self-update, the tray, gapless albums, and performance
-measured on the real apps (startup time, memory, including the helper
-programs).
+Done: packaged apps for both laptops, Settings, keyboard shortcuts,
+self-update, the icon by the clock and the installer (1.3.0), and the
+sound upgrade (1.4.0: gapless, crossfade, the equalizer, the Discord
+status). Still to do: performance measured on the real apps (startup
+time, memory, including the helper programs).
+
+## Ideas for later
+
+The owner's, for after the sound upgrade (19 October 2026). Not started.
+
+- **Better recommendations than YouTube's.** The owner finds YouTube
+  Music's own poor. To work out first: what YTFast can learn from without
+  sending anything new anywhere (what the user plays, skips, likes and
+  repeats, kept on the computer), and how it would choose songs from
+  what YouTube offers (radios, related songs, search) without asking
+  YouTube more often than a listener would (see "Keep to a normal
+  listener's pace" in AGENTS.md).
+- **A tab for AI music.** The user connects an AI music service of their
+  own choosing (their own account and key, kept as safely as the
+  sign-in), picks a few songs, and gets a new song made from them. To
+  work out first: which services offer this, free or not, and their
+  terms; what may be sent to them (a song's name and style, never its
+  audio, unless the service's terms and copyright allow it); and where
+  the songs made are kept.
 
 ## Risks
 

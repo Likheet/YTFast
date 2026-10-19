@@ -71,6 +71,14 @@ pub struct Settings {
     /// YTFast opens when the user signs in to the computer, without its
     /// window (`login`).
     pub open_at_login: bool,
+    /// Seconds each song fades into the next (0: none, at most 12). Songs
+    /// of one album never fade: they follow on with nothing between, as
+    /// every song does without a crossfade.
+    pub crossfade: u8,
+    /// The equalizer: on or off, and its ten bands.
+    pub equalizer: ytfast_core::eq::Equalizer,
+    /// The user's Discord profile shows the song playing (`discord`).
+    pub discord: bool,
 }
 
 impl Settings {
@@ -110,9 +118,15 @@ impl Default for Settings {
             translate_lyrics: false,
             keep_running: true,
             open_at_login: false,
+            crossfade: 0,
+            equalizer: ytfast_core::eq::Equalizer::default(),
+            discord: false,
         }
     }
 }
+
+/// The longest crossfade, in seconds.
+pub const MOST_CROSSFADE: u8 = 12;
 
 /// What the updater left for this run: why an update was undone, and the
 /// receipt a freshly installed version gives back once its window is up.
@@ -217,6 +231,25 @@ pub struct Playback {
     /// when the video mode was turned on or off (the owner found the switch
     /// playing it).
     pub start_paused: bool,
+    /// The song's length as the player was given it, in seconds.
+    pub length: f64,
+    /// The next song, ready and given to the player to follow this one
+    /// ([`App::ready_ahead`]), until it is heard.
+    pub ahead: Option<Ahead>,
+}
+
+/// The song after the one playing, made ready ahead and given to the
+/// player to follow it ([`Command::Next`]): nothing between the two, or the
+/// one fading into the other. It is taken up once heard
+/// ([`App::moved_on`]).
+pub struct Ahead {
+    pub entry: u64,
+    /// The ID it was made ready as (its own: in the video mode songs start
+    /// the usual way, each with its picture).
+    pub version: String,
+    pub ready: crate::backend::Ready,
+    /// The crossfade it was given, in seconds.
+    pub fade: f64,
 }
 
 /// The video mode's picture for the song playing (a queue entry).
@@ -273,6 +306,8 @@ impl Default for Playback {
             version: None,
             start_at: 0.0,
             start_paused: false,
+            length: 0.0,
+            ahead: None,
         }
     }
 }
@@ -298,6 +333,8 @@ pub enum Setting {
     TranslateLyrics,
     KeepRunning,
     OpenAtLogin,
+    Equalizer,
+    Discord,
 }
 
 /// A small window asking one thing.
@@ -400,6 +437,10 @@ pub enum Action {
     SetVolume(f32),
     /// Silence, or back to the volume before it.
     ToggleMute,
+    /// Seconds each song fades into the next (Settings; 0: none).
+    SetCrossfade(u8),
+    /// The equalizer's bands, as dragged or chosen from its presets.
+    SetEqualizer(ytfast_core::eq::Equalizer),
     JumpTo(u64),
     /// Put a song right after the one playing now.
     PlayNext(Track),
@@ -541,6 +582,26 @@ fn asks_first(action: &Action, lined_up: usize) -> bool {
         )
 }
 
+/// A song's length, in seconds: as its audio says, else as its row did.
+fn song_length(ready: &crate::backend::Ready, track: &Track) -> f64 {
+    ready
+        .length
+        .or(track.duration_seconds.map(f64::from))
+        .unwrap_or(0.0)
+}
+
+/// Two songs of one album: by its page when both name one, else by its
+/// name.
+fn same_album(a: &Track, b: &Track) -> bool {
+    match (&a.album_id, &b.album_id) {
+        (Some(one), Some(other)) => one == other,
+        _ => a
+            .album
+            .as_deref()
+            .is_some_and(|album| !album.is_empty() && b.album.as_deref() == Some(album)),
+    }
+}
+
 /// The orders a playlist's Sort menu offers besides its own. (YouTube
 /// Music's also offers newest and oldest added first, which YTFast cannot
 /// tell.)
@@ -620,6 +681,8 @@ pub struct App {
     tray: Option<fastframe_tray::Tray>,
     /// What the icon's menu and tooltip say now.
     tray_shown: crate::tray::Shown,
+    /// The Discord status, once it was wanted ([`App::show_on_discord`]).
+    discord: Option<crate::discord::Discord>,
     /// The icon is shown, so a window closed can leave YTFast running.
     pub has_tray: bool,
     /// A window is open; none while YTFast runs on, closed (or started
@@ -908,6 +971,8 @@ impl App {
         demo: bool,
     ) -> Self {
         audio.send(Command::Volume(settings.volume));
+        audio.send(Command::Crossfade(f64::from(settings.crossfade)));
+        audio.send(Command::Equalizer(settings.equalizer));
 
         let remembered = settings.browser.as_deref().and_then(Browser::parse);
         let auth = match (demo, remembered) {
@@ -955,6 +1020,7 @@ impl App {
             waker: fastframe_shell::Waker::default(),
             tray: None,
             tray_shown: crate::tray::Shown::default(),
+            discord: None,
             has_tray: false,
             // The tests' window; from the first window on, the shell's.
             window_open: true,
@@ -1649,6 +1715,11 @@ impl App {
                     }
                 }
                 Event::Prepared { entry, result } => self.prepared(entry, result),
+                Event::ReadyAhead {
+                    entry,
+                    video_id,
+                    ready,
+                } => self.ready_ahead(entry, &video_id, ready),
                 Event::UpNext {
                     video_id,
                     playlist_id,
@@ -1878,6 +1949,10 @@ impl App {
         {
             self.seeking = None;
         }
+        // Before an end: the song that ends may be the one moved on to.
+        if let Some(moved) = self.audio.take_moved_on() {
+            self.moved_on(moved);
+        }
         if let Some(ended) = self.audio.take_ended()
             && self.playback.entry.as_ref().is_some_and(|e| e.id == ended)
         {
@@ -1896,6 +1971,7 @@ impl App {
         {
             self.song_failed(&entry.track.title, failure.message, failure.song_only);
         }
+        self.keep_ahead();
     }
 
     fn prepared(
@@ -1925,98 +2001,232 @@ impl App {
             self.playback.start_paused = paused;
             return;
         }
-        let own = self.playback.version.as_deref() == Some(current.track.video_id.as_str());
         match result {
-            Ok(ready) => {
-                // The player's answer names the song, for one started by
-                // its ID alone (its cover comes with Up next).
-                let info = &ready.info;
-                let heard = Track {
-                    video_id: current.track.video_id.clone(),
-                    title: info.title.clone().unwrap_or_default(),
-                    artists: info
-                        .author
-                        .as_deref()
-                        .map(|a| a.trim_end_matches(" - Topic").to_string())
-                        .unwrap_or_default(),
-                    duration_seconds: info.length_seconds,
-                    kind: info.kind.clone(),
-                    ..Track::default()
-                };
-                // (Its video's answer names the video.)
-                if own {
-                    self.fill_in(&heard);
-                }
-                let length = ready
-                    .length
-                    .or(current.track.duration_seconds.map(f64::from))
-                    .unwrap_or(0.0);
-                let gain = if self.settings.even_loudness {
-                    ready.gain
-                } else {
-                    1.0
-                };
-                self.audio.send(Command::Play {
-                    entry,
-                    data: ready.data,
-                    gain,
-                    length,
-                    from: self.playback.start_at,
-                    paused: self.playback.start_paused,
-                });
-                self.backend
-                    .send(Request::Details(current.track.video_id.clone()));
-                // Lyrics or Related that did not load last time it played
-                // (the network, a slow answer) are asked for again.
-                let video_id = &current.track.video_id;
-                if matches!(
-                    self.lyrics.get(video_id),
-                    Some(crate::lyrics::State::Missing)
-                ) {
-                    self.lyrics.remove(video_id);
-                }
-                if matches!(self.related.get(video_id), Some(Loadable::Failed(_))) {
-                    self.related.remove(video_id);
-                }
-                if matches!(
-                    self.translations.get(video_id),
-                    Some(crate::lyrics::Translation::Missing)
-                ) {
-                    self.translations.remove(video_id);
-                }
-                let report = PlayReport::new(&ready.info);
-                if let Some(url) = report.started(self.playback.start_at) {
-                    self.backend.send(Request::Report(url));
-                }
-                self.playback.report = Some(report);
-                self.playback.info = Some(ready.info);
-                let quality = if ready.premium {
-                    format!("Premium audio: {}", ready.format)
-                } else {
-                    ready.format
-                };
-                let way = if ready.direct { "fast way" } else { "yt-dlp" };
-                self.playback.format = format!(
-                    "{quality}\nFound in {:.1} s ({way}), started {:.1} s later",
-                    ready.find_time.as_secs_f64(),
-                    ready.start_time.as_secs_f64()
-                );
-                log::info!("song ready: {}", self.playback.format.replace('\n', "; "));
-                self.playback.state = PlayState::Playing;
-                self.skipped_in_a_row = 0;
-                // In the video mode, its picture.
-                self.ask_for_picture();
-                // Get the next song ready while this one plays.
-                self.prepare_next();
-                // With the queue on repeat, it plays again instead.
-                if self.queue.remaining() <= 1 && self.settings.repeat != Repeat::All {
-                    self.ask_for_more();
-                }
-            }
+            Ok(ready) => self.began(current, ready, true),
             Err(failure) => {
                 self.song_failed(&current.track.title, failure.message, failure.song_only);
             }
         }
+    }
+
+    /// `current` (the playback's entry) plays, ready as `ready`: the player
+    /// is given it (with `play`; a song that followed on plays already),
+    /// and what comes with a song starting is done: its details, its play
+    /// reported, the next song made ready.
+    fn began(&mut self, current: Entry, ready: crate::backend::Ready, play: bool) {
+        let own = self.playback.version.as_deref() == Some(current.track.video_id.as_str());
+        // The player's answer names the song, for one started by its ID
+        // alone (its cover comes with Up next).
+        let info = &ready.info;
+        let heard = Track {
+            video_id: current.track.video_id.clone(),
+            title: info.title.clone().unwrap_or_default(),
+            artists: info
+                .author
+                .as_deref()
+                .map(|a| a.trim_end_matches(" - Topic").to_string())
+                .unwrap_or_default(),
+            duration_seconds: info.length_seconds,
+            kind: info.kind.clone(),
+            ..Track::default()
+        };
+        // (Its video's answer names the video.)
+        if own {
+            self.fill_in(&heard);
+        }
+        let length = song_length(&ready, &current.track);
+        self.playback.length = length;
+        if play {
+            self.audio.send(Command::Play {
+                entry: current.id,
+                data: std::sync::Arc::clone(&ready.data),
+                gain: self.gain_of(&ready),
+                length,
+                from: self.playback.start_at,
+                paused: self.playback.start_paused,
+            });
+        }
+        self.backend
+            .send(Request::Details(current.track.video_id.clone()));
+        // Lyrics or Related that did not load last time it played (the
+        // network, a slow answer) are asked for again.
+        let video_id = &current.track.video_id;
+        if matches!(
+            self.lyrics.get(video_id),
+            Some(crate::lyrics::State::Missing)
+        ) {
+            self.lyrics.remove(video_id);
+        }
+        if matches!(self.related.get(video_id), Some(Loadable::Failed(_))) {
+            self.related.remove(video_id);
+        }
+        if matches!(
+            self.translations.get(video_id),
+            Some(crate::lyrics::Translation::Missing)
+        ) {
+            self.translations.remove(video_id);
+        }
+        let report = PlayReport::new(&ready.info);
+        if let Some(url) = report.started(self.playback.start_at) {
+            self.backend.send(Request::Report(url));
+        }
+        self.playback.report = Some(report);
+        self.playback.info = Some(ready.info);
+        let quality = if ready.premium {
+            format!("Premium audio: {}", ready.format)
+        } else {
+            ready.format
+        };
+        let way = if ready.direct { "fast way" } else { "yt-dlp" };
+        self.playback.format = format!(
+            "{quality}\nFound in {:.1} s ({way}), started {:.1} s later",
+            ready.find_time.as_secs_f64(),
+            ready.start_time.as_secs_f64()
+        );
+        log::info!("song ready: {}", self.playback.format.replace('\n', "; "));
+        self.playback.state = PlayState::Playing;
+        self.skipped_in_a_row = 0;
+        // In the video mode, its picture.
+        self.ask_for_picture();
+        // Get the next song ready while this one plays.
+        self.prepare_next();
+        // With the queue on repeat, it plays again instead.
+        if self.queue.remaining() <= 1 && self.settings.repeat != Repeat::All {
+            self.ask_for_more();
+        }
+    }
+
+    /// How loud `ready` plays: turned down as YouTube Music turns it, with
+    /// Settings' "Even out loudness".
+    fn gain_of(&self, ready: &crate::backend::Ready) -> f32 {
+        if self.settings.even_loudness {
+            ready.gain
+        } else {
+            1.0
+        }
+    }
+
+    /// The next song is ready ahead: the player is given it, to follow the
+    /// song playing with nothing between them, or fading into it
+    /// (Settings' crossfade). Only while the song before it plays, and not
+    /// once it was given.
+    fn ready_ahead(&mut self, entry: u64, video_id: &str, ready: crate::backend::Ready) {
+        let given = self
+            .playback
+            .ahead
+            .as_ref()
+            .is_some_and(|a| a.entry == entry);
+        if given || !self.may_follow_on(entry) {
+            return;
+        }
+        let Some(next) = self.queue.peek_next() else {
+            return;
+        };
+        // Made ready as another version (the video mode changed since).
+        if next.track.video_id != video_id {
+            return;
+        }
+        let fade = self.fade_into(next);
+        let length = song_length(&ready, &next.track);
+        self.audio.send(Command::Next {
+            entry,
+            data: std::sync::Arc::clone(&ready.data),
+            gain: self.gain_of(&ready),
+            length,
+            fade,
+        });
+        self.playback.ahead = Some(Ahead {
+            entry,
+            version: video_id.to_string(),
+            ready,
+            fade,
+        });
+    }
+
+    /// Whether `entry` may follow the song playing on the player's own:
+    /// it comes next in the queue, after a song that plays, and neither
+    /// one song repeats nor the video mode is on (its picture starts with
+    /// each song, the usual way).
+    fn may_follow_on(&self, entry: u64) -> bool {
+        let playing = self.playback.state == PlayState::Playing
+            && self.playback.entry.as_ref().map(|e| e.id) == self.queue.current().map(|e| e.id);
+        playing
+            && !self.video_mode
+            && self.settings.repeat != Repeat::One
+            && self.queue.peek_next().is_some_and(|next| next.id == entry)
+    }
+
+    /// How long the song playing fades into `next`, in seconds: Settings'
+    /// crossfade, but none within one album (its songs are meant to run
+    /// into each other, as a live album's do).
+    fn fade_into(&self, next: &Entry) -> f64 {
+        match &self.playback.entry {
+            Some(current) if !same_album(&current.track, &next.track) => {
+                f64::from(self.settings.crossfade.min(MOST_CROSSFADE))
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// The song given to the player to follow is let go once it no longer
+    /// comes next (the queue changed, one song repeats, the video mode is
+    /// on), and given again when the crossfade it should have changed.
+    fn keep_ahead(&mut self) {
+        let Some(ahead) = &self.playback.ahead else {
+            return;
+        };
+        if !self.may_follow_on(ahead.entry) {
+            self.audio.send(Command::Unqueue);
+            self.playback.ahead = None;
+            return;
+        }
+        let Some(next) = self.queue.peek_next() else {
+            return;
+        };
+        let fade = self.fade_into(next);
+        if fade != ahead.fade {
+            let length = song_length(&ahead.ready, &next.track);
+            self.audio.send(Command::Next {
+                entry: ahead.entry,
+                data: std::sync::Arc::clone(&ahead.ready.data),
+                gain: self.gain_of(&ahead.ready),
+                length,
+                fade,
+            });
+            if let Some(ahead) = &mut self.playback.ahead {
+                ahead.fade = fade;
+            }
+        }
+    }
+
+    /// The song given to follow is heard: the queue moves on to it, as
+    /// `next` does, but the player plays on (nothing to stop or start).
+    fn moved_on(&mut self, entry: u64) {
+        let ahead = self.playback.ahead.take();
+        let wanted = self.queue.peek_next().is_some_and(|next| next.id == entry);
+        let Some(ahead) = ahead.filter(|ahead| ahead.entry == entry && wanted) else {
+            // Let go of the moment it began (the queue changed then): what
+            // the queue says comes next plays, the usual way.
+            if self.playback.state == PlayState::Playing {
+                self.next();
+            }
+            return;
+        };
+        // The song before played to its end (or faded out there).
+        let end = self.playback.length;
+        self.finish_report_at(end);
+        let Some(current) = self.queue.advance().cloned() else {
+            return;
+        };
+        self.video = None;
+        self.playback = Playback {
+            entry: Some(current.clone()),
+            state: PlayState::Preparing,
+            asked_more_for: self.playback.asked_more_for.take(),
+            version: Some(ahead.version),
+            ..Playback::default()
+        };
+        self.began(current, ahead.ready, false);
     }
 
     /// A song could not be played. Only a problem with the song itself
@@ -2535,7 +2745,14 @@ impl App {
 
     /// Reports how long the current song was listened to.
     fn finish_report(&mut self) {
-        if let Some(url) = self.listened_report() {
+        let at = self.audio_status.position;
+        self.finish_report_at(at);
+    }
+
+    /// Reports how long the current song was listened to, up to `at`
+    /// seconds into it.
+    fn finish_report_at(&mut self, at: f64) {
+        if let Some(url) = self.listened_report_at(at) {
             self.backend.send(Request::Report(url));
         }
     }
@@ -2543,9 +2760,14 @@ impl App {
     /// The report of how long the current song was listened to (its
     /// stretches, see [`Playback::listened`]), once.
     fn listened_report(&mut self) -> Option<String> {
+        let at = self.audio_status.position;
+        self.listened_report_at(at)
+    }
+
+    /// [`App::listened_report`], the last stretch ending at `at`.
+    fn listened_report_at(&mut self, at: f64) -> Option<String> {
         let report = self.playback.report.take()?;
         let mut stretches = std::mem::take(&mut self.playback.listened);
-        let at = self.audio_status.position;
         if at > self.playback.listening_from || stretches.is_empty() {
             stretches.push((self.playback.listening_from, at));
         }
@@ -2890,6 +3112,12 @@ impl App {
     }
 
     fn apply(&mut self, action: Action) {
+        self.apply_one(action);
+        // The queue or the settings may have changed what follows.
+        self.keep_ahead();
+    }
+
+    fn apply_one(&mut self, action: Action) {
         match action {
             Action::Navigate(route) => self.navigate(route),
             Action::Back => {
@@ -2970,6 +3198,15 @@ impl App {
                     0.0
                 };
                 self.apply(Action::SetVolume(to));
+            }
+            Action::SetCrossfade(seconds) => {
+                let seconds = seconds.min(MOST_CROSSFADE);
+                self.settings.crossfade = seconds;
+                self.audio.send(Command::Crossfade(f64::from(seconds)));
+            }
+            Action::SetEqualizer(settings) => {
+                self.settings.equalizer = settings.clamped();
+                self.audio.send(Command::Equalizer(self.settings.equalizer));
             }
             // The song playing, chosen in Up next: pause or play it, rather
             // than start it over (and count another play).
@@ -3162,6 +3399,11 @@ impl App {
                             updates.set_automatic(s.auto_update);
                         }
                     }
+                    Setting::Equalizer => {
+                        s.equalizer.on = !s.equalizer.on;
+                        self.audio.send(Command::Equalizer(s.equalizer));
+                    }
+                    Setting::Discord => s.discord = !s.discord,
                 }
             }
             Action::CheckForUpdates => {
@@ -3304,6 +3546,10 @@ impl App {
                     Repeat::All => Repeat::One,
                     Repeat::One => Repeat::Off,
                 };
+                // Repeating one song no more: the next follows it again.
+                if self.settings.repeat == Repeat::Off {
+                    self.prepare_next();
+                }
             }
             Action::ChooseBrowser(browser) => match &mut self.auth {
                 Auth::Choosing { browser: chosen } => *chosen = browser,
@@ -3610,6 +3856,51 @@ impl App {
         // A media key pressed while the window is hidden acts at once.
         self.apply_actions();
         self.show_in_tray();
+        self.show_on_discord();
+    }
+
+    /// The Discord status (Settings' switch): the song playing, while it
+    /// sounds; nothing while it is paused or stopped, or with the switch
+    /// off. Its thread starts the first time the status is wanted, never
+    /// in the demo (its songs are made up) nor in the tests.
+    fn show_on_discord(&mut self) {
+        let wanted = (self.settings.discord && !crate::discord::APPLICATION_ID.is_empty())
+            .then(|| self.discord_activity())
+            .flatten();
+        if self.demo || cfg!(test) || (wanted.is_none() && self.discord.is_none()) {
+            return;
+        }
+        self.discord
+            .get_or_insert_with(crate::discord::Discord::start)
+            .show(wanted);
+    }
+
+    /// What Discord shows of the song sounding now: its name, artists,
+    /// album and cover, and when it began and ends (Discord's bar).
+    fn discord_activity(&self) -> Option<crate::discord::Activity> {
+        let entry = self.playback.entry.as_ref()?;
+        let status = &self.audio_status;
+        let sounding = self.playback.state == PlayState::Playing
+            && status.entry == Some(entry.id)
+            && status.running;
+        if !sounding {
+            return None;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        let now_ms = i64::try_from(now.as_millis()).ok()?;
+        let start_ms = now_ms - (status.clock() * 1000.0) as i64;
+        let track = &entry.track;
+        Some(crate::discord::Activity {
+            title: track.title.clone(),
+            artists: track.artists.clone(),
+            album: track.album.clone(),
+            cover: track.thumbnail.as_ref().map(|thumb| thumb.sized(512)),
+            video_id: track.video_id.clone(),
+            start_ms,
+            end_ms: (status.length > 0.0).then(|| start_ms + (status.length * 1000.0) as i64),
+        })
     }
 
     /// The icon's clicks (`tray`), and what other launches asked for
@@ -5821,6 +6112,219 @@ mod tests {
         assert_eq!(plays(&commands), 0);
     }
 
+    /// The song next in the queue, ready ahead, is given to the player.
+    fn ready_ahead(h: &mut Harness, video_id: &str) {
+        let entry = h.app.queue.peek_next().expect("a next song").id;
+        h.answer(Event::ReadyAhead {
+            entry,
+            video_id: video_id.into(),
+            ready: ready(),
+        });
+    }
+
+    /// The crossfade the player was given the next song with, if it was.
+    fn given_fade(commands: &[Command]) -> Option<f64> {
+        commands.iter().find_map(|c| match c {
+            Command::Next { fade, .. } => Some(*fade),
+            _ => None,
+        })
+    }
+
+    /// The next song, once ready ahead, is given to the player to follow
+    /// the song playing with nothing between them. Once the player hears
+    /// it, it is the song playing, with no Stop or Play (either would
+    /// leave a gap), and the song after it is made ready.
+    #[test]
+    fn the_next_song_follows_on_when_ready() {
+        let mut h = Harness::new();
+        h.play(&["a", "b", "c"]);
+        let (a, _) = h.entry();
+        assert_eq!(prepares(&h.requests(), false), ["b"]);
+        h.commands();
+        let b = h.app.queue.peek_next().unwrap().id;
+        ready_ahead(&mut h, "b");
+        let commands = h.commands();
+        assert!(
+            matches!(commands.as_slice(), [Command::Next { entry, fade, length, .. }]
+                if *entry == b && *fade == 0.0 && *length == 200.0),
+            "given to follow on"
+        );
+        // Ready again (asked again after a queue change): given once.
+        ready_ahead(&mut h, "b");
+        assert!(h.commands().is_empty());
+
+        h.app.audio.set_status(|s| {
+            s.moved_on = Some(b);
+            s.entry = Some(b);
+        });
+        h.frame();
+        assert_eq!(h.entry(), (b, "b"));
+        assert_eq!(h.app.queue.current().map(|e| e.id), Some(b));
+        assert_eq!(h.app.playback.state, PlayState::Playing);
+        assert!(
+            !h.commands()
+                .iter()
+                .any(|c| matches!(c, Command::Stop | Command::Play { .. })),
+            "nothing stopped or started"
+        );
+        let asked = h.requests();
+        assert_eq!(prepares(&asked, false), ["c"]);
+        assert!(prepares(&asked, true).is_empty());
+        // The song before, said to have ended after all: nothing changes.
+        h.app.audio.set_status(|s| s.ended = Some(a));
+        h.frame();
+        assert_eq!(h.entry().1, "b");
+    }
+
+    /// With a crossfade set, songs fade into each other, but never two of
+    /// one album; a new crossfade reaches the song waiting to follow.
+    #[test]
+    fn songs_fade_into_each_other_but_not_within_an_album() {
+        let of = |id: &str, album: &str| Track {
+            album: Some(album.to_uppercase()),
+            album_id: Some(format!("MPREb_{album}")),
+            ..song(id)
+        };
+        let mut h = Harness::new();
+        h.app.settings.crossfade = 6;
+        h.act(Action::PlayTracks {
+            tracks: vec![of("a", "x"), of("b", "x"), of("c", "y")],
+            start: 0,
+            source: None,
+        });
+        h.ready();
+        h.commands();
+        ready_ahead(&mut h, "b");
+        assert_eq!(given_fade(&h.commands()), Some(0.0), "one album");
+
+        let b = h.app.queue.peek_next().unwrap().id;
+        h.app.audio.set_status(|s| s.moved_on = Some(b));
+        h.frame();
+        ready_ahead(&mut h, "c");
+        assert_eq!(given_fade(&h.commands()), Some(6.0), "another album");
+
+        h.act(Action::SetCrossfade(3));
+        let commands = h.commands();
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, Command::Crossfade(s) if *s == 3.0))
+        );
+        assert_eq!(given_fade(&commands), Some(3.0));
+        // Albums told apart by name when a song has no album page.
+        let named = |id: &str, album: &str| Track {
+            album: Some(album.into()),
+            ..song(id)
+        };
+        assert!(same_album(&named("a", "X"), &of("b", "x")));
+        assert!(!same_album(&named("a", "X"), &named("b", "Y")));
+        assert!(!same_album(&named("a", ""), &named("b", "")));
+    }
+
+    /// A song given to follow is let go once another comes next. Should
+    /// the player have moved on to it that very moment, the song that now
+    /// comes next plays instead.
+    #[test]
+    fn the_song_given_ahead_is_let_go_when_it_no_longer_comes_next() {
+        let mut h = Harness::new();
+        h.play(&["a", "b"]);
+        h.requests();
+        let b = h.app.queue.peek_next().unwrap().id;
+        ready_ahead(&mut h, "b");
+        h.commands();
+
+        h.act(Action::PlayNext(song("c")));
+        assert!(h.commands().iter().any(|c| matches!(c, Command::Unqueue)));
+        assert!(h.app.playback.ahead.is_none());
+        assert_eq!(prepares(&h.requests(), false), ["c"]);
+
+        h.app.audio.set_status(|s| s.moved_on = Some(b));
+        h.frame();
+        assert_eq!(h.entry().1, "c");
+        assert_eq!(h.app.playback.state, PlayState::Preparing);
+        assert_eq!(prepares(&h.requests(), true), ["c"]);
+    }
+
+    /// While one song repeats, or in the video mode, the next song is not
+    /// given to the player: it starts the usual way, with its picture.
+    #[test]
+    fn repeating_one_song_or_the_video_mode_lets_the_next_go() {
+        let mut h = Harness::new();
+        h.play(&["a", "b"]);
+        h.requests();
+        ready_ahead(&mut h, "b");
+        h.commands();
+        h.act(Action::CycleRepeat);
+        assert!(h.app.playback.ahead.is_some(), "the queue repeating");
+        h.act(Action::CycleRepeat);
+        assert_eq!(h.app.settings.repeat, Repeat::One);
+        assert!(h.commands().iter().any(|c| matches!(c, Command::Unqueue)));
+        assert!(h.app.playback.ahead.is_none());
+        ready_ahead(&mut h, "b");
+        assert_eq!(given_fade(&h.commands()), None);
+        // Repeat off: made ready again, to follow on.
+        h.act(Action::CycleRepeat);
+        assert_eq!(prepares(&h.requests(), false), ["b"]);
+        ready_ahead(&mut h, "b");
+        assert_eq!(given_fade(&h.commands()), Some(0.0));
+
+        h.app.video_mode = true;
+        h.frame();
+        assert!(h.commands().iter().any(|c| matches!(c, Command::Unqueue)));
+        ready_ahead(&mut h, "b");
+        assert_eq!(given_fade(&h.commands()), None);
+    }
+
+    /// Discord is told the song while it sounds: its name, artists and
+    /// cover, when it began and when it ends; nothing while it is paused.
+    #[test]
+    fn discord_shows_the_song_while_it_sounds() {
+        let mut h = Harness::new();
+        h.play(&["a"]);
+        at(&mut h, 30.0);
+        h.app.audio.set_status(|s| s.running = true);
+        h.frame();
+        let activity = h.app.discord_activity().expect("shown");
+        assert_eq!(
+            (activity.title.as_str(), activity.video_id.as_str()),
+            ("A", "a")
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let began = now - 30_000;
+        assert!((activity.start_ms - began).abs() < 2_000, "{activity:?}");
+        assert_eq!(activity.end_ms, Some(activity.start_ms + 200_000));
+        h.app.audio.set_status(|s| {
+            s.paused = true;
+            s.running = false;
+        });
+        h.frame();
+        assert_eq!(h.app.discord_activity(), None, "paused");
+    }
+
+    /// The equalizer's switch and bands reach the player, its bands kept
+    /// within their range.
+    #[test]
+    fn the_equalizer_reaches_the_player() {
+        let mut h = Harness::new();
+        assert!(!h.app.settings.equalizer.on, "off at first");
+        h.act(Action::Toggle(Setting::Equalizer));
+        assert!(
+            matches!(h.commands().as_slice(), [Command::Equalizer(eq)] if eq.on),
+            "turned on"
+        );
+        let mut loud = h.app.settings.equalizer;
+        loud.bands_db[0] = 40.0;
+        h.act(Action::SetEqualizer(loud));
+        let wanted = ytfast_core::eq::RANGE_DB;
+        assert_eq!(h.app.settings.equalizer.bands_db[0], wanted);
+        assert!(
+            matches!(h.commands().as_slice(), [Command::Equalizer(eq)] if eq.bands_db[0] == wanted)
+        );
+    }
+
     #[test]
     fn more_songs_are_asked_for_once_per_last_song() {
         let mut h = Harness::new();
@@ -7788,6 +8292,57 @@ mod tests {
         w.settle();
         assert_eq!(w.h.app.settings.theme, Theme::DynamicBackground);
         assert!(w.shows("Moving background"));
+        crate::theme::set(Theme::YouTubeMusic);
+    }
+
+    /// Settings' Sound, in each look: the crossfade's slider set by a
+    /// click along it; the equalizer turned on, its presets chosen from
+    /// their menu, and each of its ten bands a slider named for screen
+    /// readers.
+    #[test]
+    fn settings_sets_the_crossfade_and_the_equalizer() {
+        use crate::theme::Theme;
+        for theme in Theme::ALL {
+            let mut w = Window::new(theme);
+            w.h.act(Action::Navigate(Route::Settings));
+            w.settle();
+            w.wheel(egui::pos2(640.0, 400.0), -600.0);
+            w.settle();
+            assert!(!w.shows("60 Hz"), "{theme:?}: the bands only once on");
+            let crossfade = w.find("Crossfade", 0);
+            w.click(crossfade.center());
+            assert_eq!(w.h.app.settings.crossfade, 6, "{theme:?}");
+            w.click(crossfade.left_center() + egui::vec2(1.0, 0.0));
+            assert_eq!(w.h.app.settings.crossfade, 0, "{theme:?}: off");
+
+            let switch = w.find("Equalizer", 0);
+            w.click(switch.center());
+            w.settle();
+            assert!(w.h.app.settings.equalizer.on, "{theme:?}");
+            for name in [
+                "60 Hz", "170 Hz", "310 Hz", "600 Hz", "1 kHz", "3 kHz", "6 kHz", "12 kHz",
+                "14 kHz", "16 kHz",
+            ] {
+                assert!(w.shows(name), "{theme:?}: {name}");
+            }
+            let preset = w.find("Flat", 0);
+            w.click(preset.center());
+            w.settle();
+            let bass = w.find("Bass Booster", 0);
+            w.click(bass.center());
+            w.settle();
+            let wanted = ytfast_core::eq::PRESETS
+                .iter()
+                .find(|p| p.name == "Bass Booster")
+                .unwrap();
+            assert_eq!(w.h.app.settings.equalizer.bands_db, wanted.bands_db);
+            assert!(w.shows("Bass Booster"), "{theme:?}: the preset's name");
+
+            let band = w.find("60 Hz", 0);
+            w.click(band.center_top() + egui::vec2(0.0, 1.0));
+            assert_eq!(w.h.app.settings.equalizer.bands_db[0], 12.0, "{theme:?}");
+            assert!(w.shows("Custom"), "{theme:?}: no preset fits now");
+        }
         crate::theme::set(Theme::YouTubeMusic);
     }
 

@@ -32,6 +32,24 @@ pub enum Command {
     Stop,
     /// 0 to 1.
     Volume(f32),
+    /// Plays a song after the one playing, with nothing between them, or
+    /// the two overlapping for `fade` seconds (a crossfade); it is said
+    /// once heard ([`Status::moved_on`]). Any song queued before is let go.
+    /// `length` is in seconds.
+    Next {
+        entry: u64,
+        data: std::sync::Arc<ytfast_core::stream::SongData>,
+        gain: f32,
+        length: f64,
+        fade: f64,
+    },
+    /// Lets the song queued to follow go.
+    Unqueue,
+    /// How long crossfades last, in seconds (0: none): songs are decoded
+    /// that far ahead.
+    Crossfade(f64),
+    /// The equalizer's settings.
+    Equalizer(ytfast_core::eq::Equalizer),
 }
 
 /// What the window shows about playback.
@@ -44,6 +62,9 @@ pub struct Status {
     pub paused: bool,
     /// An entry that played to its end, for the window to move on from.
     pub ended: Option<u64>,
+    /// The entry queued to follow ([`Command::Next`]), heard now: it plays
+    /// already, for the window to take up.
+    pub moved_on: Option<u64>,
     /// An entry that could not play to its end.
     pub failed: Option<PlayFailure>,
     pub device: String,
@@ -132,6 +153,15 @@ impl Audio {
             .take()
     }
 
+    /// The entry queued to follow that is heard now, once.
+    pub fn take_moved_on(&self) -> Option<u64> {
+        self.status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .moved_on
+            .take()
+    }
+
     /// The entry that could not play to its end, once.
     pub fn take_failed(&self) -> Option<PlayFailure> {
         self.status
@@ -149,12 +179,20 @@ struct Silent {
     offset: f64,
     length: f64,
     loaded: bool,
+    /// A song queued to follow: its length, and its crossfade, in seconds.
+    queued: Option<(f64, f64)>,
 }
 
 impl Silent {
     fn position(&self) -> f64 {
         let running = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
         (self.offset + running).min(self.length)
+    }
+
+    /// Where the song queued begins: the end, less its crossfade.
+    fn next_begins(&self) -> Option<f64> {
+        let (_, fade) = self.queued?;
+        Some((self.length - fade).max(0.0))
     }
 }
 
@@ -178,9 +216,85 @@ impl Engine {
                     offset: 0.0,
                     length,
                     loaded: true,
+                    queued: None,
                 };
                 Ok(())
             }
+        }
+    }
+
+    /// Queues a song to follow the one playing ([`Command::Next`]).
+    fn queue_next(
+        &mut self,
+        data: std::sync::Arc<ytfast_core::stream::SongData>,
+        gain: f32,
+        length: f64,
+        fade: f64,
+    ) -> Result<(), String> {
+        match self {
+            Self::Real(player) => player
+                .queue_next(data, gain, Duration::from_secs_f64(fade.max(0.0)))
+                .map_err(|e| e.to_string()),
+            Self::Silent(s) if s.loaded => {
+                s.queued = Some((length, fade.max(0.0).min(s.length)));
+                Ok(())
+            }
+            Self::Silent(_) => Err("no song plays".into()),
+        }
+    }
+
+    fn unqueue(&mut self) {
+        match self {
+            Self::Real(player) => player.unqueue(),
+            Self::Silent(s) => s.queued = None,
+        }
+    }
+
+    /// The song queued is heard now (once).
+    fn take_moved_on(&mut self) -> bool {
+        match self {
+            Self::Real(player) => player.take_moved_on(),
+            Self::Silent(s) => {
+                let (Some((length, _)), Some(begins)) = (s.queued, s.next_begins()) else {
+                    return false;
+                };
+                let at = s.position();
+                if s.started.is_none() || at < begins {
+                    return false;
+                }
+                *s = Silent {
+                    started: Some(Instant::now()),
+                    offset: (at - begins).min(length),
+                    length,
+                    loaded: true,
+                    queued: None,
+                };
+                true
+            }
+        }
+    }
+
+    /// How long until the song queued is heard, once that is known.
+    fn until_next(&self) -> Option<Duration> {
+        match self {
+            Self::Real(player) => player.until_next(),
+            Self::Silent(s) => {
+                let begins = s.next_begins()?;
+                s.started
+                    .map(|_| Duration::from_secs_f64((begins - s.position()).max(0.0)))
+            }
+        }
+    }
+
+    fn set_crossfade(&mut self, fade: f64) {
+        if let Self::Real(player) = self {
+            player.set_crossfade(Duration::from_secs_f64(fade.clamp(0.0, 12.0)));
+        }
+    }
+
+    fn set_equalizer(&mut self, settings: ytfast_core::eq::Equalizer) {
+        if let Self::Real(player) = self {
+            player.set_equalizer(settings);
         }
     }
 
@@ -303,6 +417,39 @@ impl Engine {
     }
 }
 
+/// The sound settings asked for so far, for a device opened later.
+#[derive(Default)]
+struct Sound {
+    volume: Option<f32>,
+    /// Seconds.
+    crossfade: f64,
+    equalizer: Option<ytfast_core::eq::Equalizer>,
+}
+
+impl Sound {
+    /// `player`, just opened, set as asked.
+    fn set_up(&self, mut player: Player) -> Engine {
+        if let Some(v) = self.volume {
+            player.set_volume(v);
+        }
+        player.set_crossfade(Duration::from_secs_f64(self.crossfade.clamp(0.0, 12.0)));
+        if let Some(settings) = self.equalizer {
+            player.set_equalizer(settings);
+        }
+        Engine::Real(Box::new(player))
+    }
+}
+
+/// The song queued to follow the one playing ([`Command::Next`]), until it
+/// is heard: what the thread takes it up with then.
+struct Queued {
+    entry: u64,
+    data: std::sync::Arc<ytfast_core::stream::SongData>,
+    gain: f32,
+    length: f64,
+    fade: f64,
+}
+
 /// What a Play says while no sound device can be found.
 const NO_DEVICE: &str =
     "No sound output was found. Connect speakers or headphones, then press Play.";
@@ -333,8 +480,10 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
             }
         }
     };
-    // The last volume asked for, for a device found later.
-    let mut volume: Option<f32> = None;
+    // The sound settings asked for, for a device found later.
+    let mut sound = Sound::default();
+    // The song queued to follow, until it is heard.
+    let mut queued: Option<Queued> = None;
     let mut entry: Option<u64> = None;
     let mut length = 0.0;
     let mut ended_sent = false;
@@ -372,11 +521,8 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                 && tried.elapsed() >= RECOVER_EVERY
             {
                 recovering = Some(Instant::now());
-                if let Ok(mut player) = Player::open() {
-                    if let Some(v) = volume {
-                        player.set_volume(v);
-                    }
-                    engine = Engine::Real(Box::new(player));
+                if let Ok(player) = Player::open() {
+                    engine = sound.set_up(player);
                     recovering = None;
                     no_device = false;
                     problem = None;
@@ -391,6 +537,18 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                                 if last_paused {
                                     engine.pause();
                                 }
+                                // The song queued follows it again.
+                                if let Some(next) = &queued
+                                    && let Err(e) = engine.queue_next(
+                                        std::sync::Arc::clone(&next.data),
+                                        next.gain,
+                                        next.length,
+                                        next.fade,
+                                    )
+                                {
+                                    log::info!("the next song cannot follow on: {e}");
+                                    queued = None;
+                                }
                             }
                             Err(e) => problem = Some(format!("This song could not be played: {e}")),
                         }
@@ -398,12 +556,20 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                 }
             }
             // A song about to sound once its jump is made is followed as
-            // one sounding; its end, once known and not yet told.
+            // one sounding; its end, once known and not yet told, and when
+            // the song queued after it is heard.
             let sounding = entry.is_some() && (!engine.paused() || sound_after_jump);
             let until_end = (sounding && !ended_sent)
                 .then(|| engine.until_end())
                 .flatten();
-            match commands.recv_timeout(next_look(sounding, until_end)) {
+            let until_next = (sounding && queued.is_some())
+                .then(|| engine.until_next())
+                .flatten();
+            let due = match (until_end, until_next) {
+                (Some(end), Some(next)) => Some(end.min(next)),
+                (end, next) => end.or(next),
+            };
+            match commands.recv_timeout(next_look(sounding, due)) {
                 Ok(command) => {
                     changed = true;
                     match command {
@@ -417,15 +583,14 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                         } => {
                             pending_jump = None;
                             sound_after_jump = false;
+                            // The player lets the song queued go.
+                            queued = None;
                             // Speakers or headphones may have been connected
                             // since: look again rather than play to nobody.
                             if no_device {
                                 match Player::open() {
-                                    Ok(mut player) => {
-                                        if let Some(v) = volume {
-                                            player.set_volume(v);
-                                        }
-                                        engine = Engine::Real(Box::new(player));
+                                    Ok(player) => {
+                                        engine = sound.set_up(player);
                                         no_device = false;
                                     }
                                     Err(e) => problem = Some(format!("No sound output: {e}")),
@@ -493,14 +658,59 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                         Command::Stop => {
                             engine.stop();
                             entry = None;
+                            queued = None;
                             pending_jump = None;
                             sound_after_jump = false;
                             // Not the next song's length.
                             length = 0.0;
                         }
                         Command::Volume(v) => {
-                            volume = Some(v);
+                            sound.volume = Some(v);
                             engine.set_volume(v);
+                        }
+                        // Nothing plays, or the song ended already: the
+                        // window plays the next song itself.
+                        Command::Next { .. } if entry.is_none() || ended_sent => {
+                            engine.unqueue();
+                            queued = None;
+                        }
+                        Command::Next {
+                            entry: id,
+                            data,
+                            gain,
+                            length: next_length,
+                            fade,
+                        } => {
+                            let kept = std::sync::Arc::clone(&data);
+                            match engine.queue_next(data, gain, next_length, fade) {
+                                Ok(()) => {
+                                    queued = Some(Queued {
+                                        entry: id,
+                                        data: kept,
+                                        gain,
+                                        length: next_length,
+                                        fade,
+                                    });
+                                }
+                                // Another format, say: it follows the usual
+                                // way, played once this song has ended.
+                                Err(e) => {
+                                    log::info!("the next song cannot follow on: {e}");
+                                    queued = None;
+                                }
+                            }
+                        }
+                        Command::Unqueue => {
+                            engine.unqueue();
+                            queued = None;
+                        }
+                        Command::Crossfade(fade) => {
+                            sound.crossfade = fade;
+                            engine.set_crossfade(fade);
+                        }
+                        Command::Equalizer(settings) => {
+                            sound.equalizer = Some(settings);
+                            engine.set_equalizer(settings);
                         }
                     }
                 }
@@ -532,6 +742,22 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                 }
                 None => {}
             }
+            // The song queued is heard: it is the song playing now. Before
+            // the end is looked at, which is then the new song's.
+            let mut moved_on = None;
+            if queued.is_some()
+                && engine.take_moved_on()
+                && let Some(next) = queued.take()
+            {
+                entry = Some(next.entry);
+                length = next.length;
+                current = Some((next.data, next.gain));
+                ended_sent = false;
+                // A jump waiting for the song before is no use any more.
+                pending_jump = None;
+                moved_on = Some(next.entry);
+                changed = true;
+            }
             // Say once that the song ended, or that it broke off before its end
             // (its download failed or stalled): that is no reason to move on.
             let just_ended = entry.is_some() && !ended_sent && engine.finished();
@@ -556,6 +782,9 @@ fn run(commands: Receiver<Command>, status: Arc<Mutex<Status>>, wake: impl Fn(),
                 s.paused = paused && !sound_after_jump;
                 s.device = engine.device();
                 s.problem = problem.clone();
+                if moved_on.is_some() {
+                    s.moved_on = moved_on;
+                }
                 match (&broke_off, entry) {
                     (Some(why), Some(id)) => {
                         s.failed = Some(PlayFailure {
@@ -605,9 +834,9 @@ const END_LOOK: Duration = Duration::from_millis(5);
 
 /// How long the sound thread waits for a command before it looks at the
 /// song again. A sounding song is followed closely (its position, its end),
-/// and just when its end is due (`until_end`, once known), so the next song
-/// follows at once; otherwise a look now and then is enough (a device that
-/// changed).
+/// and just when its end, or the next song queued, is due (`until_end`, once
+/// known), so the next song follows at once; otherwise a look now and then
+/// is enough (a device that changed).
 fn next_look(sounding: bool, until_end: Option<Duration>) -> Duration {
     match (sounding, until_end) {
         (false, _) => Duration::from_secs(1),
@@ -681,6 +910,76 @@ mod tests {
         audio.send(Command::Resume);
         let playing = status_when(&audio, |s| s.running);
         assert!(playing.running && !playing.paused, "{playing:?}");
+    }
+
+    fn play(audio: &Audio, entry: u64, length: f64) {
+        audio.send(Command::Play {
+            entry,
+            data: ytfast_core::stream::SongData::complete(Vec::new()),
+            gain: 1.0,
+            length,
+            from: 0.0,
+            paused: false,
+        });
+    }
+
+    fn queue(audio: &Audio, entry: u64, length: f64, fade: f64) {
+        audio.send(Command::Next {
+            entry,
+            data: ytfast_core::stream::SongData::complete(Vec::new()),
+            gain: 1.0,
+            length,
+            fade,
+        });
+    }
+
+    /// A song queued to follow is taken up once it is heard (here by the
+    /// demo's silent clock): the window hears that it moved on, once, and
+    /// not that the song before ended.
+    #[test]
+    fn a_song_queued_follows_on_and_is_told() {
+        let audio = Audio::start(|| {}, true);
+        play(&audio, 1, 0.3);
+        queue(&audio, 2, 200.0, 0.0);
+        let status = status_when(&audio, |s| s.moved_on.is_some());
+        assert_eq!(status.moved_on, Some(2), "{status:?}");
+        assert_eq!(status.entry, Some(2));
+        assert_eq!(status.length, 200.0);
+        assert!(status.running && status.position < 1.0, "{status:?}");
+        assert_eq!(status.ended, None, "the song before is not told ended");
+        assert_eq!(audio.take_moved_on(), Some(2));
+        assert_eq!(audio.take_moved_on(), None, "told once");
+    }
+
+    /// With a crossfade, the song queued begins that long before the end
+    /// of the one playing (here 9.7 s before the end of a 10 s song).
+    #[test]
+    fn a_crossfade_begins_before_the_end() {
+        let audio = Audio::start(|| {}, true);
+        play(&audio, 1, 10.0);
+        queue(&audio, 2, 200.0, 9.7);
+        let status = status_when(&audio, |s| s.moved_on.is_some());
+        assert_eq!(status.moved_on, Some(2), "{status:?}");
+        assert_eq!(status.entry, Some(2));
+    }
+
+    /// A song queued while nothing plays, or let go before it is heard,
+    /// never follows: the song playing ends, and the window plays the next
+    /// one itself.
+    #[test]
+    fn a_song_let_go_never_follows() {
+        let audio = Audio::start(|| {}, true);
+        queue(&audio, 2, 200.0, 0.0);
+        play(&audio, 1, 0.2);
+        let status = status_when(&audio, |s| s.ended.is_some());
+        assert_eq!((status.ended, status.moved_on), (Some(1), None));
+
+        let audio = Audio::start(|| {}, true);
+        play(&audio, 3, 0.3);
+        queue(&audio, 4, 200.0, 0.0);
+        audio.send(Command::Unqueue);
+        let status = status_when(&audio, |s| s.ended.is_some());
+        assert_eq!((status.ended, status.moved_on), (Some(3), None));
     }
 
     /// The seconds from `since` until `ready` says so, looked at every

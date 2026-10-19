@@ -29,6 +29,7 @@ pub mod audio;
 pub mod auth;
 pub mod cookies;
 pub mod direct;
+pub mod eq;
 pub mod helpers;
 pub mod innertube;
 pub mod library;

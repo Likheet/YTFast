@@ -1,12 +1,15 @@
 //! YTFast's settings, few and short (touched up at the owner's word, 11
-//! October 2026): the look, a few switches, updates, the account, and
-//! where problems are noted. YouTube Music's look and Dynamic Background
-//! put each setting in the same place; Premium sets each on a card of its
-//! own.
+//! October 2026): the look, a few switches, the sound (crossfade and the
+//! equalizer), updates, the account, and where problems are noted.
+//! YouTube Music's look and Dynamic Background put each setting in the
+//! same place; Premium sets each on a card of its own.
 
-use egui::{Align, Layout, Rect, UiBuilder, pos2, vec2};
+use std::ops::RangeInclusive;
 
-use crate::app::{Action, App, Auth, Setting};
+use egui::{Align, Layout, Rect, Sense, UiBuilder, pos2, vec2};
+use ytfast_core::eq::{BANDS, Equalizer, PRESETS, RANGE_DB};
+
+use crate::app::{Action, App, Auth, MOST_CROSSFADE, Setting};
 use crate::theme::{self, PALETTE, Theme};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
@@ -78,6 +81,16 @@ fn contents(app: &App, ui: &mut egui::Ui) {
         app.settings.translate_lyrics,
         Setting::TranslateLyrics,
     );
+    if !crate::discord::APPLICATION_ID.is_empty() {
+        switch(
+            app,
+            ui,
+            "Discord status",
+            DISCORD_ABOUT,
+            app.settings.discord,
+            Setting::Discord,
+        );
+    }
     switch(
         app,
         ui,
@@ -105,6 +118,20 @@ fn contents(app: &App, ui: &mut egui::Ui) {
         app.settings.open_at_login,
         Setting::OpenAtLogin,
     );
+
+    section(ui, "Sound");
+    crossfade(app, ui);
+    switch(
+        app,
+        ui,
+        "Equalizer",
+        EQUALIZER_ABOUT,
+        app.settings.equalizer.on,
+        Setting::Equalizer,
+    );
+    if app.settings.equalizer.on {
+        equalizer(app, ui);
+    }
 
     if !app.demo {
         section(ui, "Updates");
@@ -270,6 +297,255 @@ fn looks(app: &App, ui: &mut egui::Ui) {
     });
 }
 
+/// What the Discord status does.
+const DISCORD_ABOUT: &str = "Your Discord profile shows the song playing, while Discord is open.";
+/// What the crossfade does.
+const CROSSFADE_ABOUT: &str = "Songs fade into each other, except within an album.";
+/// What the equalizer does.
+const EQUALIZER_ABOUT: &str = "Boost or cut bass, voices and treble. It never distorts.";
+/// The room at the crossfade row's right: its slider, and its seconds.
+const CROSSFADE_ROOM: f32 = 230.0;
+
+/// The crossfade: its title and what it does, and at the right how long
+/// it lasts (Off, or seconds) and its slider, 0 to 12 seconds.
+fn crossfade(app: &App, ui: &mut egui::Ui) {
+    let seconds = app.settings.crossfade.min(MOST_CROSSFADE);
+    row(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.set_max_width((ui.available_width() - CROSSFADE_ROOM).max(0.0));
+            theme::label(ui, "Crossfade", theme::medium(15.5), PALETTE.text);
+            ui.label(
+                egui::RichText::new(CROSSFADE_ABOUT)
+                    .font(theme::regular(13.0))
+                    .color(PALETTE.secondary),
+            );
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let (spot, _) = ui.allocate_exact_size(vec2(160.0, 28.0), Sense::hover());
+            let range = 0.0..=f32::from(MOST_CROSSFADE);
+            let id = ui.id().with("crossfade");
+            if let Some(to) = slider(ui, spot, id, f32::from(seconds), range, 1.0, "Crossfade") {
+                app.act(Action::SetCrossfade(to.round() as u8));
+            }
+            let words = if seconds == 0 {
+                "Off".to_string()
+            } else {
+                format!("{seconds} s")
+            };
+            // As wide whatever it says, so the slider never moves.
+            let (spot, _) = ui.allocate_exact_size(vec2(48.0, 28.0), Sense::hover());
+            ui.painter().text(
+                pos2(spot.right() - 8.0, spot.center().y),
+                egui::Align2::RIGHT_CENTER,
+                words,
+                theme::regular(14.0),
+                PALETTE.secondary,
+            );
+        });
+    });
+}
+
+/// The equalizer, once on: its presets, and its ten bands as sliders
+/// standing side by side, each from -12 to +12 dB, its value above it and
+/// its frequency under it.
+fn equalizer(app: &App, ui: &mut egui::Ui) {
+    let settings = app.settings.equalizer;
+    row(ui, |ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(36.0);
+                text(ui, "Preset");
+                ui.add_space(8.0);
+                let chosen = settings.preset().map(|preset| preset.name);
+                let button = theme::pill_button(ui, chosen.unwrap_or("Custom"), false);
+                theme::menu_popup(&button).show(|ui| {
+                    theme::menu(ui);
+                    egui::ScrollArea::vertical()
+                        .max_height(48.0 * 7.0)
+                        .show(ui, |ui| {
+                            for preset in PRESETS {
+                                let picked = chosen == Some(preset.name);
+                                if theme::menu_choice(ui, picked, preset.name).clicked() {
+                                    app.act(Action::SetEqualizer(Equalizer {
+                                        on: true,
+                                        bands_db: preset.bands_db,
+                                    }));
+                                    ui.close();
+                                }
+                            }
+                        });
+                });
+            });
+            ui.add_space(12.0);
+            let (area, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 176.0), Sense::hover());
+            let column = area.width() / BANDS.len() as f32;
+            for (band, hz) in BANDS.iter().enumerate() {
+                let left = area.left() + column * band as f32;
+                let gain = settings.bands_db[band];
+                let painter = ui.painter();
+                let centre = left + column / 2.0;
+                painter.text(
+                    pos2(centre, area.top() + 8.0),
+                    egui::Align2::CENTER_CENTER,
+                    decibels(gain),
+                    theme::regular(13.0),
+                    PALETTE.secondary,
+                );
+                painter.text(
+                    pos2(centre, area.bottom() - 8.0),
+                    egui::Align2::CENTER_CENTER,
+                    frequency(*hz),
+                    theme::regular(13.0),
+                    PALETTE.secondary,
+                );
+                let spot = Rect::from_min_max(
+                    pos2(centre - 14.0, area.top() + 22.0),
+                    pos2(centre + 14.0, area.bottom() - 22.0),
+                );
+                let id = ui.id().with(("band", band));
+                let name = band_name(*hz);
+                if let Some(to) = slider(ui, spot, id, gain, -RANGE_DB..=RANGE_DB, 1.0, &name) {
+                    let mut changed = settings;
+                    changed.bands_db[band] = to;
+                    app.act(Action::SetEqualizer(changed));
+                }
+            }
+        });
+    });
+}
+
+/// A band's gain as it shows: "0", "+3", "−6".
+fn decibels(gain: f32) -> String {
+    let rounded = gain.round() as i32;
+    match rounded {
+        0 => "0".to_string(),
+        n if n > 0 => format!("+{n}"),
+        n => format!("\u{2212}{}", -n),
+    }
+}
+
+/// A band's frequency as it shows under its slider: "60", "1k".
+fn frequency(hz: f32) -> String {
+    if hz >= 1000.0 {
+        format!("{}k", (hz / 1000.0).round())
+    } else {
+        format!("{hz:.0}")
+    }
+}
+
+/// A band's slider's name, for screen readers: "60 Hz", "1 kHz".
+fn band_name(hz: f32) -> String {
+    if hz >= 1000.0 {
+        format!("{} kHz", (hz / 1000.0).round())
+    } else {
+        format!("{hz:.0} Hz")
+    }
+}
+
+/// A slider in `spot`, standing when taller than wide: a rail 4 thick,
+/// lit from its start (or, for a range around 0, from 0) to the value,
+/// and a knob 14 across. Dragged or clicked, or moved by `step` with the
+/// arrow keys once it has the keyboard. Named `name` for screen readers.
+/// The new value, when it changed.
+fn slider(
+    ui: &mut egui::Ui,
+    spot: Rect,
+    id: egui::Id,
+    value: f32,
+    range: RangeInclusive<f32>,
+    step: f32,
+    name: &str,
+) -> Option<f32> {
+    let standing = spot.height() > spot.width();
+    let (low, high) = (*range.start(), *range.end());
+    let mut response = ui.interact(spot, id, Sense::click_and_drag());
+    theme::pointing(ui, &response);
+    let knob = 7.0;
+    let rail = if standing {
+        Rect::from_center_size(spot.center(), vec2(4.0, spot.height() - 2.0 * knob))
+    } else {
+        Rect::from_center_size(spot.center(), vec2(spot.width() - 2.0 * knob, 4.0))
+    };
+    // Where along the rail a value is, from its start (0) to its end (1).
+    let along = |v: f32| ((v - low) / (high - low)).clamp(0.0, 1.0);
+    let place = |t: f32| {
+        if standing {
+            pos2(rail.center().x, rail.bottom() - rail.height() * t)
+        } else {
+            pos2(rail.left() + rail.width() * t, rail.center().y)
+        }
+    };
+    // Only what the pointer or the keys asked for moves it (in steps): a
+    // value between steps (a preset's) stays as it is.
+    let mut wanted = None;
+    if let Some(pointer) = response.interact_pointer_pos()
+        && (response.is_pointer_button_down_on() || response.clicked())
+    {
+        let t = if standing {
+            (rail.bottom() - pointer.y) / rail.height()
+        } else {
+            (pointer.x - rail.left()) / rail.width()
+        };
+        wanted = Some(low + t.clamp(0.0, 1.0) * (high - low));
+    }
+    if response.has_focus() {
+        // The arrow keys move it, not the keyboard to another control.
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+        let (up, down) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowRight),
+                i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowLeft),
+            )
+        });
+        let at = (value / step).round() * step;
+        if up {
+            wanted = Some(at + step);
+        }
+        if down {
+            wanted = Some(at - step);
+        }
+    }
+    let wanted = wanted.map(|w| ((w / step).round() * step).clamp(low, high));
+    let shown = wanted.unwrap_or(value);
+    response.widget_info(|| egui::WidgetInfo::slider(true, f64::from(shown), name));
+    if ui.is_rect_visible(spot) {
+        let painter = ui.painter();
+        painter.rect_filled(rail, egui::CornerRadius::same(2), PALETTE.quiet);
+        let from = place(along(if low < 0.0 && high > 0.0 { 0.0 } else { low }));
+        let to = place(along(shown));
+        painter.rect_filled(
+            Rect::from_two_pos(from, to).expand2(if standing {
+                vec2(2.0, 0.0)
+            } else {
+                vec2(0.0, 2.0)
+            }),
+            egui::CornerRadius::same(2),
+            PALETTE.text,
+        );
+        painter.circle_filled(to, knob, PALETTE.text);
+        if response.has_focus() {
+            painter.circle_stroke(to, knob + 3.0, egui::Stroke::new(1.0, PALETTE.text));
+        }
+    }
+    match wanted {
+        Some(wanted) if wanted != value => {
+            response.mark_changed();
+            Some(wanted)
+        }
+        _ => None,
+    }
+}
+
 /// What "Keep playing when closed" says, on Windows (its icon by the
 /// clock) and on a Mac (in the menu bar).
 const KEEP_RUNNING_ABOUT: [&str; 2] = [
@@ -394,9 +670,13 @@ mod tests {
             .iter()
             .chain(&KEEP_RUNNING_ABOUT)
             .chain(&OPEN_AT_LOGIN_ABOUT)
+            .chain([&EQUALIZER_ABOUT, &DISCORD_ABOUT])
             .map(|text| (*text, 13.0, 570.0));
-        // Words beside a button: 14.
-        let beside = [(LOG_WORDS, 14.0, WORDS_BESIDE_BUTTON)];
+        // Words beside a button: 14; the crossfade's, beside its slider.
+        let beside = [
+            (LOG_WORDS, 14.0, WORDS_BESIDE_BUTTON),
+            (CROSSFADE_ABOUT, 13.0, 640.0 - CROSSFADE_ROOM),
+        ];
         for (text, size, width) in explanations.chain(beside) {
             for scale in [1.0, 1.25, 1.5, 2.0] {
                 for inter in [false, true] {

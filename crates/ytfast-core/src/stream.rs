@@ -277,6 +277,11 @@ impl SongData {
         self.finish();
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_for_test(&self, message: &str) {
+        self.fail(message.into());
+    }
+
     fn fail(&self, message: String) {
         self.lock().failed = Some(message);
         self.arrived.notify_all();

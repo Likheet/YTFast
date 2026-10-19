@@ -10,9 +10,14 @@
 //! on a thread of its own per song, a little ahead of the device, and
 //! rodio's mixer converts to the device's rate. The device never waits for
 //! the download: when the decoder is behind, it plays silence.
+//!
+//! The next song can be queued to follow on the same stream, with nothing
+//! between the two (gapless) or with the two overlapping (a crossfade:
+//! [`Playing`]); and everything plays through the equalizer
+//! ([`crate::eq`]).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -62,6 +67,8 @@ struct SongSource {
     position: usize,
     channels: u16,
     rate: u32,
+    /// The song's bytes, to tell its end from a download that broke off.
+    data: Arc<SongData>,
 }
 
 impl SongSource {
@@ -110,6 +117,7 @@ impl SongSource {
             position: 0,
             channels: channels.max(1),
             rate,
+            data: Arc::clone(data),
         };
         if !at.is_zero() {
             let seeked = source
@@ -191,6 +199,12 @@ impl SongSource {
         self.position = samples.len();
         Some(chunk)
     }
+
+    /// Decoding stopped short of the song's end: its download did not
+    /// arrive whole (it failed or stalled).
+    fn broke_off(&self) -> bool {
+        !self.data.is_complete()
+    }
 }
 
 impl Iterator for SongSource {
@@ -266,6 +280,13 @@ struct Feed {
     /// decoding has ended ([`Feed::end`]); `u64::MAX` until then, and for a
     /// song let go.
     length: AtomicU64,
+    /// Its samples a second and channels: one song follows another without
+    /// a break only in the same format ([`Player::queue_next`]).
+    format: (u32, u16),
+    /// Decoding ended where the download broke off, short of the song's
+    /// end: no song queued follows it ([`Playing`]), and the player stops
+    /// ([`Player::broke_off`]). Stored before `length`.
+    broke_off: AtomicBool,
 }
 
 /// What the device gets from a [`Feed`].
@@ -304,11 +325,17 @@ impl Feed {
     /// Decoding has ended. At the end of the song, or where it broke off,
     /// the song's length (from where the feed started) is known; a song let
     /// go has none.
-    fn end(&self, queue: &mut Queue) {
+    fn end(&self, queue: &mut Queue, broke_off: bool) {
         queue.ended = true;
+        self.broke_off.store(broke_off, Ordering::Release);
         if !queue.let_go {
             self.length.store(queue.pushed, Ordering::Release);
         }
+    }
+
+    /// Decoding ended where the download broke off ([`Feed::broke_off`]).
+    fn broke_off(&self) -> bool {
+        self.broke_off.load(Ordering::Acquire)
     }
 
     /// The song's length from where the feed started, once decoding has
@@ -344,13 +371,13 @@ fn decode_ahead(mut song: SongSource, feed: &Feed, ahead: usize) {
     // However decoding stops (a panic in the decoder too), the device
     // hears that it has, so the song ends rather than playing silence for
     // ever.
-    struct Ended<'a>(&'a Feed);
+    struct Ended<'a>(&'a Feed, Arc<SongData>);
     impl Drop for Ended<'_> {
         fn drop(&mut self) {
-            self.0.end(&mut self.0.lock());
+            self.0.end(&mut self.0.lock(), !self.1.is_complete());
         }
     }
-    let _ended = Ended(feed);
+    let _ended = Ended(feed, Arc::clone(&song.data));
     while let Some(chunk) = song.next_chunk() {
         let mut queue = feed.lock();
         while queue.samples >= ahead && !queue.let_go {
@@ -367,87 +394,330 @@ fn decode_ahead(mut song: SongSource, feed: &Feed, ahead: usize) {
 }
 
 /// The time between giving the device a sample and hearing it, asked when
-/// a song ends ([`Playing`]).
+/// the last song ends ([`Playing`]).
 type Latency = Box<dyn Fn() -> Duration + Send>;
 
-/// A song as the device plays it, as a rodio source.
-///
-/// The device must never wait (the sound would stop, and pausing or moving
-/// to other headphones would wait too), so the song is decoded on a thread
-/// of its own ([`decode_ahead`]), a little ahead. When the decoder is
-/// behind, because the download is, silence plays, and is counted so the
-/// song's position (and the lyrics) do not run ahead. Dropping it ends the
-/// decoding thread.
-///
-/// After the song's end, silence plays for as long as the device takes to
-/// play what it holds (its latency: about 0.2 s on Windows), and only then
-/// does the source end. So the song is finished ([`Player::finished`]) once
-/// its end has been heard, and the next song, which empties the device,
-/// cuts off nothing of it.
-struct Playing {
+/// Starts decoding `song` into a feed of its own, keeping `ahead` samples
+/// ready, on a thread of its own. With `first`, its first half second is
+/// decoded here, so the device's first request is answered with sound (a
+/// song queued to follow another has seconds for its decoder to start).
+fn feed_for(mut song: SongSource, ahead: usize, first: bool) -> Result<Arc<Feed>, AudioError> {
+    let (rate, channels) = (song.rate, song.channels);
+    let per_second = rate as usize * usize::from(channels);
+    let mut queue = Queue::default();
+    while first && queue.samples < per_second / 2 {
+        match song.next_chunk() {
+            Some(chunk) => queue.push(chunk),
+            None => {
+                queue.ended = true;
+                break;
+            }
+        }
+    }
+    let ended = queue.ended;
+    let length = if ended { queue.pushed } else { u64::MAX };
+    let feed = Arc::new(Feed {
+        queue: Mutex::new(queue),
+        room: Condvar::new(),
+        silent: AtomicU64::new(0),
+        per_second: per_second as u64,
+        length: AtomicU64::new(length),
+        format: (rate, channels),
+        broke_off: AtomicBool::new(ended && song.broke_off()),
+    });
+    if !ended {
+        let decoding = Arc::clone(&feed);
+        std::thread::Builder::new()
+            .name("ytfast-decoder".into())
+            .spawn(move || decode_ahead(song, &decoding, ahead))
+            .map_err(|e| AudioError::Device(format!("could not start decoding: {e}")))?;
+    }
+    Ok(feed)
+}
+
+/// One song's sound in a [`Playing`]: its feed, and how loud it plays
+/// (YouTube's loudness, [`gain_for_loudness`]).
+struct Voice {
     feed: Arc<Feed>,
     chunk: Vec<f32>,
     at: usize,
+    gain: f32,
+    /// Samples of the song given so far (sound only).
+    taken: u64,
+}
+
+/// What a [`Voice`] gives next.
+enum Sample {
+    Sound(f32),
+    /// Nothing decoded yet: the download is behind.
+    Waiting,
+    /// All of the song has been given: it ended, or broke off.
+    End,
+    /// Nobody plays the song any more.
+    LetGo,
+}
+
+impl Voice {
+    fn new(feed: Arc<Feed>, gain: f32) -> Self {
+        Self {
+            feed,
+            chunk: Vec::new(),
+            at: 0,
+            gain,
+            taken: 0,
+        }
+    }
+
+    /// The next sample. Never waits.
+    fn next(&mut self) -> Sample {
+        loop {
+            if let Some(&sample) = self.chunk.get(self.at) {
+                self.at += 1;
+                self.taken += 1;
+                return Sample::Sound(sample * self.gain);
+            }
+            match self.feed.take() {
+                Taken::Sound(chunk) => {
+                    self.chunk = chunk;
+                    self.at = 0;
+                }
+                Taken::Waiting => return Sample::Waiting,
+                Taken::End => return Sample::End,
+                Taken::LetGo => return Sample::LetGo,
+            }
+        }
+    }
+
+    /// Samples of the song still to give, once its decoding has ended.
+    fn left(&self) -> Option<u64> {
+        let length = self.feed.length.load(Ordering::Acquire);
+        (length != u64::MAX).then(|| length.saturating_sub(self.taken))
+    }
+
+    /// Some of the song is decoded, ready to sound at once.
+    fn ready(&self) -> bool {
+        self.at < self.chunk.len() || {
+            let queue = self.feed.lock();
+            queue.samples > 0 || queue.ended
+        }
+    }
+}
+
+/// The song queued to follow the one playing ([`Player::queue_next`]), as
+/// the device's thread takes it: its voice, decoding ahead already, and
+/// how long the two overlap (0: one follows the other at once).
+struct Next {
+    id: u64,
+    voice: Voice,
+    /// Samples the crossfade lasts, in whole frames; 0 for none.
+    fade: u64,
+}
+
+/// What a [`Playing`] and the [`Player`] share: the song queued to follow,
+/// put here by the player and taken by the device's thread when it begins;
+/// how much sound the device has been given; and where each song after the
+/// first began in it.
+#[derive(Default)]
+struct Chain {
+    next: Mutex<Option<Next>>,
+    /// Samples given to the device (all channels, silence included).
+    given: AtomicU64,
+    /// Each song after the first: its id, and `given` at its first sample.
+    starts: Mutex<Vec<(u64, u64)>>,
+}
+
+impl Chain {
+    fn next(&self) -> MutexGuard<'_, Option<Next>> {
+        self.next.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Where the song `id` began in the sound given, once it has.
+    fn start_of(&self, id: u64) -> Option<u64> {
+        self.starts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(started, _)| *started == id)
+            .map(|(_, at)| *at)
+    }
+
+    fn began(&self, id: u64, at: u64) {
+        self.starts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((id, at));
+    }
+
+    /// Lets the song queued to follow go, if it has not begun.
+    fn let_next_go(&self) {
+        if let Some(next) = self.next().take() {
+            next.voice.feed.let_go();
+        }
+    }
+}
+
+/// The song before, fading out under the one beginning, in a crossfade:
+/// its voice, the samples faded so far, and the samples the fade lasts
+/// (what was left of it when the fade began).
+struct Fading {
+    voice: Voice,
+    done: u64,
+    of: u64,
+}
+
+/// The songs as the device plays them, as one rodio source.
+///
+/// The device must never wait (the sound would stop, and pausing or moving
+/// to other headphones would wait too), so each song is decoded on a thread
+/// of its own ([`decode_ahead`]), a little ahead. When the decoder is
+/// behind, because the download is, silence plays, and is counted so the
+/// song's position (and the lyrics) do not run ahead. Dropping it ends the
+/// decoding threads.
+///
+/// A song queued to follow ([`Chain::next`]) begins the moment this one's
+/// last sample is given, with nothing between (gapless); or, with a
+/// crossfade, that long before this one's end, the two sounding together
+/// as one fades in and the other out. Each song plays at its own gain.
+///
+/// After the last song's end, silence plays for as long as the device takes
+/// to play what it holds (its latency: about 0.2 s on Windows), and only
+/// then does the source end. So the song is finished ([`Player::finished`])
+/// once its end has been heard, and the next song, which empties the device,
+/// cuts off nothing of it.
+struct Playing {
+    voice: Voice,
+    fading: Option<Fading>,
     /// Samples of silence still to play.
     silence: usize,
-    /// Samples of silence still to play after the song's end; `None` before
-    /// it.
+    /// Samples of silence still to play after the last song's end; `None`
+    /// before it.
     tail: Option<usize>,
     latency: Latency,
     channels: u16,
     rate: u32,
+    chain: Arc<Chain>,
+    /// Samples given (as [`Chain::given`]).
+    given: u64,
 }
 
 impl Playing {
-    /// Starts playing `song`: its first moments are decoded here, so the
-    /// device's first request is answered with sound, and the rest on a
-    /// thread of its own.
-    fn start(mut song: SongSource, latency: Latency) -> Result<(Self, Arc<Feed>), AudioError> {
-        let (channels, rate) = (song.channels, song.rate);
-        let per_second = rate as usize * usize::from(channels);
-        let mut queue = Queue::default();
-        while queue.samples < per_second / 2 {
-            match song.next_chunk() {
-                Some(chunk) => queue.push(chunk),
-                None => {
-                    queue.ended = true;
-                    break;
-                }
-            }
-        }
-        let ended = queue.ended;
-        let length = if ended { queue.pushed } else { u64::MAX };
-        let feed = Arc::new(Feed {
-            queue: Mutex::new(queue),
-            room: Condvar::new(),
-            silent: AtomicU64::new(0),
-            per_second: per_second as u64,
-            length: AtomicU64::new(length),
-        });
-        if !ended {
-            let decoding = Arc::clone(&feed);
-            std::thread::Builder::new()
-                .name("ytfast-decoder".into())
-                .spawn(move || decode_ahead(song, &decoding, per_second * AHEAD_SECONDS))
-                .map_err(|e| AudioError::Device(format!("could not start decoding: {e}")))?;
-        }
-        let playing = Self {
-            feed: Arc::clone(&feed),
-            chunk: Vec::new(),
-            at: 0,
+    fn new(voice: Voice, latency: Latency, chain: Arc<Chain>) -> Self {
+        let (rate, channels) = voice.feed.format;
+        Self {
+            voice,
+            fading: None,
             silence: 0,
             tail: None,
             latency,
             channels,
             rate,
-        };
+            chain,
+            given: 0,
+        }
+    }
+
+    /// `song` from its start, at its own gain, on a chain of its own (the
+    /// tests').
+    #[cfg(test)]
+    fn start(song: SongSource, latency: Latency) -> Result<(Self, Arc<Feed>), AudioError> {
+        let per_second = song.rate as usize * usize::from(song.channels);
+        let feed = feed_for(song, per_second * AHEAD_SECONDS, true)?;
+        let playing = Self::new(Voice::new(Arc::clone(&feed), 1.0), latency, Arc::default());
         Ok((playing, feed))
+    }
+
+    /// At a frame's start: with a crossfade wanted, the song queued begins
+    /// once this one's end is that near, and has sound ready. Not where a
+    /// download broke off: the player stops there.
+    fn begin_fade(&mut self) {
+        if self.fading.is_some() || self.tail.is_some() {
+            return;
+        }
+        let Some(left) = self.voice.left() else {
+            return;
+        };
+        if self.voice.feed.broke_off() {
+            return;
+        }
+        let mut next = self.chain.next();
+        let due = next
+            .as_ref()
+            .is_some_and(|n| n.fade > 0 && left > 0 && left <= n.fade && n.voice.ready());
+        if !due {
+            return;
+        }
+        let Some(next) = next.take() else {
+            return;
+        };
+        let channels = u64::from(self.channels);
+        let before = std::mem::replace(&mut self.voice, next.voice);
+        self.fading = Some(Fading {
+            voice: before,
+            done: 0,
+            of: (left - left % channels).max(channels),
+        });
+        self.chain.began(next.id, self.given);
+    }
+
+    /// The song ended (its last sample given): the song queued begins at
+    /// once, when there is one. Not when its download broke off: that song
+    /// is not skipped, the player stops ([`Player::broke_off`]).
+    fn follow_on(&mut self) -> bool {
+        if self.voice.feed.broke_off() {
+            return false;
+        }
+        let Some(next) = self.chain.next().take() else {
+            return false;
+        };
+        let before = std::mem::replace(&mut self.voice, next.voice);
+        before.feed.let_go();
+        if let Some(fading) = self.fading.take() {
+            fading.voice.feed.let_go();
+        }
+        self.chain.began(next.id, self.given);
+        true
+    }
+
+    /// `sample`, the newer song's, over the song fading out under it in a
+    /// crossfade, each at its share of the fade: equal power, so the two
+    /// together hold the loudness through it.
+    fn mix(&mut self, sample: f32) -> f32 {
+        let Some(fading) = &mut self.fading else {
+            return sample;
+        };
+        let channels = u64::from(self.channels);
+        let through = ((fading.done / channels) as f32 / (fading.of / channels).max(1) as f32)
+            .min(1.0)
+            * std::f32::consts::FRAC_PI_2;
+        let under = match fading.voice.next() {
+            Sample::Sound(under) => under,
+            // Its end came, or its sound is late: the newer song alone.
+            _ => 0.0,
+        };
+        fading.done += 1;
+        let mixed = sample * through.sin() + under * through.cos();
+        if fading.done >= fading.of
+            && let Some(gone) = self.fading.take()
+        {
+            gone.voice.feed.let_go();
+        }
+        mixed
+    }
+
+    fn give(&mut self, sample: f32) -> Option<f32> {
+        self.given += 1;
+        self.chain.given.store(self.given, Ordering::Relaxed);
+        Some(sample)
     }
 }
 
 impl Drop for Playing {
     fn drop(&mut self) {
-        self.feed.let_go();
+        self.voice.feed.let_go();
+        if let Some(fading) = &self.fading {
+            fading.voice.feed.let_go();
+        }
+        self.chain.let_next_go();
     }
 }
 
@@ -456,28 +726,33 @@ impl Iterator for Playing {
 
     fn next(&mut self) -> Option<f32> {
         loop {
-            if let Some(&sample) = self.chunk.get(self.at) {
-                self.at += 1;
-                return Some(sample);
-            }
             if self.silence > 0 {
                 self.silence -= 1;
-                return Some(0.0);
+                let sample = self.mix(0.0);
+                return self.give(sample);
             }
-            match self.feed.take() {
-                Taken::Sound(chunk) => {
-                    self.chunk = chunk;
-                    self.at = 0;
+            if self.given.is_multiple_of(u64::from(self.channels)) {
+                self.begin_fade();
+            }
+            match self.voice.next() {
+                Sample::Sound(sample) => {
+                    let sample = self.mix(sample);
+                    return self.give(sample);
                 }
-                Taken::Waiting => {
+                Sample::Waiting => {
                     // Whole frames, so the channels stay in step.
                     let samples = SILENCE_FRAMES * usize::from(self.channels);
-                    self.feed
+                    self.voice
+                        .feed
                         .silent
                         .fetch_add(samples as u64, Ordering::Relaxed);
                     self.silence = samples;
                 }
-                Taken::End => {
+                Sample::End => {
+                    // A song queued to follow: at once, nothing between.
+                    if self.tail.is_none() && self.follow_on() {
+                        continue;
+                    }
                     // Silence while the device plays the last of the song,
                     // in blocks, so a song let go meanwhile stops at once.
                     // Not counted: it carries the position to the end.
@@ -492,7 +767,7 @@ impl Iterator for Playing {
                     self.tail = Some(left - block);
                     self.silence = block;
                 }
-                Taken::LetGo => return None,
+                Sample::LetGo => return None,
             }
         }
     }
@@ -500,7 +775,8 @@ impl Iterator for Playing {
 
 impl rodio::Source for Playing {
     fn current_span_len(&self) -> Option<usize> {
-        // One format for the whole song.
+        // One format for every song (a song in another follows the old way:
+        // `Player::queue_next`).
         None
     }
 
@@ -530,17 +806,20 @@ pub fn decoded_length(bytes: &[u8]) -> Result<Duration, AudioError> {
 type MixerSlot = Arc<Mutex<Option<(rodio::mixer::Mixer, u32)>>>;
 
 /// Fills the device from rodio's mixer, or with silence before there is
-/// one. Adapted from Spotifast's `src/sink.rs` (MIT, Copyright (c) 2026
-/// Carmine Paolino). A stream in the format the mixer already has keeps it,
-/// so a reopen on another device carries on from the same sample.
+/// one, through the equalizer ([`crate::eq`]). Adapted from Spotifast's
+/// `src/sink.rs` (MIT, Copyright (c) 2026 Carmine Paolino). A stream in the
+/// format the mixer already has keeps it, so a reopen on another device
+/// carries on from the same sample.
 struct MixerRender {
     source: Option<rodio::mixer::MixerSource>,
     format: (u32, u16),
     made: MixerSlot,
+    eq: crate::eq::Processor,
 }
 
 impl Render for MixerRender {
     fn configure(&mut self, sample_rate: u32, channels: u16) {
+        self.eq.configure(sample_rate, channels);
         if self.source.is_some() && self.format == (sample_rate, channels) {
             return;
         }
@@ -557,6 +836,7 @@ impl Render for MixerRender {
                 .for_each(|s| *s = source.next().unwrap_or(0.0)),
             None => out.fill(0.0),
         }
+        self.eq.process(out);
     }
 }
 
@@ -615,12 +895,13 @@ fn quietly(
 }
 
 /// Opens the default output, paused (the device rests until there is a
-/// song to play), the ways [`ways_to_open`] lists, until one works.
-fn open_output() -> Result<OpenedOutput, AudioError> {
+/// song to play), the ways [`ways_to_open`] lists, until one works. Its
+/// sound goes through the equalizer `eq` sets.
+fn open_output(eq: &Arc<crate::eq::Shared>) -> Result<OpenedOutput, AudioError> {
     let mut first_error = None;
     for device in ways_to_open(default_output_name()) {
         let by_name = matches!(device, Device::Named(_));
-        match open_output_on(device.clone()) {
+        match open_output_on(device.clone(), eq) {
             Ok(opened) => {
                 if first_error.is_some() {
                     log::warn!("audio output: opened as {device:?}");
@@ -684,12 +965,13 @@ pub enum Maintenance {
 }
 
 /// Opens `device`, paused.
-fn open_output_on(device: Device) -> Result<OpenedOutput, AudioError> {
+fn open_output_on(device: Device, eq: &Arc<crate::eq::Shared>) -> Result<OpenedOutput, AudioError> {
     let made = MixerSlot::default();
     let render = MixerRender {
         source: None,
         format: (0, 0),
         made: Arc::clone(&made),
+        eq: crate::eq::Processor::new(Arc::clone(eq)),
     };
     let options = OutputOptions {
         device,
@@ -734,6 +1016,11 @@ fn open_output_on(device: Device) -> Result<OpenedOutput, AudioError> {
 /// that played to its end is finished only once the device has played all
 /// of it (silence follows it meanwhile: [`Playing`]), so the move to a fresh
 /// stream for the next song loses nothing of it.
+///
+/// A song queued to follow ([`Player::queue_next`]) plays on the same
+/// stream, on from the last sample of the one before or fading over its
+/// end ([`Playing`]): nothing between them. It becomes the player's song
+/// once it is heard ([`Player::take_moved_on`]).
 pub struct Player {
     output: fastframe_audio::Output<MixerRender>,
     made: MixerSlot,
@@ -746,15 +1033,29 @@ pub struct Player {
     spare: Option<OpenedOutput>,
     /// When opening a spare last failed: it is not tried again for a while.
     spare_failed: Option<Instant>,
+    /// The song heard.
     song: Option<Loaded>,
-    /// What the current sink plays from: its silence is taken off the
-    /// position.
+    /// Its feed: its silence is taken off the position, and its end is its
+    /// length.
     feed: Option<Arc<Feed>>,
-    /// Where the current sink started in the song.
+    /// Where the song heard started (a jump).
     offset: Duration,
+    /// What the current sink plays from, shared with it ([`Chain`]).
+    chain: Arc<Chain>,
+    /// Where the song heard began in the sound given ([`Chain::given`]).
+    began_at: u64,
+    /// The song queued to follow, until it is heard.
+    queued: Option<Queued>,
+    /// Numbers the songs queued.
+    queued_ids: u64,
+    /// How long a crossfade lasts: songs are decoded that far ahead (and a
+    /// second more), so where one ends is known before its fade begins.
+    crossfade: Duration,
     paused: bool,
     /// The listener's volume, 0 to 1, on top of the song's loudness gain.
     volume: f32,
+    /// The equalizer's settings, which every stream opened plays through.
+    eq: Arc<crate::eq::Shared>,
     /// The output was opened by the default's name ([`OpenedOutput`]), so
     /// `maintain` follows the default itself, looking every
     /// [`DEFAULT_CHECK`].
@@ -765,14 +1066,24 @@ pub struct Player {
     open_again_failed: Option<Instant>,
 }
 
+/// The song queued to follow the one playing, as the player keeps it.
+struct Queued {
+    id: u64,
+    data: Arc<SongData>,
+    gain: f32,
+    fade: Duration,
+    feed: Arc<Feed>,
+}
+
 impl Player {
     pub fn open() -> Result<Self, AudioError> {
+        let eq = Arc::new(crate::eq::Shared::default());
         let OpenedOutput {
             output,
             made,
             mixer,
             by_name,
-        } = quietly(open_output)?;
+        } = quietly(|| open_output(&eq))?;
         let sink = rodio::Sink::connect_new(&mixer);
         Ok(Self {
             by_name,
@@ -788,9 +1099,141 @@ impl Player {
             song: None,
             feed: None,
             offset: Duration::ZERO,
+            chain: Arc::default(),
+            began_at: 0,
+            queued: None,
+            queued_ids: 0,
+            crossfade: Duration::ZERO,
             paused: false,
             volume: 1.0,
+            eq,
         })
+    }
+
+    /// The equalizer's new settings, for the sound from the next moment on.
+    pub fn set_equalizer(&self, settings: crate::eq::Equalizer) {
+        self.eq.set(settings);
+    }
+
+    /// How long crossfades last (0: none), for the songs started from now
+    /// on: each is decoded that far ahead.
+    pub fn set_crossfade(&mut self, fade: Duration) {
+        self.crossfade = fade.min(Duration::from_secs(12));
+    }
+
+    /// Samples decoded ahead of the device, for a song of `per_second`
+    /// samples a second: two seconds, or the crossfade and a second more.
+    fn ahead(&self, per_second: usize) -> usize {
+        let seconds = (self.crossfade.as_secs_f64().ceil() as usize + 1).max(AHEAD_SECONDS);
+        per_second * seconds
+    }
+
+    /// Queues `data` to follow the song playing, with nothing between them,
+    /// or with the two overlapping for `fade` (a crossfade). It must be in
+    /// the song's format; one in another follows the old way (the song
+    /// ends, then the next is played). Any song queued before is let go.
+    pub fn queue_next(
+        &mut self,
+        data: Arc<SongData>,
+        gain: f32,
+        fade: Duration,
+    ) -> Result<(), AudioError> {
+        self.unqueue();
+        let format = self
+            .feed
+            .as_ref()
+            .map(|feed| feed.format)
+            .ok_or_else(|| AudioError::Device("no song plays".into()))?;
+        let source = SongSource::open(&data, Duration::ZERO)?;
+        if (source.rate, source.channels) != format {
+            return Err(AudioError::Decode(format!(
+                "{} Hz in {} channels after {} Hz in {}",
+                source.rate, source.channels, format.0, format.1
+            )));
+        }
+        let per_second = format.0 as usize * usize::from(format.1);
+        let feed = feed_for(source, self.ahead(per_second), false)?;
+        self.queued_ids += 1;
+        let id = self.queued_ids;
+        let channels = u64::from(format.1);
+        let samples = (fade.as_secs_f64() * per_second as f64) as u64;
+        *self.chain.next() = Some(Next {
+            id,
+            voice: Voice::new(Arc::clone(&feed), gain),
+            fade: samples - samples % channels,
+        });
+        self.queued = Some(Queued {
+            id,
+            data,
+            gain,
+            fade,
+            feed,
+        });
+        Ok(())
+    }
+
+    /// Lets the song queued to follow go. One already sounding (its start
+    /// not heard yet) plays on until the next song is played.
+    pub fn unqueue(&mut self) {
+        self.chain.let_next_go();
+        self.queued = None;
+    }
+
+    /// The song queued is heard now: it becomes the player's song (its
+    /// position, its end, a jump in it). `true` once, when that happens.
+    pub fn take_moved_on(&mut self) -> bool {
+        let Some(at) = self
+            .queued
+            .as_ref()
+            .and_then(|queued| self.chain.start_of(queued.id))
+        else {
+            return false;
+        };
+        if self.heard_given() < at {
+            return false;
+        }
+        let Some(queued) = self.queued.take() else {
+            return false;
+        };
+        self.song = Some(Loaded {
+            data: queued.data,
+            gain: queued.gain,
+        });
+        // The song before may still be fading out: the device's thread lets
+        // it go at the fade's end.
+        self.feed = Some(queued.feed);
+        self.offset = Duration::ZERO;
+        self.began_at = at;
+        true
+    }
+
+    /// The sound given that has been heard, in samples: what the device was
+    /// given, less what it holds (its latency).
+    fn heard_given(&self) -> u64 {
+        let latency = self.output.clock().latency().as_secs_f64();
+        let held = (latency * self.per_second() as f64) as u64;
+        self.chain
+            .given
+            .load(Ordering::Relaxed)
+            .saturating_sub(held)
+    }
+
+    /// Samples a second of the song heard (all channels).
+    fn per_second(&self) -> u64 {
+        self.feed.as_ref().map_or(1, |feed| feed.per_second.max(1))
+    }
+
+    /// How long until the song queued is heard, once that is known: it has
+    /// begun, or the end of the song playing is known (its fade before).
+    pub fn until_next(&self) -> Option<Duration> {
+        let queued = self.queued.as_ref()?;
+        let per_second = self.per_second() as f64;
+        if let Some(at) = self.chain.start_of(queued.id) {
+            let left = at.saturating_sub(self.heard_given());
+            return Some(Duration::from_secs_f64(left as f64 / per_second));
+        }
+        let begins = self.end()?.saturating_sub(queued.fade);
+        Some(begins.saturating_sub(self.heard()))
     }
 
     pub fn device_name(&self) -> &str {
@@ -800,6 +1243,7 @@ impl Player {
     /// Starts a new song from the beginning, playing as its bytes arrive.
     /// `gain` is from [`gain_for_loudness`].
     pub fn play_song(&mut self, data: Arc<SongData>, gain: f32) -> Result<(), AudioError> {
+        self.unqueue();
         self.empty_the_device();
         self.song = Some(Loaded { data, gain });
         self.paused = false;
@@ -825,7 +1269,7 @@ impl Player {
         // Opened beside the old one, which goes only once this one works.
         let fresh = match self.spare.take() {
             Some(spare) => Ok(spare),
-            None => open_output(),
+            None => open_output(&self.eq),
         };
         match fresh {
             Ok(fresh) => {
@@ -869,7 +1313,7 @@ impl Player {
             return;
         }
         let started = Instant::now();
-        match open_output() {
+        match open_output(&self.eq) {
             Ok(spare) => {
                 self.spare = Some(spare);
                 self.spare_failed = None;
@@ -885,28 +1329,46 @@ impl Player {
         }
     }
 
+    /// Plays the song heard from `at`, on a sink of its own (a new song, a
+    /// jump, a new device), the song queued to follow queued again after it.
     fn restart_at(&mut self, at: Duration) -> Result<(), AudioError> {
         let Some(song) = &self.song else {
             return Ok(());
         };
+        let (data, gain) = (Arc::clone(&song.data), song.gain);
         let clock = self.output.clock();
         let latency = Box::new(move || clock.latency());
-        let (source, feed) = Playing::start(SongSource::open(&song.data, at)?, latency)?;
+        let source = SongSource::open(&data, at)?;
+        let per_second = source.rate as usize * usize::from(source.channels);
+        let feed = feed_for(source, self.ahead(per_second), true)?;
+        let chain = Arc::new(Chain::default());
+        let playing = Playing::new(
+            Voice::new(Arc::clone(&feed), gain),
+            latency,
+            Arc::clone(&chain),
+        );
         // A fresh sink; dropping the old one stops it on the audio thread
         // without waiting.
         let sink = rodio::Sink::connect_new(&self.mixer);
-        sink.set_volume(song.gain * self.volume);
+        sink.set_volume(self.volume);
         if self.paused {
             sink.pause();
         }
-        sink.append(source);
+        sink.append(playing);
         self.sink = sink;
         // The old source may wait in the mixer until the device next plays
-        // (it rests while paused); its decoder stops now.
+        // (it rests while paused); its decoders stop now.
         if let Some(old) = self.feed.replace(feed) {
             old.let_go();
         }
+        std::mem::replace(&mut self.chain, chain).let_next_go();
         self.offset = at;
+        self.began_at = 0;
+        if let Some(queued) = self.queued.take()
+            && let Err(error) = self.queue_next(queued.data, queued.gain, queued.fade)
+        {
+            log::debug!("audio: the song queued could not follow any more: {error}");
+        }
         Ok(())
     }
 
@@ -934,11 +1396,11 @@ impl Player {
         self.paused
     }
 
-    /// The listener's volume, 0 (silent) to 1 (full).
+    /// The listener's volume, 0 (silent) to 1 (full). Each song's own gain
+    /// is played by its voice ([`Voice`]).
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
-        let gain = self.song.as_ref().map_or(1.0, |s| s.gain);
-        self.sink.set_volume(gain * self.volume);
+        self.sink.set_volume(self.volume);
     }
 
     /// Jumps to `to` in the current song. Anywhere but the start needs the
@@ -971,11 +1433,20 @@ impl Player {
         self.end().map_or(heard, |end| heard.min(end))
     }
 
-    /// [`Player::position`], before it is held at the song's end.
+    /// [`Player::position`], before it is held at the song's end: the sound
+    /// given since the song heard began in it ([`Chain::given`]).
     fn heard(&self) -> Duration {
         let silent = self.feed.as_ref().map_or(Duration::ZERO, |f| f.silence());
-        let given = self.sink.get_pos().saturating_sub(silent);
-        self.offset + given.saturating_sub(self.output.clock().latency())
+        let given = self
+            .chain
+            .given
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.began_at);
+        let given = Duration::from_secs_f64(given as f64 / self.per_second() as f64);
+        self.offset
+            + given
+                .saturating_sub(silent)
+                .saturating_sub(self.output.clock().latency())
     }
 
     /// Where the song ends, once its decoding has ended: a few seconds
@@ -1015,11 +1486,14 @@ impl Player {
 
     pub fn stop(&mut self) {
         self.song = None;
+        self.unqueue();
         self.sink = rodio::Sink::connect_new(&self.mixer);
         if let Some(old) = self.feed.take() {
             old.let_go();
         }
+        self.chain = Arc::default();
         self.offset = Duration::ZERO;
+        self.began_at = 0;
         // Nothing to play: the device rests (no callbacks, no CPU, and it
         // does not keep the computer awake) until the next song.
         self.output.pause();
@@ -1099,7 +1573,7 @@ impl Player {
             "audio output: the default output is now {default} (was {})",
             self.output.device_name()
         );
-        match open_output() {
+        match open_output(&self.eq) {
             Ok(opened) => Some(self.carry_on_with(opened)),
             Err(error) => Some(Maintenance::Problem(format!(
                 "Could not move the sound to {default}: {error}"
@@ -1123,7 +1597,7 @@ impl Player {
         {
             return problem();
         }
-        match open_output() {
+        match open_output(&self.eq) {
             Ok(opened) => {
                 self.open_again_failed = None;
                 log::warn!(
@@ -1172,13 +1646,15 @@ mod tests {
     #[ignore = "needs a sound device"]
     fn the_default_output_opens_by_its_name() {
         let name = default_output_name().expect("a default output");
-        let opened = open_output_on(Device::Named(name.clone())).expect("it opens by name");
+        let opened =
+            open_output_on(Device::Named(name.clone()), &Arc::default()).expect("it opens by name");
         assert_eq!(opened.output.device_name(), name);
         // As Windows' default too, the other way.
-        let opened = open_output_on(Device::Default).expect("it opens as the default");
+        let opened =
+            open_output_on(Device::Default, &Arc::default()).expect("it opens as the default");
         assert_eq!(opened.output.device_name(), name);
         // And the usual way: by its name on Windows.
-        let opened = open_output().expect("it opens");
+        let opened = open_output(&Arc::default()).expect("it opens");
         assert_eq!(opened.by_name, cfg!(windows));
         assert_eq!(opened.output.device_name(), name);
     }
@@ -1301,6 +1777,67 @@ mod tests {
         player.stop();
     }
 
+    /// A song queued to follow is heard on the same stream the moment the
+    /// first one's end is (gapless), or with a crossfade that long before
+    /// it; it becomes the player's song then, its position from 0, and it
+    /// plays on with the clock.
+    #[test]
+    #[ignore = "needs a sound device"]
+    fn a_queued_song_is_heard_as_the_first_ends() {
+        let length = decoded_length(&tone()).unwrap().as_secs_f64();
+        for fade in [0.0, 1.0] {
+            let mut player = Player::open().expect("a sound device");
+            player.set_volume(0.0);
+            player.set_crossfade(Duration::from_secs_f64(fade));
+            let started = Instant::now();
+            player.play_song(SongData::complete(tone()), 1.0).unwrap();
+            player
+                .queue_next(
+                    SongData::complete(tone()),
+                    1.0,
+                    Duration::from_secs_f64(fade),
+                )
+                .unwrap();
+            // How far the sound is behind the clock.
+            std::thread::sleep(Duration::from_millis(500));
+            let mut lags = Vec::new();
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(100));
+                lags.push(started.elapsed().as_secs_f64() - player.position().as_secs_f64());
+            }
+            let lag = lags.iter().sum::<f64>() / lags.len() as f64;
+            while !player.take_moved_on() {
+                assert!(
+                    started.elapsed().as_secs_f64() < length + 2.0,
+                    "it moves on"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let moved = started.elapsed().as_secs_f64();
+            let due = lag + length - fade;
+            let position = player.position().as_secs_f64();
+            eprintln!(
+                "fade {fade} s: moved on at {moved:.3} s, due at {due:.3} s; the new song at \
+                 {position:.3} s"
+            );
+            assert!(
+                (moved - due).abs() < 0.06,
+                "moved on {:+.3} s from when it was heard",
+                moved - due
+            );
+            assert!(position < 0.06, "the new song at {position:.3} s");
+            assert!(!player.finished());
+            std::thread::sleep(Duration::from_millis(1500));
+            let ran = started.elapsed().as_secs_f64() - moved;
+            let position = player.position().as_secs_f64();
+            assert!(
+                (position - ran).abs() < 0.06,
+                "{position:.3} s after {ran:.3} s"
+            );
+            player.stop();
+        }
+    }
+
     /// A spare that holds silence is not kept: another takes its place.
     #[test]
     #[ignore = "needs a sound device"]
@@ -1333,7 +1870,7 @@ mod tests {
         let mut opens = 0;
         let opened = quietly(|| {
             opens += 1;
-            let mut opened = open_output()?;
+            let mut opened = open_output(&Arc::default())?;
             if opens == 1 {
                 // As if the device took a step of sound before its pause.
                 opened.output.resume();
@@ -1541,6 +2078,163 @@ mod tests {
         assert_eq!(feed.length(), None, "a song let go has no end");
     }
 
+    /// A song decoded whole into a feed of its own, before it plays (so the
+    /// tests' pulling, faster than any device, never finds it behind).
+    fn decoded(data: &Arc<SongData>) -> (Vec<f32>, Arc<Feed>) {
+        let samples: Vec<f32> = SongSource::open(data, Duration::ZERO).unwrap().collect();
+        let source = SongSource::open(data, Duration::ZERO).unwrap();
+        let per_second = source.rate as usize * usize::from(source.channels);
+        let feed = feed_for(source, per_second * 30, false).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while feed.length().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(feed.length().is_some(), "it was decoded");
+        (samples, feed)
+    }
+
+    /// A song queued to follow sounds from the sample after the last of the
+    /// one before, nothing between them (gapless), at its own gain; the
+    /// silence of the end comes after the last song only.
+    #[test]
+    fn a_queued_song_follows_with_nothing_between() {
+        let data = SongData::complete(tone());
+        let (first, first_feed) = decoded(&data);
+        let (second, second_feed) = decoded(&data);
+        let chain = Arc::new(Chain::default());
+        let playing = Playing::new(
+            Voice::new(first_feed, 1.0),
+            Box::new(|| Duration::ZERO),
+            Arc::clone(&chain),
+        );
+        *chain.next() = Some(Next {
+            id: 7,
+            voice: Voice::new(second_feed, 0.5),
+            fade: 0,
+        });
+        let (rate, channels) = (playing.rate, playing.channels);
+        let played: Vec<f32> = playing.collect();
+        assert_eq!(chain.start_of(7), Some(first.len() as u64));
+        assert_eq!(&played[..first.len()], &first[..]);
+        let halved: Vec<f32> = second.iter().map(|s| s * 0.5).collect();
+        assert_eq!(
+            &played[first.len()..first.len() + second.len()],
+            &halved[..]
+        );
+        let tail = tail_samples(Duration::ZERO, rate, channels);
+        assert_eq!(played.len(), first.len() + second.len() + tail);
+        assert_eq!(
+            chain.given.load(Ordering::Relaxed),
+            played.len() as u64,
+            "every sample given is counted"
+        );
+    }
+
+    /// With a crossfade, the song queued begins that long before the end of
+    /// the one before, the two sounding together: the newer rising and the
+    /// older falling, each sample their equal-power mix.
+    #[test]
+    fn a_crossfade_overlaps_the_end_and_the_start() {
+        let data = SongData::complete(tone());
+        let (first, first_feed) = decoded(&data);
+        let (second, second_feed) = decoded(&data);
+        let chain = Arc::new(Chain::default());
+        let playing = Playing::new(
+            Voice::new(first_feed, 1.0),
+            Box::new(|| Duration::ZERO),
+            Arc::clone(&chain),
+        );
+        let channels = usize::from(playing.channels);
+        let per_second = playing.rate as usize * channels;
+        let fade = per_second; // one second
+        *chain.next() = Some(Next {
+            id: 3,
+            voice: Voice::new(second_feed, 1.0),
+            fade: fade as u64,
+        });
+        let played: Vec<f32> = playing.collect();
+        let begins = first.len() - fade;
+        assert_eq!(chain.start_of(3), Some(begins as u64));
+        // Before the fade: the first song alone.
+        assert_eq!(&played[..begins], &first[..begins]);
+        // Through it: the two mixed, at each frame's share of the fade.
+        for (i, (&mixed, (&older, &newer))) in played[begins..first.len()]
+            .iter()
+            .zip(first[begins..].iter().zip(&second))
+            .enumerate()
+        {
+            let through =
+                (i / channels) as f32 / (fade / channels) as f32 * std::f32::consts::FRAC_PI_2;
+            let wanted = newer * through.sin() + older * through.cos();
+            assert!(
+                (mixed - wanted).abs() < 1e-6,
+                "sample {i}: {mixed} for {wanted}"
+            );
+        }
+        // After it: the second song alone, from where the fade left it.
+        assert_eq!(
+            &played[first.len()..first.len() + second.len() - fade],
+            &second[fade..]
+        );
+    }
+
+    /// A crossfade waits for the song queued to have sound ready, and never
+    /// begins before the end of the one playing is known; a song let go
+    /// before it began lets its decoding go too.
+    #[test]
+    fn a_song_queued_and_let_go_never_sounds() {
+        let data = SongData::complete(tone());
+        let (first, first_feed) = decoded(&data);
+        let (_, second_feed) = decoded(&data);
+        let chain = Arc::new(Chain::default());
+        let playing = Playing::new(
+            Voice::new(first_feed, 1.0),
+            Box::new(|| Duration::ZERO),
+            Arc::clone(&chain),
+        );
+        *chain.next() = Some(Next {
+            id: 1,
+            voice: Voice::new(Arc::clone(&second_feed), 1.0),
+            fade: 0,
+        });
+        chain.let_next_go();
+        assert!(matches!(second_feed.take(), Taken::LetGo));
+        let tail = tail_samples(Duration::ZERO, playing.rate, playing.channels);
+        assert_eq!(playing.count(), first.len() + tail);
+        assert_eq!(chain.start_of(1), None);
+    }
+
+    /// A song whose download broke off is not followed by the song queued,
+    /// at its end or by a crossfade: the player stops there
+    /// ([`Player::broke_off`]), as before, rather than skip the rest of it.
+    #[test]
+    fn a_song_that_broke_off_is_not_followed() {
+        let bytes = tone();
+        let broken = SongData::new(Some(bytes.len() as u64));
+        broken.push_for_test(&bytes[..bytes.len() / 2]);
+        broken.fail_for_test("the connection broke");
+        let (cut, first_feed) = decoded(&broken);
+        assert!(first_feed.broke_off());
+        let (_, second_feed) = decoded(&SongData::complete(bytes));
+        assert!(!second_feed.broke_off());
+        let chain = Arc::new(Chain::default());
+        let playing = Playing::new(
+            Voice::new(first_feed, 1.0),
+            Box::new(|| Duration::ZERO),
+            Arc::clone(&chain),
+        );
+        let per_second = playing.rate as usize * usize::from(playing.channels);
+        let tail = tail_samples(Duration::ZERO, playing.rate, playing.channels);
+        *chain.next() = Some(Next {
+            id: 5,
+            voice: Voice::new(Arc::clone(&second_feed), 1.0),
+            fade: per_second as u64,
+        });
+        assert_eq!(playing.count(), cut.len() + tail);
+        assert_eq!(chain.start_of(5), None, "the song queued never began");
+        assert!(matches!(second_feed.take(), Taken::LetGo));
+    }
+
     #[test]
     fn letting_a_song_go_ends_its_decoding() {
         let data = SongData::complete(tone());
@@ -1550,7 +2244,7 @@ mod tests {
         // The four-second song is decoded two seconds ahead, then the
         // decoder waits for room, holding the song.
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(Arc::strong_count(&data), 2);
+        assert!(Arc::strong_count(&data) > 1, "the decoder holds the song");
         drop(playing);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while Arc::strong_count(&data) > 1 && std::time::Instant::now() < deadline {

@@ -265,9 +265,21 @@ it. F or Esc leaves it, and so does closing the player page.
 (YouTube Music, Premium or Dynamic Background), even out loudness, skip
 songs you dislike (on: disliking the song playing moves on to the next, as
 YouTube Music does), translate lyrics, keep playing when closed, start
-with the computer, updates, sign out, and where problems are noted.
-**Autoplay**, at the end of Up next, keeps playing songs like the last one
-when the queue ends.
+with the computer, the sound, updates, sign out, and where problems are
+noted. **Autoplay**, at the end of Up next, keeps playing songs like the
+last one when the queue ends.
+
+**Sound**: songs follow each other with nothing between them, as an
+album was made. **Crossfade** (Settings, off at first) fades each song
+into the next, for up to 12 seconds; songs of one album never fade.
+**Equalizer** (Settings, off at first): ten bands, and presets such as
+Bass Booster, Vocal Booster and Rock. It turns the whole sound down by as
+much as it boosts, so it never distorts.
+
+**Discord status** (Settings, off at first): your Discord profile shows
+the song you are playing, its cover and how far into it you are, while
+the Discord app is open on the same computer (Discord in a browser
+cannot show it). Paused, it shows nothing.
 
 **Closing the window** leaves the music playing: YTFast keeps running,
 with its icon by the clock (on a Mac, in the menu bar at the top), and

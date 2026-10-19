@@ -202,6 +202,20 @@ there, not in `App::ui`.
   lyrics and Related all need. A download holds its song weakly
   (`stream::fetch`): once the player and the songs made ready ahead let go
   of it, it stops. Keep it that way, or skipping downloads in bulk.
+- **The next song is in the player before it plays.** For gapless and
+  the crossfade, `Command::Next` puts the queue's next song in the player
+  while one plays; the player says when it is heard (`Status::moved_on`),
+  and only then does the queue move on (`App::moved_on`: no Stop, no
+  Play, either of which would leave a gap). `App::keep_ahead` runs after
+  every action and each frame's events, and lets it go once
+  `App::may_follow_on` no longer holds. A new way to change the queue
+  needs nothing more; a new reason for songs to start the usual way (as
+  the video mode) belongs in `may_follow_on`. `moved_on` is read before
+  `ended` in `handle_events`: the song that ends may be the one moved on
+  to.
+- **The equalizer runs on the sound device's thread.** Nothing there may
+  wait: `eq::Processor` takes new settings with `try_lock` and keeps the
+  old ones a block longer when the window holds the lock.
 - **The video mode keeps to the queue.** Only `App::play_tracks` turns it
   off (every new queue passes through it); Next, Previous, a song ending
   and Up next keep it. `Playback::version` is the ID asked for and
