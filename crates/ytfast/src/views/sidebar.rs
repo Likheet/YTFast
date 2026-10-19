@@ -1,6 +1,7 @@
-//! The menu on the left, as YouTube Music's: Home, Explore and Library,
-//! then New playlist and the playlists in the library. The button in the
-//! top bar closes it to a strip of icons.
+//! The menu on the left, as YouTube Music's: Home, Explore and Library
+//! (and YTFast's own Radar under them), then New playlist and the
+//! playlists in the library. The button in the top bar closes it to a
+//! strip of icons.
 
 use egui::{Align2, CornerRadius, Frame, Rect, Sense, Vec2, pos2, vec2};
 use ytfast_core::read::{Item, Target, Thumb};
@@ -19,10 +20,13 @@ pub fn width(app: &App) -> f32 {
     }
 }
 
-const PAGES: [(Icon, &str, Route); 3] = [
+const PAGES: [(Icon, &str, Route); 4] = [
     (Icon::Home, "Home", Route::Home),
     (Icon::Explore, "Explore", Route::Explore),
     (Icon::Library, "Library", Route::LibraryRecent),
+    // YTFast's own recommendations, apart from YouTube's (the owner's
+    // choice, 20 October 2026).
+    (Icon::Radar, "Radar", Route::Radar),
 ];
 
 pub fn show(app: &App, ui: &mut egui::Ui) {

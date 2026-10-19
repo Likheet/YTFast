@@ -428,6 +428,8 @@ fastframe_icons::icons! {
         Home => "home-fill",
         Explore => "explore",
         Library => "bookmark",
+        /// YTFast's own fourth: Radar's.
+        Radar => "radar",
         Search => "search",
         Close => "close",
         /// The top bar's back and forward.
@@ -495,6 +497,8 @@ fastframe_icons::icons! {
         ExpandMore => "expand-more",
         /// A playlist's Sort.
         Sort => "sort",
+        /// Radar's "Not interested" (YouTube's NOT_INTERESTED).
+        NotInterested => "block",
     }
 }
 

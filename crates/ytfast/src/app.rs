@@ -10,6 +10,7 @@ use fastframe_now_playing as now_playing;
 use serde::{Deserialize, Serialize};
 use ytfast_core::library::Privacy;
 use ytfast_core::playreport::PlayReport;
+use ytfast_core::radar;
 use ytfast_core::read::{
     Item, Page, PlayerInfo, Section, SortOrder, Target, Track, TrackKind, VideoPair,
 };
@@ -236,6 +237,9 @@ pub struct Playback {
     /// The next song, ready and given to the player to follow this one
     /// ([`App::ready_ahead`]), until it is heard.
     pub ahead: Option<Ahead>,
+    /// How it stops, as Radar notes it ([`App::note_play`]): set just
+    /// before (its end, Next pressed); else it was stopped.
+    pub ending: radar::Ending,
 }
 
 /// The song after the one playing, made ready ahead and given to the
@@ -308,6 +312,7 @@ impl Default for Playback {
             start_paused: false,
             length: 0.0,
             ahead: None,
+            ending: radar::Ending::Stopped,
         }
     }
 }
@@ -389,6 +394,8 @@ pub enum Dialog {
         lined_up: usize,
         then: Box<Action>,
     },
+    /// "Forget what Radar learned?" (Settings).
+    ForgetListening,
 }
 
 /// The player page's tabs.
@@ -441,6 +448,10 @@ pub enum Action {
     SetCrossfade(u8),
     /// The equalizer's bands, as dragged or chosen from its presets.
     SetEqualizer(ytfast_core::eq::Equalizer),
+    /// "Not interested", on the Radar page: never suggested again.
+    NotInterested(radar::Unwanted),
+    /// Radar forgets what it noted (Settings, after asking).
+    ForgetListening,
     JumpTo(u64),
     /// Put a song right after the one playing now.
     PlayNext(Track),
@@ -683,6 +694,19 @@ pub struct App {
     tray_shown: crate::tray::Shown,
     /// The Discord status, once it was wanted ([`App::show_on_discord`]).
     discord: Option<crate::discord::Discord>,
+    /// What the listener did, for Radar: noted on the computer only.
+    pub listening: radar::Listening,
+    /// The last Radar made, shown until the next (made each day).
+    pub radar: Option<radar::Radar>,
+    /// Numbers Radar's makings: an answer for an older one is dropped.
+    radar_build: u64,
+    /// A making under way.
+    radar_making: bool,
+    /// Where Radar's files are kept (none in the demo and the tests), and
+    /// whether `listening` changed since they were written, and when.
+    radar_files: Option<crate::radar_files::RadarFiles>,
+    listening_changed: bool,
+    listening_written: Option<Instant>,
     /// The icon is shown, so a window closed can leave YTFast running.
     pub has_tray: bool,
     /// A window is open; none while YTFast runs on, closed (or started
@@ -906,12 +930,17 @@ impl App {
         let fonts = crate::theme::ScriptFonts::new();
         let mut app = Self::with(backend, audio, controls, fonts, settings, demo);
         // Where the music was when YTFast was last closed: taken up once
-        // signed in.
+        // signed in. And what Radar noted and last made.
         if !demo {
             app.left_off = store
                 .as_ref()
                 .and_then(|s| s.get::<Option<LeftOff>>(LEFT_OFF_KEY))
                 .flatten();
+            if let Some(files) = crate::radar_files::RadarFiles::open() {
+                app.listening = files.listening();
+                app.radar = files.radar();
+                app.radar_files = Some(files);
+            }
         }
         // A Mac's YTFast opened from its disk image offers to move itself.
         if !demo && crate::update_mac::from_disk_image() {
@@ -1021,6 +1050,13 @@ impl App {
             tray: None,
             tray_shown: crate::tray::Shown::default(),
             discord: None,
+            listening: radar::Listening::default(),
+            radar: None,
+            radar_build: 0,
+            radar_making: false,
+            radar_files: None,
+            listening_changed: false,
+            listening_written: None,
             has_tray: false,
             // The tests' window; from the first window on, the shell's.
             window_open: true,
@@ -1720,6 +1756,7 @@ impl App {
                     video_id,
                     ready,
                 } => self.ready_ahead(entry, &video_id, ready),
+                Event::Radar { build, result } => self.radar_made(build, result),
                 Event::UpNext {
                     video_id,
                     playlist_id,
@@ -1956,6 +1993,7 @@ impl App {
         if let Some(ended) = self.audio.take_ended()
             && self.playback.entry.as_ref().is_some_and(|e| e.id == ended)
         {
+            self.playback.ending = radar::Ending::Finished;
             if self.settings.repeat == Repeat::One {
                 self.play_again();
             } else {
@@ -2214,6 +2252,7 @@ impl App {
         };
         // The song before played to its end (or faded out there).
         let end = self.playback.length;
+        self.playback.ending = radar::Ending::Finished;
         self.finish_report_at(end);
         let Some(current) = self.queue.advance().cloned() else {
             return;
@@ -2771,7 +2810,70 @@ impl App {
         if at > self.playback.listening_from || stretches.is_empty() {
             stretches.push((self.playback.listening_from, at));
         }
+        self.note_play(&stretches);
         report.listened_to(&stretches)
+    }
+
+    /// The song `video_id` as the window knows it (playing, queued, or on a
+    /// page kept), for its artist; only its ID when it is nowhere.
+    fn track_named(&self, video_id: &str) -> Track {
+        let playing = self.playback.entry.as_ref().map(|e| &e.track);
+        let queued = self.queue.entries().iter().map(|e| &e.track);
+        let on_pages = self.pages.values().filter_map(|page| match page {
+            Loadable::Ready(page) => Some(page),
+            _ => None,
+        });
+        playing
+            .into_iter()
+            .chain(queued)
+            .find(|t| t.video_id == video_id)
+            .cloned()
+            .or_else(|| {
+                on_pages
+                    .flat_map(Page::tracks)
+                    .find(|t| t.video_id == video_id)
+            })
+            .unwrap_or_else(|| Track {
+                video_id: video_id.to_string(),
+                ..Track::default()
+            })
+    }
+
+    /// Radar notes how the song playing went: how long it was heard (its
+    /// `stretches`), and how it stopped ([`Playback::ending`]).
+    fn note_play(&mut self, stretches: &[(f64, f64)]) {
+        let ending = std::mem::take(&mut self.playback.ending);
+        let Some(entry) = &self.playback.entry else {
+            return;
+        };
+        let heard: f64 = stretches
+            .iter()
+            .map(|(from, to)| (to - from).max(0.0))
+            .sum();
+        self.listening.played(
+            &entry.track,
+            heard,
+            self.playback.length,
+            ending,
+            radar::now(),
+        );
+        self.listening_changed = true;
+    }
+
+    /// Radar's record written to its file, when it changed: at most every
+    /// [`HEADLESS_SAVE`], and at once as YTFast quits (`now`).
+    fn save_listening(&mut self, now: bool) {
+        let recent = self
+            .listening_written
+            .is_some_and(|at| at.elapsed() < HEADLESS_SAVE);
+        if !self.listening_changed || (recent && !now) {
+            return;
+        }
+        if let Some(files) = &self.radar_files {
+            files.save_listening(&self.listening);
+        }
+        self.listening_changed = false;
+        self.listening_written = Some(Instant::now());
     }
 
     /// Jumps to `to` seconds in the song playing: the stretch listened to
@@ -2956,6 +3058,11 @@ impl App {
     /// Asks for a page, as a new loading of it: answers for older ones are
     /// dropped.
     fn ask_for_page(&mut self, route: Route) {
+        // Radar's is made, not loaded.
+        if route == Route::Radar {
+            self.make_radar();
+            return;
+        }
         self.loads += 1;
         self.page_loads.insert(route.clone(), self.loads);
         // A fresh loading has its own next results.
@@ -3010,6 +3117,10 @@ impl App {
         if route.is_local() {
             return;
         }
+        if route == Route::Radar {
+            self.open_radar();
+            return;
+        }
         match self.pages.get(&route) {
             None | Some(Loadable::Failed(_)) => self.load(route),
             Some(Loadable::Ready(_)) if route == Route::History => {
@@ -3017,6 +3128,90 @@ impl App {
                 self.refresh(route);
             }
             Some(_) => self.touch(&route),
+        }
+    }
+
+    /// Shows Radar: the last one made, drawn again from what is noted now
+    /// (songs played since and what was marked Not interested left out),
+    /// and a new one made when it is a day old; with none yet, a spinner
+    /// while the first is made.
+    fn open_radar(&mut self) {
+        self.touch(&Route::Radar);
+        match &self.radar {
+            Some(made) => {
+                let page = made.page(&self.listening);
+                let stale = !made.fresh(radar::now());
+                // Kept from an earlier run: its words' fonts are wanted
+                // here (a new one's come with its answer).
+                for section in &page.sections {
+                    self.script_fonts.want_for(&section.strapline);
+                    for item in &section.items {
+                        let (title, more) = match item {
+                            Item::Track(t) => (&t.title, &t.artists),
+                            Item::Card(c) => (&c.title, &c.subtitle),
+                        };
+                        self.script_fonts.want_for(title);
+                        self.script_fonts.want_for(more);
+                    }
+                }
+                self.pages.insert(Route::Radar, Loadable::Ready(page));
+                if stale {
+                    self.make_radar();
+                }
+            }
+            None => {
+                self.pages.insert(Route::Radar, Loadable::Loading);
+                self.make_radar();
+            }
+        }
+        self.trim_pages();
+    }
+
+    /// Asks for a new Radar, unless one is being made.
+    fn make_radar(&mut self) {
+        if self.radar_making {
+            return;
+        }
+        self.radar_making = true;
+        self.radar_build += 1;
+        self.backend.send(Request::Radar {
+            build: self.radar_build,
+            listening: Box::new(self.listening.clone()),
+        });
+    }
+
+    /// A new Radar, made: kept (and saved), and shown if its page is. One
+    /// that could not be made leaves the last in place, or says why.
+    fn radar_made(&mut self, build: u64, result: Result<radar::Radar, String>) {
+        if build != self.radar_build {
+            return;
+        }
+        self.radar_making = false;
+        match result {
+            Ok(made) => {
+                if let Some(files) = &self.radar_files {
+                    files.save_radar(Some(&made));
+                }
+                self.radar = Some(made);
+                self.show_radar_again();
+            }
+            Err(message) if self.radar.is_none() => {
+                if self.pages.contains_key(&Route::Radar) {
+                    self.pages.insert(Route::Radar, Loadable::Failed(message));
+                }
+            }
+            Err(message) => log::info!("Radar: a new one could not be made: {message}"),
+        }
+    }
+
+    /// Radar's page drawn again from the Radar kept, when it is kept (a
+    /// new Radar, something marked Not interested).
+    fn show_radar_again(&mut self) {
+        if let Some(made) = &self.radar
+            && self.pages.contains_key(&Route::Radar)
+        {
+            let page = made.page(&self.listening);
+            self.pages.insert(Route::Radar, Loadable::Ready(page));
         }
     }
 
@@ -3173,7 +3368,12 @@ impl App {
             Action::Open(target, track) => self.open(target, track),
             Action::Play(target, track) => self.play(target, track),
             Action::TogglePause => self.toggle_pause(),
-            Action::Next => self.next(),
+            Action::Next => {
+                // The listener's own Next: Radar notes an early one as a
+                // skip.
+                self.playback.ending = radar::Ending::Skipped;
+                self.next();
+            }
             Action::Previous => self.previous(),
             Action::Seek(to) if self.playback.state == PlayState::LeftOff => {
                 self.playback.start_at = to.max(0.0);
@@ -3207,6 +3407,25 @@ impl App {
             Action::SetEqualizer(settings) => {
                 self.settings.equalizer = settings.clamped();
                 self.audio.send(Command::Equalizer(self.settings.equalizer));
+            }
+            Action::NotInterested(what) => {
+                self.listening.not_interested(&what);
+                self.listening_changed = true;
+                self.show_radar_again();
+                self.notify("Radar won\u{2019}t suggest that again");
+            }
+            Action::ForgetListening => {
+                self.listening.forget();
+                self.listening_changed = true;
+                self.radar = None;
+                if let Some(files) = &self.radar_files {
+                    files.save_radar(None);
+                }
+                self.pages.remove(&Route::Radar);
+                if self.route == Route::Radar {
+                    self.open_radar();
+                }
+                self.notify("Radar forgot what you played");
             }
             // The song playing, chosen in Up next: pause or play it, rather
             // than start it over (and count another play).
@@ -3306,6 +3525,15 @@ impl App {
                     self.like_before.insert(video_id.clone(), before);
                 }
                 self.likes.insert(video_id.clone(), like);
+                // Radar notes it: a song disliked is never suggested.
+                let rating = match like {
+                    LikeState::Liked => ytfast_core::read::Rating::Like,
+                    LikeState::Disliked => ytfast_core::read::Rating::Dislike,
+                    LikeState::Neutral => ytfast_core::read::Rating::Indifferent,
+                };
+                let track = self.track_named(&video_id);
+                self.listening.rated(&track, rating);
+                self.listening_changed = true;
                 // The song playing, disliked: the next one, as YouTube
                 // Music does (Settings can keep it playing).
                 let skip = like == LikeState::Disliked
@@ -3580,6 +3808,14 @@ impl App {
                 self.playback = Playback::default();
                 self.pages.clear();
                 self.visited.clear();
+                // Radar was made from this account's YouTube: the next
+                // account's is its own (one being made is dropped).
+                self.radar = None;
+                self.radar_build += 1;
+                self.radar_making = false;
+                if let Some(files) = &self.radar_files {
+                    files.save_radar(None);
+                }
                 // The next account's are its own.
                 self.likes.clear();
                 self.saved.clear();
@@ -3705,6 +3941,8 @@ impl App {
                 Some(Route::Explore)
             } else if pressed(Key::L, Modifiers::NONE) {
                 Some(Route::LibraryRecent)
+            } else if pressed(Key::R, Modifiers::NONE) {
+                Some(Route::Radar)
             } else if pressed(Key::Comma, Modifiers::NONE) {
                 Some(Route::Settings)
             } else {
@@ -3857,6 +4095,7 @@ impl App {
         self.apply_actions();
         self.show_in_tray();
         self.show_on_discord();
+        self.save_listening(false);
     }
 
     /// The Discord status (Settings' switch): the song playing, while it
@@ -4068,6 +4307,7 @@ impl App {
         if let Some(url) = self.listened_report() {
             self.backend.report_before_closing(url);
         }
+        self.save_listening(true);
         self.backend.forget_sign_in();
     }
 
@@ -4174,6 +4414,16 @@ fn words(event: &Event) -> Vec<&str> {
         }
         Event::Lyrics(_, Some(lyrics)) => {
             words.extend(lyrics.lines.iter().map(|line| line.text.as_str()));
+        }
+        Event::Radar {
+            result: Ok(made), ..
+        } => {
+            for t in &made.songs {
+                track(t, &mut words);
+            }
+            words.extend(made.artists.iter().map(|a| a.name.as_str()));
+            words.extend(made.releases.iter().map(|r| r.title.as_str()));
+            words.extend(made.because.iter().chain(&made.like).map(String::as_str));
         }
         Event::Translated(_, Ok(translated)) => {
             words.extend(
@@ -6302,6 +6552,190 @@ mod tests {
         });
         h.frame();
         assert_eq!(h.app.discord_activity(), None, "paused");
+    }
+
+    /// A Radar of one new song, made now.
+    fn made_radar(songs: &[&str]) -> radar::Radar {
+        radar::Radar {
+            made: radar::now(),
+            songs: songs.iter().map(|id| song(id)).collect(),
+            because: vec!["Lemon".into()],
+            ..radar::Radar::default()
+        }
+    }
+
+    /// The builds of Radar the app asked for since the last look.
+    fn radar_asks(requests: &[Request]) -> Vec<u64> {
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                Request::Radar { build, .. } => Some(*build),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The songs Radar's page shows.
+    fn radar_songs(h: &Harness) -> Vec<String> {
+        match h.app.pages.get(&Route::Radar) {
+            Some(Loadable::Ready(page)) => page.tracks().into_iter().map(|t| t.video_id).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Radar is made when first opened (a spinner meanwhile), shown again
+    /// from what is kept without asking YouTube, and made again once a
+    /// day old (the old one shown meanwhile). A late answer is dropped.
+    #[test]
+    fn radar_is_made_once_a_day() {
+        let mut h = Harness::new();
+        h.act(Action::Navigate(Route::Radar));
+        assert!(matches!(
+            h.app.pages.get(&Route::Radar),
+            Some(Loadable::Loading)
+        ));
+        let asked = radar_asks(&h.requests());
+        assert_eq!(asked.len(), 1);
+        h.answer(Event::Radar {
+            build: asked[0],
+            result: Ok(made_radar(&["n1", "n2"])),
+        });
+        assert_eq!(radar_songs(&h), ["n1", "n2"]);
+
+        h.act(Action::Navigate(Route::Home));
+        h.act(Action::Navigate(Route::Radar));
+        assert!(radar_asks(&h.requests()).is_empty(), "made today");
+        assert_eq!(radar_songs(&h), ["n1", "n2"]);
+
+        if let Some(made) = &mut h.app.radar {
+            made.made -= 2 * radar::FRESH_FOR;
+        }
+        h.act(Action::Navigate(Route::Home));
+        h.act(Action::Navigate(Route::Radar));
+        let again = radar_asks(&h.requests());
+        assert_eq!(again.len(), 1, "a day old: made again");
+        assert_eq!(radar_songs(&h), ["n1", "n2"], "the old one meanwhile");
+        // An answer for the first making: dropped.
+        h.answer(Event::Radar {
+            build: asked[0],
+            result: Ok(made_radar(&["late"])),
+        });
+        assert_eq!(radar_songs(&h), ["n1", "n2"]);
+        h.answer(Event::Radar {
+            build: again[0],
+            result: Ok(made_radar(&["n3"])),
+        });
+        assert_eq!(radar_songs(&h), ["n3"]);
+        // A failure leaves the last one in place.
+        h.app.radar.as_mut().unwrap().made = 0;
+        h.act(Action::Navigate(Route::Home));
+        h.act(Action::Navigate(Route::Radar));
+        let build = radar_asks(&h.requests())[0];
+        h.answer(Event::Radar {
+            build,
+            result: Err("no network".into()),
+        });
+        assert_eq!(radar_songs(&h), ["n3"]);
+    }
+
+    /// With nothing made yet, a failure says why, and Try again makes it.
+    #[test]
+    fn radar_that_could_not_be_made_says_why() {
+        let mut h = Harness::new();
+        h.act(Action::Navigate(Route::Radar));
+        let build = radar_asks(&h.requests())[0];
+        h.answer(Event::Radar {
+            build,
+            result: Err("Not signed in.".into()),
+        });
+        assert!(matches!(
+            h.app.pages.get(&Route::Radar),
+            Some(Loadable::Failed(_))
+        ));
+        h.act(Action::Retry(Route::Radar));
+        assert_eq!(radar_asks(&h.requests()).len(), 1);
+    }
+
+    /// Radar notes each play: a song skipped early by Next counts against
+    /// it, one played to its end for it, and a dislike leaves it out.
+    #[test]
+    fn radar_notes_how_songs_went() {
+        let mut h = Harness::new();
+        h.play(&["a", "b", "c"]);
+        at(&mut h, 10.0);
+        h.act(Action::Next);
+        let heard = &h.app.listening.songs()["a"];
+        assert_eq!((heard.plays, heard.skipped, heard.finished), (1, 1, 0));
+        h.ready();
+        let (b, _) = h.entry();
+        at(&mut h, 200.0);
+        h.app.audio.set_status(|s| s.ended = Some(b));
+        h.frame();
+        let heard = &h.app.listening.songs()["b"];
+        assert_eq!((heard.plays, heard.skipped, heard.finished), (1, 0, 1));
+        assert!(h.app.listening_changed, "to be saved");
+
+        h.act(Action::Rate("b".into(), LikeState::Disliked));
+        assert!(h.app.listening.unwanted(&song("b")));
+        h.act(Action::Rate("b".into(), LikeState::Neutral));
+        assert!(!h.app.listening.unwanted(&song("b")));
+    }
+
+    /// "Not interested" takes the song off Radar at once; Forget (asked
+    /// first, in Settings) clears what was noted and what was made.
+    #[test]
+    fn not_interested_and_forget() {
+        let mut h = Harness::new();
+        h.act(Action::Navigate(Route::Radar));
+        let build = radar_asks(&h.requests())[0];
+        h.answer(Event::Radar {
+            build,
+            result: Ok(made_radar(&["n1", "n2"])),
+        });
+        h.act(Action::NotInterested(radar::Unwanted::Song(song("n1"))));
+        assert_eq!(radar_songs(&h), ["n2"]);
+        assert!(h.app.notice.is_some(), "it says so");
+
+        h.act(Action::OpenDialog(Dialog::ForgetListening));
+        assert!(matches!(
+            *h.app.dialog.borrow(),
+            Some(Dialog::ForgetListening)
+        ));
+        h.act(Action::ForgetListening);
+        assert!(h.app.listening.is_empty());
+        assert!(h.app.radar.is_none());
+        // Radar, open, is made afresh.
+        assert_eq!(radar_asks(&h.requests()).len(), 1);
+        assert!(matches!(
+            h.app.pages.get(&Route::Radar),
+            Some(Loadable::Loading)
+        ));
+    }
+
+    /// The menu's Radar opens Radar (and "g then r"); the demo's Radar is
+    /// made from made-up music: new songs, new artists and this year's
+    /// albums.
+    #[test]
+    fn the_menu_opens_radar_and_the_demo_has_one() {
+        use crate::theme::Theme;
+        let mut w = Window::new(Theme::YouTubeMusic);
+        w.settle();
+        let entry = w.find("Radar", 0);
+        w.click(entry.center());
+        assert_eq!(w.h.app.route, Route::Radar);
+
+        let now = radar::now();
+        let listening = radar::Listening::default();
+        let made = radar::rank(&listening, &crate::demo::radar_found(&listening, now), now);
+        assert!(made.songs.len() >= 8, "{} songs", made.songs.len());
+        assert!(made.artists.len() >= 4, "{} artists", made.artists.len());
+        assert!(!made.releases.is_empty());
+        let page = made.page(&listening);
+        let titles: Vec<&str> = page.sections.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["New to you", "Artists to try", "New from your artists"]
+        );
     }
 
     /// The equalizer's switch and bands reach the player, its bands kept

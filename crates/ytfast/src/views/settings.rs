@@ -9,7 +9,7 @@ use std::ops::RangeInclusive;
 use egui::{Align, Layout, Rect, Sense, UiBuilder, pos2, vec2};
 use ytfast_core::eq::{BANDS, Equalizer, PRESETS, RANGE_DB};
 
-use crate::app::{Action, App, Auth, MOST_CROSSFADE, Setting};
+use crate::app::{Action, App, Auth, Dialog, MOST_CROSSFADE, Setting};
 use crate::theme::{self, PALETTE, Theme};
 
 pub fn show(app: &App, ui: &mut egui::Ui) {
@@ -132,6 +132,14 @@ fn contents(app: &App, ui: &mut egui::Ui) {
     if app.settings.equalizer.on {
         equalizer(app, ui);
     }
+
+    section(ui, "Radar");
+    words_and_button(
+        app,
+        ui,
+        RADAR_ABOUT,
+        Some(("Forget", Action::OpenDialog(Dialog::ForgetListening))),
+    );
 
     if !app.demo {
         section(ui, "Updates");
@@ -297,6 +305,8 @@ fn looks(app: &App, ui: &mut egui::Ui) {
     });
 }
 
+/// What Radar learns from, beside its Forget button.
+const RADAR_ABOUT: &str = "Radar learns from what you play, on this computer only.";
 /// What the Discord status does.
 const DISCORD_ABOUT: &str = "Your Discord profile shows the song playing, while Discord is open.";
 /// What the crossfade does.
@@ -675,6 +685,7 @@ mod tests {
         // Words beside a button: 14; the crossfade's, beside its slider.
         let beside = [
             (LOG_WORDS, 14.0, WORDS_BESIDE_BUTTON),
+            (RADAR_ABOUT, 14.0, WORDS_BESIDE_BUTTON),
             (CROSSFADE_ABOUT, 13.0, 640.0 - CROSSFADE_ROOM),
         ];
         for (text, size, width) in explanations.chain(beside) {

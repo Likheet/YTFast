@@ -382,10 +382,11 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                 }
                 (None, route) if is_library(route) => library_header(app, ui, route, page),
                 (None, Route::History) => title(ui, "History"),
+                (None, Route::Radar) => radar_header(ui, page),
                 (None, Route::Home | Route::Explore) => {}
                 _ => ui.add_space(8.0),
             }
-            if page.sections.is_empty() {
+            if page.sections.is_empty() && *route != Route::Radar {
                 ui.add_space(32.0);
                 theme::label(
                     ui,
@@ -887,6 +888,27 @@ fn title(ui: &mut egui::Ui, text: &str) {
     ui.add_space(24.0);
     let size = theme::display1(ui.ctx().content_rect().width());
     theme::label(ui, text, theme::bold(size), PALETTE.text);
+    ui.add_space(8.0);
+}
+
+/// What Radar is, under its title.
+pub const RADAR_WORDS: &str =
+    "New music chosen by YTFast from what you play. It changes every day.";
+/// What it says while it has nothing to suggest yet.
+pub const RADAR_EMPTY: &str = "Play a few songs you like, and Radar fills up with music like them.";
+
+/// Radar's top: its title, as History's, and a line saying what it is
+/// (in the page's words' size, quieter); with nothing to suggest yet, what
+/// fills it.
+fn radar_header(ui: &mut egui::Ui, page: &Page) {
+    title(ui, "Radar");
+    let size = theme::text_size(ui);
+    let words = if page.sections.is_empty() {
+        RADAR_EMPTY
+    } else {
+        RADAR_WORDS
+    };
+    theme::label(ui, words, theme::regular(size), PALETTE.secondary);
     ui.add_space(8.0);
 }
 

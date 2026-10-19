@@ -38,6 +38,7 @@ pub mod musixmatch;
 pub mod net;
 pub mod playreport;
 pub mod prepare;
+pub mod radar;
 pub mod read;
 pub mod redact;
 pub mod solver;

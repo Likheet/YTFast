@@ -18,6 +18,7 @@ mod instance;
 mod login;
 mod lyrics;
 mod queue;
+mod radar_files;
 mod store;
 mod swipe;
 mod theme;

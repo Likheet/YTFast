@@ -52,6 +52,10 @@ pub enum Route {
     History,
     /// YTFast's own settings (not loaded from YouTube).
     Settings,
+    /// YTFast's own recommendations ([`ytfast_core::radar`]): made from
+    /// YouTube's radios and pages once a day ([`Request::Radar`]), not
+    /// loaded as a page.
+    Radar,
 }
 
 impl Route {
@@ -151,6 +155,14 @@ pub enum Request {
         entry: u64,
         video_id: String,
         play: bool,
+    },
+    /// Make Radar: ask YouTube for what it chooses from (at most ten
+    /// requests, one at a time) and choose, by `listening`. `build` is
+    /// given back with the answer ([`Event::Radar`]), so a late one is
+    /// known.
+    Radar {
+        build: u64,
+        listening: Box<ytfast_core::radar::Listening>,
     },
     /// What plays after a song (its playlist, or a radio). `queue` is the
     /// queue it is asked for ([`crate::queue::Queue::generation`]), given
@@ -352,6 +364,11 @@ pub enum Event {
         entry: u64,
         video_id: String,
         ready: Ready,
+    },
+    /// Radar, made for the `build` that asked ([`Request::Radar`]).
+    Radar {
+        build: u64,
+        result: Result<ytfast_core::radar::Radar, String>,
     },
     UpNext {
         video_id: String,
@@ -867,6 +884,7 @@ async fn serve(
                     musixmatch,
                 } => translate(&shared, video_id, lines, musixmatch).await,
                 Request::Related(video_id) => related(&shared, video_id).await,
+                Request::Radar { build, listening } => radar(&shared, build, *listening).await,
                 Request::Details(video_id) => song_started(&shared, video_id).await,
                 Request::Video { entry, video_id } => video(&shared, entry, video_id).await,
                 // Queued above, in order.
@@ -934,6 +952,10 @@ fn failure_for(request: &Request) -> Option<Event> {
         Request::Lyrics { video_id, .. } => Event::Lyrics(video_id.clone(), None),
         Request::Translate { video_id, .. } => Event::Translated(video_id.clone(), Err(failed())),
         Request::Related(video_id) => Event::Related(video_id.clone(), Err(failed())),
+        Request::Radar { build, .. } => Event::Radar {
+            build: *build,
+            result: Err(failed()),
+        },
         Request::Image(url) => Event::Image(url.clone(), None),
         Request::Video { entry, .. } => Event::Video {
             entry: *entry,
@@ -1425,7 +1447,8 @@ async fn page(shared: &Shared, route: Route, load: u64, order: Option<String>) {
             .await
             .map(|p| (p, None)),
         Route::History => session.history_page().await.map(|p| (p, None)),
-        Route::Settings => return,
+        // Not loaded as pages ([`Request::Radar`] makes Radar's).
+        Route::Settings | Route::Radar => return,
     };
     let more = match result {
         Ok((mut page, more)) => {
@@ -2028,6 +2051,30 @@ async fn related(shared: &Shared, video_id: String) {
         Err("Not signed in.".into())
     };
     shared.send(Event::Related(video_id, result));
+}
+
+/// Makes Radar: YouTube asked what it chooses from (at most ten requests,
+/// one at a time), then chosen by what the listener did. The demo chooses
+/// from made-up radios and artists.
+async fn radar(shared: &Shared, build: u64, listening: ytfast_core::radar::Listening) {
+    use ytfast_core::radar;
+    let now = radar::now();
+    let result = if shared.demo {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        Ok(radar::rank(
+            &listening,
+            &demo::radar_found(&listening, now),
+            now,
+        ))
+    } else if let Some(p) = shared.preparer().await {
+        radar::gather(&p.session, &listening, now)
+            .await
+            .map(|found| radar::rank(&listening, &found, now))
+            .map_err(|e| api_error(shared, e))
+    } else {
+        Err("Not signed in.".into())
+    };
+    shared.send(Event::Radar { build, result });
 }
 
 async fn edit(shared: &Shared, change: Edit) {

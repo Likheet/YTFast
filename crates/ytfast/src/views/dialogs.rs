@@ -34,14 +34,16 @@ pub fn show(app: &App, ui: &egui::Ui) {
             .corner_radius(egui::CornerRadius::same(2)),
         // A confirmation (`yt-confirm-dialog-renderer`): `#282828`, an
         // outline of `#4e4e4e`.
-        Dialog::Delete { .. } | Dialog::ReplaceQueue { .. } => egui::Frame::new()
-            .fill(egui::Color32::from_rgb(0x28, 0x28, 0x28))
-            .stroke(egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgb(0x4e, 0x4e, 0x4e),
-            ))
-            .corner_radius(egui::CornerRadius::same(2))
-            .shadow(SHADOW),
+        Dialog::Delete { .. } | Dialog::ReplaceQueue { .. } | Dialog::ForgetListening => {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(0x28, 0x28, 0x28))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgb(0x4e, 0x4e, 0x4e),
+                ))
+                .corner_radius(egui::CornerRadius::same(2))
+                .shadow(SHADOW)
+        }
         // YTFast's own question before closing: rounder, as it is no
         // YouTube Music dialog.
         Dialog::ConfirmClose { .. } => egui::Frame::new()
@@ -166,6 +168,19 @@ pub fn show(app: &App, ui: &egui::Ui) {
                         None => {}
                     }
                 }
+                Dialog::ForgetListening => match confirm(
+                    ui,
+                    "Forget what Radar learned?",
+                    FORGET_WORDS,
+                    "Forget",
+                ) {
+                    Some(true) => {
+                        app.act(Action::ForgetListening);
+                        close = true;
+                    }
+                    Some(false) => close = true,
+                    None => {}
+                },
                 Dialog::Shortcuts => close = shortcuts(ui, window),
                 Dialog::Update => close = update_window(app, ui),
                 // The whole description (its look is not measured yet).
@@ -212,7 +227,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
 /// The keyboard's shortcuts, as YouTube Music lists them ("?"), and
 /// YTFast's own. True when closed.
 fn shortcuts(ui: &mut egui::Ui, window: f32) -> bool {
-    const KEYS: [(&str, &str); 20] = [
+    const KEYS: [(&str, &str); 21] = [
         ("Play or pause", "Space or ;"),
         ("Next song", "j or Shift+N"),
         ("Previous song", "k or Shift+P"),
@@ -230,6 +245,7 @@ fn shortcuts(ui: &mut egui::Ui, window: f32) -> bool {
         ("Home", "g then h"),
         ("Explore", "g then e"),
         ("Library", "g then l"),
+        ("Radar", "g then r"),
         ("Settings", "g then ,"),
         ("Search", "/ or Ctrl+F"),
         ("This list", "?"),
@@ -785,6 +801,9 @@ fn privacy_menu(ui: &mut egui::Ui, privacy: &mut Privacy) {
 /// question 16/400 white 24 from the top and 24 in, 16 under it the words
 /// 14 `#aaa`, then Cancel and `main` as blue words at the right (8 8 8 24
 /// around them). `Some(true)` when confirmed, `Some(false)` when cancelled.
+/// What Radar's Forget does (Settings).
+const FORGET_WORDS: &str = "Radar forgets the songs you finished, skipped and marked Not interested on this computer, and starts again. Your YouTube history stays.";
+
 /// Why a Mac's YTFast opened from its disk image moves to Applications.
 const MOVE_WORDS: &str = "YTFast is running from its disk image. In Applications it stays when the disk image closes, updates itself, and can start with your Mac.";
 

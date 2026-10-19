@@ -205,11 +205,16 @@ const MOODS: [(&str, u32); 8] = [
     ("Sleep", 0x2d3a7a),
 ];
 
-/// The songs whose artist or album is `name`.
+/// The songs whose artist or album is `name` (Radar's new ones too).
 fn songs_of(name: &str) -> Vec<Item> {
     (0..SONGS.len())
         .filter(|&i| SONGS[i].1 == name || SONGS[i].2 == name)
         .map(|i| Item::Track(song(i)))
+        .chain(
+            (0..NEW_SONGS.len())
+                .filter(|&i| NEW_SONGS[i].1 == name)
+                .map(|i| Item::Track(new_song(i))),
+        )
         .collect()
 }
 
@@ -521,8 +526,131 @@ fn unsorted(route: &Route) -> Page {
                 Shape::Grid,
             )],
         },
-        Route::Settings => Page::default(),
+        // Not pages from YouTube (Radar's is made: [`radar_found`]).
+        Route::Settings | Route::Radar => Page::default(),
     }
+}
+
+/// Songs only Radar suggests in the demo, new to its listener (whose
+/// History holds every song in [`SONGS`]): title, artist.
+const NEW_SONGS: [(&str, &str); 16] = [
+    ("Paper Lanterns", "Lumen Drift"),
+    ("Salt & Static", "Harbour Choir"),
+    ("Neon Rain Again", "Velvet Robots"),
+    ("Windows Down", "Sunset Index"),
+    ("Hello, Lighthouse", "Kite Theory"),
+    ("Analog Hearts", "Pale Signal"),
+    ("Quiet Satellites", "Lumen Drift"),
+    ("Tidal Postcards", "Harbour Choir"),
+    ("Morning Arcade", "Velvet Robots"),
+    ("Silver Lining Street", "Sunset Index"),
+    ("Small Hours", "Kite Theory"),
+    ("Last Ferry Home", "Pale Signal"),
+    ("Midnight Postcard", "Lumen Drift"),
+    ("Radio Bloom", "Velvet Robots"),
+    ("Golden Static", "Harbour Choir"),
+    ("Slow Burn Summer", "Sunset Index"),
+];
+
+/// Their artists, the demo's Radar's "Artists to try".
+const NEW_ARTISTS: [&str; 6] = [
+    "Lumen Drift",
+    "Harbour Choir",
+    "Velvet Robots",
+    "Sunset Index",
+    "Kite Theory",
+    "Pale Signal",
+];
+
+/// One of [`NEW_SONGS`], as a row gives it.
+fn new_song(i: usize) -> Track {
+    let (title, artist) = NEW_SONGS[i % NEW_SONGS.len()];
+    let video_id = format!("demonew{:04}", i % NEW_SONGS.len());
+    Track {
+        duration_seconds: Some(length(&video_id) as u32),
+        video_id,
+        title: title.into(),
+        artists: artist.into(),
+        album: Some(title.into()),
+        kind: TrackKind::Song,
+        thumbnail: thumb(title),
+        artist_id: Some(id_for(artist, PageKind::Artist)),
+        playable: true,
+        like: Some(Rating::Indifferent),
+        ..Track::default()
+    }
+}
+
+/// What the demo's Radar chooses from, as `ytfast_core::radar::gather`
+/// would find it: a History of every song in [`SONGS`]; each favourite's
+/// radio a few of them, then new songs, overlapping from one radio to the
+/// next; and each favourite artist's page, with an album of this year and
+/// similar artists, all new.
+pub fn radar_found(
+    listening: &ytfast_core::radar::Listening,
+    now: u64,
+) -> ytfast_core::radar::Found {
+    let history: Vec<Track> = (0..SONGS.len()).map(song).collect();
+    let radios = listening
+        .seeds(&history, &[], now)
+        .into_iter()
+        .enumerate()
+        .map(|(n, seed)| {
+            let start = (seed_of(&seed.video_id) % SONGS.len() as u64) as usize;
+            let mut radio: Vec<Track> = (start..start + 3).map(song).collect();
+            radio.extend((0..8).map(|k| new_song(n * 3 + k)));
+            (seed, radio)
+        })
+        .collect();
+    let year = ytfast_core::radar::year_of(now);
+    let artists = listening
+        .top_artists(&history, &[], now)
+        .into_iter()
+        .enumerate()
+        .map(|(n, artist)| {
+            let name = artist.name.clone();
+            let mut albums: Vec<&str> = SONGS.iter().filter(|s| s.1 == name).map(|s| s.2).collect();
+            albums.dedup();
+            let releases = albums
+                .into_iter()
+                .map(|album| {
+                    let Item::Card(mut card) = album_card(album) else {
+                        unreachable!("a card")
+                    };
+                    card.subtitle = year.to_string();
+                    Item::Card(card)
+                })
+                .collect();
+            let similar = (0..4)
+                .map(|k| {
+                    let similar = NEW_ARTISTS[(n + k) % NEW_ARTISTS.len()];
+                    card(similar, "1.2M monthly audience", PageKind::Artist)
+                })
+                .collect();
+            let page = Page {
+                sections: vec![
+                    section("Albums", releases),
+                    section("Fans might also like", similar),
+                ],
+                ..Page::default()
+            };
+            (artist, page)
+        })
+        .collect();
+    ytfast_core::radar::Found {
+        history,
+        liked: Vec::new(),
+        radios,
+        artists,
+    }
+}
+
+/// A made-up song's place in [`SONGS`] from its ID (`demo0000003`).
+fn seed_of(video_id: &str) -> u64 {
+    video_id
+        .trim_start_matches("demo")
+        .parse()
+        .unwrap_or_else(|_| seed(video_id))
 }
 
 fn home() -> Page {
@@ -726,7 +854,8 @@ fn browse(id: &str) -> Page {
                 section.small_title = true;
                 section
             };
-            Page {
+            // (Radar's new artists have songs but no albums yet.)
+            let mut page = Page {
                 sort: None,
                 header: Some(Header {
                     title: name.into(),
@@ -761,7 +890,9 @@ fn browse(id: &str) -> Page {
                             .collect(),
                     )),
                 ],
-            }
+            };
+            page.sections.retain(|s| !s.items.is_empty());
+            page
         }
         // As YouTube Music's page: sections of striped buttons in grids.
         "mood" if name == "Moods & genres" => {

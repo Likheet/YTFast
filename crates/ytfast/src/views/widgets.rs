@@ -1369,11 +1369,26 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
             Action::Navigate(crate::backend::Route::browse(artist.clone(), None)),
         );
     }
+    // On Radar's page (not the player page over it): never suggested
+    // again.
+    if place == Place::Page && on_radar(app) {
+        item(
+            ui,
+            Icon::NotInterested,
+            "Not interested",
+            Action::NotInterested(ytfast_core::radar::Unwanted::Song(track.clone())),
+        );
+    }
     share(
         app,
         ui,
         format!("https://music.youtube.com/watch?v={}", track.video_id),
     );
+}
+
+/// The Radar page is showing (not the player page over it).
+fn on_radar(app: &App) -> bool {
+    app.route == crate::backend::Route::Radar && !app.now_playing
 }
 
 /// "Share": copies the link, and says so.
@@ -1723,6 +1738,31 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
         }) => Some(format!("https://music.youtube.com/browse/{id}")),
         _ => playlist.map(|id| format!("https://music.youtube.com/playlist?list={id}")),
     };
+    // On Radar's page: the artist, or the album or single, never
+    // suggested again.
+    if on_radar(app) {
+        use ytfast_core::radar::Unwanted;
+        let unwanted = match &card.open {
+            Some(Target::Browse {
+                id,
+                kind: ytfast_core::read::PageKind::Artist,
+                ..
+            }) => Some(Unwanted::Artist {
+                id: Some(id.clone()),
+                name: card.title.clone(),
+            }),
+            Some(Target::Browse { id, .. }) if album => Some(Unwanted::Release(id.clone())),
+            _ => None,
+        };
+        if let Some(what) = unwanted {
+            item(
+                ui,
+                Icon::NotInterested,
+                "Not interested",
+                Action::NotInterested(what),
+            );
+        }
+    }
     if let Some(link) = link {
         share(app, ui, link);
     }
