@@ -101,17 +101,62 @@ sound upgrade (1.4.0: gapless, crossfade, the equalizer, the Discord
 status). Still to do: performance measured on the real apps (startup
 time, memory, including the helper programs).
 
+## Radar: YTFast's own recommendations (planned, not started)
+
+The owner finds YouTube Music's recommendations poor, and wants better
+ones without changing what YouTube Music's users know: Home, Explore and
+the Library stay exactly as they are. Planned with the owner on 20
+October 2026; the name is the owner's choice ("Discover" was left out,
+as YouTube Music has a "Discover Mix").
+
+**Where:** a fourth item in the left menu, under Library: **Radar**. A
+page of rows, as Home's, drawn by the same view (`views/page.rs`), so it
+works in all three looks and needs no new kind of screen.
+
+**How it chooses:** YouTube finds the songs (its radios, "Fans might
+also like", similar artists, new releases); YTFast chooses among them by
+what the user does:
+
+- A song finished, repeated or liked counts for it; one skipped in its
+  first seconds, or disliked, counts against it. Kept in a small file
+  on the computer only (under 1 MB, at most a few thousand songs), never
+  sent anywhere; a button in Settings forgets it.
+- Only songs new to the user; at most two of one artist in a row of the
+  page; never a song skipped early or disliked, nor, after a few
+  dislikes, its artist; official songs before fans' uploads and covers.
+- A song suggested by the radios of several favourites ranks above one
+  suggested by one.
+- Every row says why ("Because you played Lemon and Idol"), and a song's
+  menu there has "Not interested", which takes effect at once.
+
+**Its first rows:** New to you (from the radios of the user's
+favourites); Artists to try (similar to the artists played most, not yet
+played); New from your artists (new songs and albums from the artists
+actually played).
+
+**Later:** an endless Radar station (new songs, a familiar one now and
+then), Deep cuts (album songs the user has not heard from artists they
+play), Rediscover (songs once finished often, not played for months).
+
+**Limits:** built once a day from about ten requests, one at a time (as
+a listener opening ten radios); never in a loop, never a song's audio
+fetched ahead for it. The first day starts from YouTube's History and
+Liked Music, so the page is useful at once. The demo answers with
+made-up rows. AGENTS.md's list of request limits gets Radar's.
+
+**Steps:**
+
+1. Note what the user finishes, skips and likes (on the computer).
+2. The Radar page with its first three rows and "Not interested",
+   tried in the demo: released as 1.5.0.
+3. The station, Deep cuts and Rediscover.
+4. Measured on the owner's laptop (Radar's songs finished against
+   skipped), and tuned.
+
 ## Ideas for later
 
-The owner's, for after the sound upgrade (19 October 2026). Not started.
+The owner's (19 October 2026). Not started.
 
-- **Better recommendations than YouTube's.** The owner finds YouTube
-  Music's own poor. To work out first: what YTFast can learn from without
-  sending anything new anywhere (what the user plays, skips, likes and
-  repeats, kept on the computer), and how it would choose songs from
-  what YouTube offers (radios, related songs, search) without asking
-  YouTube more often than a listener would (see "Keep to a normal
-  listener's pace" in AGENTS.md).
 - **A tab for AI music.** The user connects an AI music service of their
   own choosing (their own account and key, kept as safely as the
   sign-in), picks a few songs, and gets a new song made from them. To
