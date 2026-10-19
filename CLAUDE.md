@@ -213,6 +213,16 @@ there, not in `App::ui`.
   the video mode) belongs in `may_follow_on`. `moved_on` is read before
   `ended` in `handle_events`: the song that ends may be the one moved on
   to.
+- **Radar's page is made, not loaded.** `Route::Radar` never reaches
+  `Request::Page`: `App::show_current` opens it from the Radar kept
+  (`App::open_radar`) and `App::ask_for_page` makes a new one
+  (`Request::Radar`, numbered so a late answer is dropped). Its page is
+  drawn again from `App.radar` and `App.listening` whenever it shows, so
+  what was played or marked Not interested since leaves at once, with no
+  request. Plays are noted in one place, `App::listened_report_at` (once
+  per play, as its report is finished); whatever ends a song in a new way
+  sets `Playback::ending` first (`Finished`, `Skipped`), or it counts as
+  stopped. Radar's limits on requests are in AGENTS.md's list: keep them.
 - **The equalizer runs on the sound device's thread.** Nothing there may
   wait: `eq::Processor` takes new settings with `try_lock` and keeps the
   old ones a block longer when the window holds the lock.

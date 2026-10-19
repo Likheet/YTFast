@@ -101,7 +101,7 @@ sound upgrade (1.4.0: gapless, crossfade, the equalizer, the Discord
 status). Still to do: performance measured on the real apps (startup
 time, memory, including the helper programs).
 
-## Radar: YTFast's own recommendations (planned, not started)
+## Radar: YTFast's own recommendations (steps 1 and 2 built, 1.5.0)
 
 The owner finds YouTube Music's recommendations poor, and wants better
 ones without changing what YouTube Music's users know: Home, Explore and
@@ -147,8 +147,10 @@ made-up rows. AGENTS.md's list of request limits gets Radar's.
 **Steps:**
 
 1. Note what the user finishes, skips and likes (on the computer).
+   **Built** (1.5.0).
 2. The Radar page with its first three rows and "Not interested",
-   tried in the demo: released as 1.5.0.
+   tried in the demo: released as 1.5.0. **Built** (20 October 2026),
+   with Settings' Forget; how it chooses is in AGENTS.md.
 3. The station, Deep cuts and Rediscover.
 4. Measured on the owner's laptop (Radar's songs finished against
    skipped), and tuned.

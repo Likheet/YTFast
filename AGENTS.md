@@ -42,6 +42,9 @@ crates/ytfast-core/   the engine (no user interface)
                       subscriptions); suggestions, song details, lyrics
   src/read/           reading YouTube's replies: the ONLY place that does
   src/playreport.rs   reporting plays (History, recommendations)
+  src/radar.rs        Radar, YTFast's own recommendations: what the
+                      listener did (kept on the computer), YouTube's
+                      radios and pages gathered, and the choice
   src/helpers.rs      downloading yt-dlp and Deno, checked by SHA-256
   src/ytdlp.rs        running yt-dlp (sign-in from browser, song audio)
   src/solver.rs       yt-dlp's challenge solver (EJS) kept running in Deno
@@ -75,6 +78,8 @@ crates/ytfast/        the app: an egui window on fastframe
   src/instance.rs     one YTFast at a time: a second launch shows the
                       first one's window
   src/login.rs        "Start with the computer"
+  src/radar_files.rs  Radar's two files: what the listener did, and the
+                      day's Radar
   src/discord.rs      the song playing on the user's Discord profile,
                       through Discord's local connection
   src/update.rs       updates from the GitHub releases (fastframe-update)
@@ -458,6 +463,38 @@ Paolino), as `audio.rs` does.
   on every pass, late, which the owner saw as fast scrolls lagging.
 - Every page is a header and sections of songs or cards (`read::Page`), so
   one view draws Home, Explore, search, albums, artists and playlists.
+- Radar (the left menu's fourth entry, under Library; G then R): YTFast's
+  own recommendations, apart from YouTube's, which stay as they are (the
+  owner's choice, 20 October 2026; `docs/plan.md`). YouTube finds the
+  songs; YTFast chooses (`ytfast-core/src/radar.rs`). Each play is noted
+  as it ends, where its listening report is finished
+  (`App::listened_report_at`): finished (heard to 80%, or to its end),
+  skipped (Next pressed in its first 30 s, or first half), or neither
+  (`Playback::ending`, set just before); likes and dislikes too. The
+  record (`radar::Listening`, at most 3000 songs, the least recently
+  played let go) stays on the computer, in `listening.json` in YtFast's
+  data folder (`radar_files.rs`; never in the demo), written at most
+  every 30 s and as YTFast quits; Settings' Forget (asked first) clears
+  it. Radar is made when opened, at most once a day by the clock
+  (`Request::Radar`, `radar::gather`): the account's History; Liked
+  Music's first page while fewer than 8 songs were finished; the radios
+  of 4 favourite songs and the pages of 4 favourite artists, drawn each
+  day from the best 12 (each as likely as the listener's liking), one
+  song per artist, filled from History when the record is thin; one
+  request at a time, 0.3 s apart. `radar::rank` then chooses: "New to
+  you" (radios' songs new to the listener: not noted, not in History or
+  Liked, not liked on YouTube; scored by the seed's weight and how early
+  in its radio; half again for each more radio suggesting it; fans'
+  uploads count 0.3, music videos 0.8), "Artists to try" ("Fans might
+  also like" on the favourites' pages, new to the listener) and "New
+  from your artists" (their albums, EPs and singles of this year or
+  last, not played from); at most two of one artist in a row, each row
+  saying why in its small words above its title. `Radar::page` draws it
+  as Home's shelves, leaving out what has since been played or marked
+  "Not interested" (a song's or card's menu on Radar; three songs of one
+  artist disliked or unwanted leave out the artist). The last Radar is
+  kept in `radar.json` and shown at once; a day old, it shows while the
+  next is made. Signing out lets it go (it was the account's).
 - `--demo` replaces the account with made-up music and no network or
   sound, for trying the interface and for screenshots. It can be open
   beside YTFast in real use without disturbing it: it keeps a log of its
@@ -573,6 +610,11 @@ Paolino), as `audio.rs` does.
     Musixmatch. Translate adds one or two to Musixmatch and one to Google
     Translate per song. Refused, Musixmatch is left alone for 15 minutes
     (`REST` in `musixmatch.rs`).
+  - Radar is made at most once a day, and only when its page is opened:
+    at most ten requests (History, Liked Music's first page while the
+    record is thin, four radios, four artists' pages), one at a time,
+    0.3 s apart (`radar::gather`). Nothing of a song's audio is fetched
+    for it.
 - Every song played is reported twice: when it starts, and how long it
   played (`playreport.rs`). Without this, History and recommendations stop
   learning.
@@ -1371,6 +1413,28 @@ Not yet tested: by ear, with the owner's account, the Discord status
 with a real Discord (its app was not open on that laptop; the tests
 talk to a stand-in), and the Mac.
 
+Then (20 October 2026, version 1.5.0), at the owner's word, after
+planning it with them (docs/plan.md): Radar, YTFast's own
+recommendations, a fourth page in the left menu, Home, Explore and the
+Library left as YouTube's (above). Tested on the owner's Windows laptop:
+the unit tests (386, among them plays noted as finished, skipped early
+or neither, the record kept to its newest 3000 and through saving and a
+damaged file, the day's draw of favourites changing from day to day
+while favouring the best, one seed per artist and History filling in,
+"New to you" new, official and agreed on by several radios, two of one
+artist at most, "Artists to try" new and agreed on, new releases of
+this year or last not yet played, "Not interested" and three dislikes
+leaving out a song and then its artist, the page's rows and their
+words; in the app, Radar made when first opened and once a day, a late
+answer dropped, a failure keeping the last Radar or saying why, Next
+noted as a skip and a song's end as finished, a dislike and its undoing,
+Not interested at once, Forget asked first, the menu's Radar and the
+demo's made-up Radar); and the demo off the screen (its screen asleep,
+so the pictures came from the app itself, with a hook not committed):
+Radar's page in each look. Not yet tested: Radar with the owner's
+account (real radios, artists' pages and History), how good its
+suggestions are to the owner's ear, and the Mac.
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
@@ -1387,7 +1451,9 @@ switch for radios too; F puts the player page in full screen (YouTube
 Music's own full screen is the video's); Up next's rows show the open
 hand; a liked song shows its filled thumb in Up next too; a song's menu
 has Play next first and Start mix third; a click that would replace two
-or more songs lined up by hand asks first.
+or more songs lined up by hand asks first; the menu on the left has
+YTFast's own Radar under Library (G then R), whose songs' and cards'
+menus offer "Not interested".
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp

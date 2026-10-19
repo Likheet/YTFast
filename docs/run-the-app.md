@@ -247,7 +247,7 @@ once a song plays.
 | Q | Open or close the player page (Esc closes it) |
 | F | Full screen on or off, with the player page (Esc leaves it) |
 | + / _ | Like or dislike the song playing |
-| G then H, E, L or , | Home, Explore, Library or Settings |
+| G then H, E, L, R or , | Home, Explore, Library, Radar or Settings |
 | / or Ctrl+F (Cmd+F on a Mac) | Search |
 | ? | This list, in the app |
 | Your keyboard's media keys | Play, pause, next, previous |
@@ -265,8 +265,8 @@ it. F or Esc leaves it, and so does closing the player page.
 (YouTube Music, Premium or Dynamic Background), even out loudness, skip
 songs you dislike (on: disliking the song playing moves on to the next, as
 YouTube Music does), translate lyrics, keep playing when closed, start
-with the computer, the sound, updates, sign out, and where problems are
-noted. **Autoplay**, at the end of Up next, keeps playing songs like the
+with the computer, the sound, Radar's Forget, updates, sign out, and
+where problems are noted. **Autoplay**, at the end of Up next, keeps playing songs like the
 last one when the queue ends.
 
 **Sound**: songs follow each other with nothing between them, as an
@@ -275,6 +275,16 @@ into the next, for up to 12 seconds; songs of one album never fade.
 **Equalizer** (Settings, off at first): ten bands, and presets such as
 Bass Booster, Vocal Booster and Rock. It turns the whole sound down by as
 much as it boosts, so it never distorts.
+
+**Radar** (in the menu on the left, under Library): new music chosen
+for you by YTFast, from what you play. **New to you** has songs you have
+not heard, from the radios of songs you love; **Artists to try**, artists
+like the ones you play; **New from your artists**, their albums and
+singles of this year. The small words above each row say why. Radar
+changes every day. Songs you finish count for them, songs you skip in
+their first seconds or dislike count against; this stays on your
+computer. Don't want something? Its menu (the three dots) on Radar has
+**Not interested**. **Settings**, **Radar**, **Forget** starts it again.
 
 **Discord status** (Settings, off at first): your Discord profile shows
 the song you are playing, its cover and how far into it you are, while
