@@ -205,7 +205,8 @@ const MOODS: [(&str, u32); 8] = [
     ("Sleep", 0x2d3a7a),
 ];
 
-/// The songs whose artist or album is `name` (Radar's new ones too).
+/// The songs whose artist or album is `name` (Radar's new ones too, and
+/// a new single's song).
 fn songs_of(name: &str) -> Vec<Item> {
     (0..SONGS.len())
         .filter(|&i| SONGS[i].1 == name || SONGS[i].2 == name)
@@ -215,7 +216,46 @@ fn songs_of(name: &str) -> Vec<Item> {
                 .filter(|&i| NEW_SONGS[i].1 == name)
                 .map(|i| Item::Track(new_song(i))),
         )
+        .chain(
+            (0..NEW_SINGLES.len())
+                .filter(|&i| NEW_SINGLES[i].0 == name)
+                .map(|i| Item::Track(single_song(i))),
+        )
         .collect()
+}
+
+/// Each favourite's new single in the demo's Radar ("New from your
+/// artists"), one song each: its title and artist.
+const NEW_SINGLES: [(&str, &str); 9] = [
+    ("Brighter Than Neon", "The Paper Kites Club"),
+    ("Postcard Weather", "Ivy Lane"),
+    ("Glass Garden", "Mara Sol"),
+    ("Extra Life", "Pixel Parade"),
+    ("Tidelines", "Coastal Drive"),
+    ("Paper Moons", "June & The Kites"),
+    ("Room Tone", "Echo Room"),
+    ("Signal Fires", "Northern Static"),
+    ("Orchard Lights", "The Wild Orchards"),
+];
+
+/// The song of one of [`NEW_SINGLES`].
+fn single_song(i: usize) -> Track {
+    let (title, artist) = NEW_SINGLES[i];
+    let video_id = format!("demosingle{i:04}");
+    Track {
+        duration_seconds: Some(length(&video_id) as u32),
+        video_id,
+        title: title.into(),
+        artists: artist.into(),
+        album: Some(title.into()),
+        album_id: Some(id_for(title, PageKind::Album)),
+        kind: TrackKind::Song,
+        thumbnail: thumb(title),
+        artist_id: Some(id_for(artist, PageKind::Artist)),
+        playable: true,
+        like: Some(Rating::Indifferent),
+        ..Track::default()
+    }
 }
 
 fn id_for(title: &str, kind: PageKind) -> String {
@@ -562,6 +602,58 @@ const NEW_ARTISTS: [&str; 6] = [
     "Pale Signal",
 ];
 
+/// The made-up artists' genres, for Radar ([`genre`], [`listening`]).
+const GENRES: [(&str, &str); 15] = [
+    ("The Paper Kites Club", "Rock"),
+    ("Ivy Lane", "Pop"),
+    ("Mara Sol", "Pop"),
+    ("Pixel Parade", "Electronic"),
+    ("Coastal Drive", "Rock"),
+    ("June & The Kites", "Pop"),
+    ("Echo Room", "Electronic"),
+    ("Northern Static", "Rock"),
+    ("The Wild Orchards", "Rock"),
+    ("Lumen Drift", "Electronic"),
+    ("Harbour Choir", "Rock"),
+    ("Velvet Robots", "Electronic"),
+    ("Sunset Index", "Pop"),
+    ("Kite Theory", "Pop"),
+    ("Pale Signal", "Rock"),
+];
+
+/// A made-up song's genre, by its artists, as Musixmatch would say it.
+pub fn genre(artists: &str) -> Option<String> {
+    GENRES
+        .iter()
+        .find(|(artist, _)| artists.starts_with(artist))
+        .map(|(_, genre)| genre.to_string())
+}
+
+/// The demo's listener, as Radar notes one: every song of [`SONGS`]
+/// finished this week, the Pop songs most, then the Rock ones, so the
+/// demo's Radar has genres to tell. Made up anew each run, never saved.
+pub fn listening(now: u64) -> ytfast_core::radar::Listening {
+    use ytfast_core::radar::{Ending, Listening};
+    let mut listening = Listening::default();
+    for i in 0..SONGS.len() {
+        let track = song(i);
+        let genre = genre(&track.artists);
+        let times = match genre.as_deref() {
+            Some("Pop") => 3,
+            Some("Rock") => 2,
+            _ => 1,
+        };
+        let length = f64::from(track.duration_seconds.unwrap_or(200));
+        for n in 0..times {
+            let days = ((i + n) % 6) as u64;
+            let when = now.saturating_sub(days * 86_400 + 3_600);
+            listening.played(&track, length, length, Ending::Finished, when);
+        }
+        listening.set_genre(&track.video_id, genre);
+    }
+    listening
+}
+
 /// One of [`NEW_SONGS`], as a row gives it.
 fn new_song(i: usize) -> Track {
     let (title, artist) = NEW_SONGS[i % NEW_SONGS.len()];
@@ -611,6 +703,11 @@ pub fn radar_found(
             let name = artist.name.clone();
             let mut albums: Vec<&str> = SONGS.iter().filter(|s| s.1 == name).map(|s| s.2).collect();
             albums.dedup();
+            // Its albums (the listener played from them), and a new single.
+            let single = NEW_SINGLES
+                .iter()
+                .find(|s| s.1 == name)
+                .map(|(title, _)| card(title, &format!("Single • {year}"), PageKind::Album));
             let releases = albums
                 .into_iter()
                 .map(|album| {
@@ -620,6 +717,7 @@ pub fn radar_found(
                     card.subtitle = year.to_string();
                     Item::Card(card)
                 })
+                .chain(single)
                 .collect();
             let similar = (0..4)
                 .map(|k| {
@@ -637,11 +735,21 @@ pub fn radar_found(
             (artist, page)
         })
         .collect();
+    // Deezer's made-up listeners agree on a song and an artist.
+    use ytfast_core::deezer::{name_key, song_key};
+    let opinion = ytfast_core::deezer::Opinion {
+        artists: [(name_key(NEW_ARTISTS[2]), 2)].into_iter().collect(),
+        songs: [song_key(NEW_SONGS[4].0, NEW_SONGS[4].1)]
+            .into_iter()
+            .collect(),
+        ids: Default::default(),
+    };
     ytfast_core::radar::Found {
         history,
         liked: Vec::new(),
         radios,
         artists,
+        opinion,
     }
 }
 
@@ -792,7 +900,12 @@ fn browse(id: &str) -> Page {
                     }));
                 }
             }
-            let artist = SONGS.iter().find(|s| s.2 == name).map_or("", |s| s.1);
+            let artist = SONGS
+                .iter()
+                .find(|s| s.2 == name)
+                .map(|s| s.1)
+                .or_else(|| NEW_SINGLES.iter().find(|s| s.0 == name).map(|s| s.1))
+                .unwrap_or_default();
             Page {
                 sort: None,
                 header: Some(Header {

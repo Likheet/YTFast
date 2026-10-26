@@ -1,0 +1,279 @@
+{
+ "data": [
+  {
+   "id": 1755281747,
+   "title": "好きだ",
+   "title_short": "好きだ",
+   "duration": 217,
+   "artist": {
+    "id": 108153772,
+    "name": "YOASOBI"
+   },
+   "type": "track"
+  },
+  {
+   "id": 2007556147,
+   "title": "Kawaikute gomen",
+   "title_short": "Kawaikute gomen",
+   "duration": 219,
+   "artist": {
+    "id": 9314266,
+    "name": "HoneyWorks"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1352679272,
+   "title": "もう少しだけ",
+   "title_short": "もう少しだけ",
+   "duration": 220,
+   "artist": {
+    "id": 108153772,
+    "name": "YOASOBI"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3416112701,
+   "title": "Kawaii Kaiwai",
+   "title_short": "Kawaii Kaiwai",
+   "duration": 154,
+   "artist": {
+    "id": 5876902,
+    "name": "Piki"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3561195131,
+   "title": "劇上",
+   "title_short": "劇上",
+   "duration": 198,
+   "artist": {
+    "id": 108153772,
+    "name": "YOASOBI"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1024987702,
+   "title": "Hikoutei",
+   "title_short": "Hikoutei",
+   "duration": 260,
+   "artist": {
+    "id": 12944623,
+    "name": "King Gnu"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1553980112,
+   "title": "Aisai",
+   "title_short": "Aisai",
+   "duration": 256,
+   "artist": {
+    "id": 69128312,
+    "name": "Eve"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3531237021,
+   "title": "だから僕は音楽を辞めた",
+   "title_short": "だから僕は音楽を辞めた",
+   "duration": 242,
+   "artist": {
+    "id": 92503082,
+    "name": "ヨルシカ"
+   },
+   "type": "track"
+  },
+  {
+   "id": 2450277875,
+   "title": "Kaiju no Hanauta",
+   "title_short": "Kaiju no Hanauta",
+   "duration": 224,
+   "artist": {
+    "id": 78505502,
+    "name": "Vaundy"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3418844361,
+   "title": "TURN OVER",
+   "title_short": "TURN OVER",
+   "duration": 215,
+   "artist": {
+    "id": 155448802,
+    "name": "9Lana"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3909983191,
+   "title": "Wind's Anthem (feat. suis From Yorushika)",
+   "title_short": "Wind's Anthem (feat. suis From Yorushika)",
+   "duration": 222,
+   "artist": {
+    "id": 69128312,
+    "name": "Eve"
+   },
+   "type": "track"
+  },
+  {
+   "id": 2914167311,
+   "title": "RED OUT",
+   "title_short": "RED OUT",
+   "duration": 151,
+   "artist": {
+    "id": 5289039,
+    "name": "Kenshi Yonezu"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1562451422,
+   "title": "Zankyosanka",
+   "title_short": "Zankyosanka",
+   "duration": 184,
+   "artist": {
+    "id": 8623006,
+    "name": "Aimer"
+   },
+   "type": "track"
+  },
+  {
+   "id": 2958300821,
+   "title": "Melodrama",
+   "title_short": "Melodrama",
+   "duration": 227,
+   "artist": {
+    "id": 59871352,
+    "name": "natori"
+   },
+   "type": "track"
+  },
+  {
+   "id": 2580315242,
+   "title": "右ポケット",
+   "title_short": "右ポケット",
+   "duration": 162,
+   "artist": {
+    "id": 155448802,
+    "name": "9Lana"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1212802752,
+   "title": "Irokousui",
+   "title_short": "Irokousui",
+   "duration": 250,
+   "artist": {
+    "id": 70459772,
+    "name": "Yoh Kamiyama"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1355416752,
+   "title": "Peace Sign",
+   "title_short": "Peace Sign",
+   "duration": 237,
+   "artist": {
+    "id": 5289039,
+    "name": "Kenshi Yonezu"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3299380931,
+   "title": "KUSUSHIKI",
+   "title_short": "KUSUSHIKI",
+   "duration": 188,
+   "artist": {
+    "id": 8152202,
+    "name": "Mrs. GREEN APPLE"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3017892051,
+   "title": "TAIDADA",
+   "title_short": "TAIDADA",
+   "duration": 226,
+   "artist": {
+    "id": 52778562,
+    "name": "ZUTOMAYO"
+   },
+   "type": "track"
+  },
+  {
+   "id": 2874482532,
+   "title": "Himawari",
+   "title_short": "Himawari",
+   "duration": 259,
+   "artist": {
+    "id": 121146382,
+    "name": "Ado"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1148585612,
+   "title": "Hunch Gray",
+   "title_short": "Hunch Gray",
+   "duration": 249,
+   "artist": {
+    "id": 52778562,
+    "name": "ZUTOMAYO"
+   },
+   "type": "track"
+  },
+  {
+   "id": 3426291611,
+   "title": "OVERNIGHT",
+   "title_short": "OVERNIGHT",
+   "duration": 229,
+   "artist": {
+    "id": 12556256,
+    "name": "THE ORAL CIGARETTES"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1959352047,
+   "title": "Time Left",
+   "title_short": "Time Left",
+   "duration": 230,
+   "artist": {
+    "id": 52778562,
+    "name": "ZUTOMAYO"
+   },
+   "type": "track"
+  },
+  {
+   "id": 1024962302,
+   "title": "Touch off",
+   "title_short": "Touch off",
+   "duration": 258,
+   "artist": {
+    "id": 2503,
+    "name": "UVERworld"
+   },
+   "type": "track"
+  },
+  {
+   "id": 2116558327,
+   "title": "Here",
+   "title_short": "Here",
+   "duration": 263,
+   "artist": {
+    "id": 13626381,
+    "name": "Junna"
+   },
+   "type": "track"
+  }
+ ]
+}

@@ -1,25 +1,32 @@
-//! Radar: YTFast's own recommendations, the left menu's Radar page.
+//! Radar: YTFast's own recommendations, the left menu's Radar page and
+//! its station ([`crate::station`]).
 //!
 //! YouTube finds the songs: a song's radio (what its Up next plays), the
 //! artists an artist's page calls similar ("Fans might also like"), and an
-//! artist's new albums and singles. YTFast chooses among them by what the
+//! artist's new albums and singles. Deezer's listeners give a second
+//! opinion ([`crate::deezer`]). YTFast chooses among them by what the
 //! listener does, noted on the computer only ([`Listening`]): a song
 //! finished, played again or liked counts for it and its artist; one
-//! skipped in its first seconds, or disliked, counts against. Only songs
-//! and artists new to the listener are suggested, at most two of one
-//! artist in a row of the page, never anything marked "Not interested";
-//! and a song that the radios of several favourites suggest ranks above
-//! one that only one suggests.
+//! skipped in its first seconds, or disliked, counts against. Each song's
+//! genre (Musixmatch's, [`crate::genre`]) says which genres the listener
+//! plays, this week and this month ([`Listening::tastes`]), and Radar
+//! mixes what it suggests in the same proportions, eased so that a
+//! smaller genre keeps some room ([`eased`]). Only songs and artists new
+//! to the listener are suggested, never anything marked "Not interested";
+//! and a song that the radios of several favourites (or Deezer's too)
+//! suggest ranks above one that only one suggests.
 //!
 //! [`gather`] asks YouTube (at most ten requests, one at a time, once a
 //! day: as a listener opening a few radios and artists); [`rank`] chooses,
-//! on the computer; [`Radar::page`] lays the result out as rows, as Home's.
+//! on the computer: the station's pool of new songs, "Artists to try" and
+//! "New from your artists"; [`Radar::page`] lays the rows out as Home's.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::deezer::{self, Opinion};
 use crate::innertube::{ApiError, Session};
 use crate::read::{
     Card, CardLook, Item, Page, PageKind, Rating, Section, Shape, Target, Thumb, Track, TrackKind,
@@ -43,19 +50,41 @@ const BRIEF: f64 = 2.0;
 /// Skipped in its first 30 seconds (or first half, for a short song), a
 /// song counts against itself.
 const EARLY: f64 = 30.0;
+/// Before this many seconds (of a song `length` long; 0 when not known),
+/// Next skips a song early.
+pub fn early(length: f64) -> f64 {
+    if length > 0.0 {
+        EARLY.min(length / 2.0)
+    } else {
+        EARLY
+    }
+}
+
 /// Heard to this part of its length, a song counts as finished.
 const MOSTLY: f64 = 0.8;
 /// How fast a play's weight fades: by half in 45 days.
 const HALF_LIFE_DAYS: f64 = 45.0;
-/// Songs, and cards, kept for each row of the page.
-const SONGS_KEPT: usize = 32;
+/// New songs kept for the station, and at most this many of one artist.
+const POOL_KEPT: usize = 200;
+const POOL_PER_ARTIST: usize = 4;
+/// Cards kept for each row of the page.
 const CARDS_KEPT: usize = 16;
-/// Songs, and cards, shown in a row (more come forward as some are played
-/// or marked Not interested).
-const SONGS_SHOWN: usize = 20;
+/// Cards shown in a row (more come forward as some are marked Not
+/// interested).
 const CARDS_SHOWN: usize = 12;
-/// At most this many of one artist in a row.
-const PER_ARTIST: usize = 2;
+/// At most this many of one artist's releases in "New from your artists".
+const RELEASES_PER_ARTIST: usize = 1;
+/// Plays are kept with their dates for this many days (for "this week"
+/// and "this month"), and at most this many of them.
+const LOG_DAYS: u64 = 35;
+const LOG_MOST: usize = 6000;
+/// Plays (or, lately, songs) of a known genre needed to say which genres
+/// the listener plays.
+const KNOWN_ENOUGH: usize = 6;
+/// Genres the page names, and the mixes follow, at most.
+const TOP_GENRES: usize = 4;
+/// What [`Radar`] is made by: one made by an older YTFast is made again.
+pub const RADAR_VERSION: u32 = 2;
 /// Songs of one artist disliked or marked Not interested that leave the
 /// artist out too.
 const ARTIST_AFTER: usize = 3;
@@ -72,7 +101,8 @@ pub fn now() -> u64 {
 }
 
 /// How a song stopped playing, for [`Listening::played`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Ending {
     /// It played to its end (or the next song followed on).
     Finished,
@@ -99,6 +129,9 @@ pub struct Heard {
     pub rating: Option<Rating>,
     /// When it was last played, in seconds since 1970.
     pub last: u64,
+    /// Its genre's family ([`crate::genre::family`]): empty when Musixmatch
+    /// has none for it, `None` until asked.
+    pub genre: Option<String>,
 }
 
 impl Heard {
@@ -120,6 +153,134 @@ impl Heard {
         let days = now.saturating_sub(self.last) as f64 / 86_400.0;
         base.max(0.0) * 0.5f64.powf(days / HALF_LIFE_DAYS)
     }
+}
+
+/// One play, with its date, for what was played when.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Play {
+    /// When it stopped, in seconds since 1970.
+    pub at: u64,
+    /// The song (its video ID).
+    pub id: String,
+    pub ending: Ending,
+    /// How long it was heard, in whole seconds.
+    pub heard: u32,
+}
+
+/// How a play counted ([`Listening::played`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Heard to its end, or nearly.
+    Finished,
+    /// Skipped in its first seconds.
+    Skipped,
+    /// Neither: stopped somewhere in the middle.
+    Played,
+}
+
+/// Over which time the listener's genres are told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Span {
+    Week,
+    Month,
+    /// The record's songs, by how much the listener likes them now (older
+    /// plays have no dates).
+    Lately,
+}
+
+/// The genres the listener plays, over a [`Span`], best first; each with
+/// its share of the plays of a known genre (they add up to 1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tastes {
+    pub span: Span,
+    pub genres: Vec<(String, f64)>,
+}
+
+impl Tastes {
+    /// What the page says of them: "This week you played mostly J-Pop,
+    /// Rock and Hip-Hop". The genres of a tenth or more, at most three
+    /// (the first one, whatever its share).
+    pub fn line(&self) -> String {
+        let named: Vec<String> = self
+            .genres
+            .iter()
+            .enumerate()
+            .filter(|(i, (_, share))| *i == 0 || *share >= 0.1)
+            .take(3)
+            .map(|(_, (genre, _))| genre.clone())
+            .collect();
+        let start = match self.span {
+            Span::Week => "This week you played mostly",
+            Span::Month => "This month you played mostly",
+            Span::Lately => "Lately you play mostly",
+        };
+        format!("{start} {}", listed(&named))
+    }
+}
+
+/// Counts as shares of their sum, best first.
+fn shares(counts: HashMap<String, f64>) -> Vec<(String, f64)> {
+    let sum: f64 = counts.values().sum();
+    let mut shares: Vec<(String, f64)> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 0.0)
+        .map(|(genre, count)| (genre, count / sum))
+        .collect();
+    shares.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    shares
+}
+
+/// The genres' shares eased by their square root, so that the main genre
+/// leads and the others keep some room: of 62%, 21% and 9%, about 51%,
+/// 30% and 19%. Only the first [`TOP_GENRES`] of a twentieth or more; they
+/// add up to 1.
+pub fn eased(genres: &[(String, f64)]) -> Vec<(String, f64)> {
+    let roots: Vec<(String, f64)> = genres
+        .iter()
+        .filter(|(_, share)| *share >= 0.05)
+        .take(TOP_GENRES)
+        .map(|(genre, share)| (genre.clone(), share.sqrt()))
+        .collect();
+    let sum: f64 = roots.iter().map(|(_, root)| root).sum();
+    if sum <= 0.0 {
+        return Vec::new();
+    }
+    roots
+        .into_iter()
+        .map(|(genre, root)| (genre, root / sum))
+        .collect()
+}
+
+/// `places` shared out by `shares` (the largest remainders get the places
+/// left), each genre one at least while places last.
+pub fn split(shares: &[(String, f64)], places: usize) -> Vec<(String, usize)> {
+    let mut given: Vec<(String, usize, f64)> = shares
+        .iter()
+        .map(|(genre, share)| {
+            let exact = share * places as f64;
+            (genre.clone(), exact.floor() as usize, exact.fract())
+        })
+        .collect();
+    let mut left = places.saturating_sub(given.iter().map(|(_, n, _)| n).sum());
+    // One for each genre with none, first.
+    for entry in given.iter_mut() {
+        if left == 0 {
+            break;
+        }
+        if entry.1 == 0 {
+            entry.1 = 1;
+            entry.2 = 0.0;
+            left -= 1;
+        }
+    }
+    let mut order: Vec<usize> = (0..given.len()).collect();
+    order.sort_by(|&a, &b| given[b].2.total_cmp(&given[a].2).then(a.cmp(&b)));
+    if !order.is_empty() {
+        for i in order.into_iter().cycle().take(left) {
+            given[i].1 += 1;
+        }
+    }
+    given.into_iter().map(|(genre, n, _)| (genre, n)).collect()
 }
 
 /// What the listener marked "Not interested" on the Radar page.
@@ -148,6 +309,8 @@ pub struct Listening {
     unwanted_artists: BTreeSet<String>,
     /// Albums and singles, by their pages.
     unwanted_releases: BTreeSet<String>,
+    /// The plays of the last [`LOG_DAYS`] days, oldest first.
+    log: Vec<Play>,
 }
 
 /// The keys an artist is known by: its page (`id:UC...`), and its name
@@ -170,26 +333,29 @@ fn artist_keys(id: Option<&str>, artists: &str) -> Vec<String> {
     keys
 }
 
-fn track_keys(track: &Track) -> Vec<String> {
+pub(crate) fn track_keys(track: &Track) -> Vec<String> {
     artist_keys(track.artist_id.as_deref(), &track.artists)
 }
 
 impl Listening {
     /// A song stopped playing after `heard` seconds of its `length` (0 when
-    /// not known), at `now` (seconds since 1970).
-    pub fn played(&mut self, track: &Track, heard: f64, length: f64, ending: Ending, now: u64) {
+    /// not known), at `now` (seconds since 1970). How it counted, unless it
+    /// was too short to count (a click around).
+    pub fn played(
+        &mut self,
+        track: &Track,
+        heard: f64,
+        length: f64,
+        ending: Ending,
+        now: u64,
+    ) -> Option<Outcome> {
         if track.video_id.is_empty() {
-            return;
+            return None;
         }
-        let early = if length > 0.0 {
-            EARLY.min(length / 2.0)
-        } else {
-            EARLY
-        };
-        let skipped = ending == Ending::Skipped && heard < early;
+        let skipped = ending == Ending::Skipped && heard < early(length);
         let finished = ending == Ending::Finished || (length > 0.0 && heard >= length * MOSTLY);
         if !skipped && !finished && heard < BRIEF {
-            return;
+            return None;
         }
         let song = self.songs.entry(track.video_id.clone()).or_default();
         if !track.title.is_empty() {
@@ -205,18 +371,33 @@ impl Listening {
             song.album_id.clone_from(&track.album_id);
         }
         song.plays += 1;
-        if finished {
+        let outcome = if finished {
             song.finished += 1;
+            Outcome::Finished
         } else if skipped {
             song.skipped += 1;
-        }
+            Outcome::Skipped
+        } else {
+            Outcome::Played
+        };
         song.last = now;
-        self.trim();
+        self.log.push(Play {
+            at: now,
+            id: track.video_id.clone(),
+            ending,
+            heard: heard.max(0.0).round() as u32,
+        });
+        self.trim(now);
+        Some(outcome)
     }
 
     /// Keeps at most [`MOST_SONGS`], letting go of those played longest
-    /// ago.
-    fn trim(&mut self) {
+    /// ago, and the plays of the last [`LOG_DAYS`] (at most [`LOG_MOST`]).
+    fn trim(&mut self, now: u64) {
+        let since = now.saturating_sub(LOG_DAYS * 86_400);
+        self.log.retain(|play| play.at >= since);
+        let over_log = self.log.len().saturating_sub(LOG_MOST);
+        self.log.drain(..over_log);
         let over = self.songs.len().saturating_sub(MOST_SONGS);
         if over == 0 {
             return;
@@ -293,6 +474,159 @@ impl Listening {
             && self.unwanted_songs.is_empty()
             && self.unwanted_artists.is_empty()
             && self.unwanted_releases.is_empty()
+            && self.log.is_empty()
+    }
+
+    /// The plays of the last [`LOG_DAYS`] days, oldest first.
+    pub fn log(&self) -> &[Play] {
+        &self.log
+    }
+
+    /// A song's genre, as Musixmatch gave it (`None`: it has none). True
+    /// when the record changed. A song not in the record is left alone.
+    pub fn set_genre(&mut self, video_id: &str, genre: Option<String>) -> bool {
+        let Some(song) = self.songs.get_mut(video_id) else {
+            return false;
+        };
+        let genre = Some(genre.unwrap_or_default());
+        if song.genre == genre {
+            return false;
+        }
+        song.genre = genre;
+        true
+    }
+
+    /// Whether a song's genre is still to be asked for.
+    pub fn wants_genre(&self, video_id: &str) -> bool {
+        self.songs
+            .get(video_id)
+            .is_some_and(|song| song.genre.is_none())
+    }
+
+    /// The songs liked best whose genre is still to be asked for, at most
+    /// `count` (for songs played before YTFast asked for genres).
+    pub fn missing_genres(&self, count: usize, now: u64) -> Vec<Track> {
+        let mut missing: Vec<(f64, &String, &Heard)> = self
+            .songs
+            .iter()
+            .filter(|(_, song)| song.genre.is_none() && !song.title.is_empty())
+            .map(|(id, song)| (song.weight(now), id, song))
+            .filter(|(weight, _, _)| *weight > 0.0)
+            .collect();
+        missing.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
+        missing
+            .into_iter()
+            .take(count)
+            .map(|(_, id, song)| Track {
+                video_id: id.clone(),
+                title: song.title.clone(),
+                artists: song.artists.clone(),
+                artist_id: song.artist_id.clone(),
+                album_id: song.album_id.clone(),
+                ..Track::default()
+            })
+            .collect()
+    }
+
+    /// Each artist's genre, by its keys ([`artist_keys`]): the one most of
+    /// its songs in the record have.
+    fn artist_genres(&self) -> HashMap<String, String> {
+        let mut counts: HashMap<String, HashMap<&str, usize>> = HashMap::new();
+        for song in self.songs.values() {
+            let Some(genre) = song.genre.as_deref().filter(|g| !g.is_empty()) else {
+                continue;
+            };
+            for key in artist_keys(song.artist_id.as_deref(), &song.artists) {
+                *counts.entry(key).or_default().entry(genre).or_insert(0) += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .filter_map(|(key, genres)| {
+                let best = genres
+                    .into_iter()
+                    .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))?;
+                Some((key, best.0.to_string()))
+            })
+            .collect()
+    }
+
+    /// A song's genre: its own, else the one its artist's other songs have.
+    pub fn genre_for(&self, track: &Track) -> Option<String> {
+        self.genre_with(
+            &self.artist_genres(),
+            &track.video_id,
+            track.artist_id.as_deref(),
+            &track.artists,
+        )
+    }
+
+    fn genre_with(
+        &self,
+        artists: &HashMap<String, String>,
+        video_id: &str,
+        artist_id: Option<&str>,
+        names: &str,
+    ) -> Option<String> {
+        let own = self
+            .songs
+            .get(video_id)
+            .and_then(|song| song.genre.clone())
+            .filter(|genre| !genre.is_empty());
+        own.or_else(|| {
+            artist_keys(artist_id, names)
+                .iter()
+                .find_map(|key| artists.get(key).cloned())
+        })
+    }
+
+    /// The genres the listener plays: this week's when enough of its plays
+    /// have a known genre, else this month's, else the record's songs by
+    /// how much the listener likes them now. Early skips do not count.
+    /// `None` until enough is known.
+    pub fn tastes(&self, now: u64) -> Option<Tastes> {
+        let artists = self.artist_genres();
+        let genre_of = |id: &str| {
+            let song = self.songs.get(id)?;
+            self.genre_with(&artists, id, song.artist_id.as_deref(), &song.artists)
+        };
+        for (span, days) in [(Span::Week, 7), (Span::Month, 30)] {
+            let since = now.saturating_sub(days * 86_400);
+            let mut counts: HashMap<String, f64> = HashMap::new();
+            let mut known = 0;
+            for play in self.log.iter().filter(|p| p.at >= since) {
+                let early = play.ending == Ending::Skipped && f64::from(play.heard) < EARLY;
+                if early {
+                    continue;
+                }
+                if let Some(genre) = genre_of(&play.id) {
+                    *counts.entry(genre).or_insert(0.0) += 1.0;
+                    known += 1;
+                }
+            }
+            if known >= KNOWN_ENOUGH {
+                return Some(Tastes {
+                    span,
+                    genres: shares(counts),
+                });
+            }
+        }
+        let mut weights: HashMap<String, f64> = HashMap::new();
+        let mut known = 0;
+        for (id, song) in &self.songs {
+            let weight = song.weight(now);
+            if weight <= 0.0 {
+                continue;
+            }
+            if let Some(genre) = genre_of(id) {
+                *weights.entry(genre).or_insert(0.0) += weight;
+                known += 1;
+            }
+        }
+        (known >= KNOWN_ENOUGH).then(|| Tastes {
+            span: Span::Lately,
+            genres: shares(weights),
+        })
     }
 
     /// The songs noted, by ID.
@@ -326,9 +660,11 @@ impl Listening {
 
     /// The songs whose radios are asked for, drawn from the listener's
     /// favourites (the day's draw: Radar changes from day to day), one
-    /// per artist; filled from `history` and `liked` (YouTube's) when
-    /// the record has too few.
+    /// per artist, each genre the listener plays its share
+    /// ([`draw_by_genre`]); filled from `history` and `liked` (YouTube's)
+    /// when the record has too few.
     pub fn seeds(&self, history: &[Track], liked: &[Track], now: u64) -> Vec<Seed> {
+        let artists = self.artist_genres();
         let mut best: Vec<Seed> = self
             .songs
             .iter()
@@ -338,6 +674,7 @@ impl Listening {
                 title: song.title.clone(),
                 keys: artist_keys(song.artist_id.as_deref(), &song.artists),
                 weight: song.weight(now),
+                genre: self.genre_with(&artists, id, song.artist_id.as_deref(), &song.artists),
             })
             .filter(|seed| seed.weight > 0.0)
             .collect();
@@ -346,7 +683,15 @@ impl Listening {
                 .total_cmp(&a.weight)
                 .then(a.video_id.cmp(&b.video_id))
         });
-        let mut drawn = draw(one_per_artist(best), SEEDS, now, |s| s.weight);
+        let tastes = self.tastes(now);
+        let mut drawn = draw_by_genre(
+            one_per_artist(best),
+            SEEDS,
+            now,
+            tastes.as_ref(),
+            |s| s.weight,
+            |s| s.genre.as_deref(),
+        );
         // YouTube's, newest first, each less than the last.
         let mut extra = 0.5;
         for track in history.iter().chain(liked) {
@@ -369,6 +714,12 @@ impl Listening {
                 title: track.title.clone(),
                 keys,
                 weight: extra,
+                genre: self.genre_with(
+                    &artists,
+                    &track.video_id,
+                    track.artist_id.as_deref(),
+                    &track.artists,
+                ),
             });
             extra *= 0.9;
         }
@@ -376,9 +727,16 @@ impl Listening {
     }
 
     /// The artists whose pages are asked for: those the listener plays
-    /// most (the day's draw, as [`Listening::seeds`]), filled from
-    /// YouTube's `history` and `liked`. Only artists with a page.
+    /// most (the day's draw, each genre its share, as
+    /// [`Listening::seeds`]), filled from YouTube's `history` and `liked`.
+    /// Only artists with a page.
     pub fn top_artists(&self, history: &[Track], liked: &[Track], now: u64) -> Vec<ArtistSeed> {
+        let genres = self.artist_genres();
+        let genre_of = |id: &str, names: &str| {
+            artist_keys(Some(id), names)
+                .iter()
+                .find_map(|key| genres.get(key).cloned())
+        };
         let mut by_artist: HashMap<String, ArtistSeed> = HashMap::new();
         for song in self.songs.values() {
             let Some(id) = song.artist_id.as_deref().filter(|id| !id.is_empty()) else {
@@ -394,13 +752,22 @@ impl Listening {
                     id: id.to_string(),
                     name: first_artist(&song.artists),
                     weight: 0.0,
+                    genre: genre_of(id, &song.artists),
                 });
             artist.weight += weight;
         }
         let mut best: Vec<ArtistSeed> =
             by_artist.into_values().filter(|a| a.weight > 0.0).collect();
         best.sort_by(|a, b| b.weight.total_cmp(&a.weight).then(a.id.cmp(&b.id)));
-        let mut drawn = draw(best, ARTISTS, now.wrapping_add(1), |a| a.weight);
+        let tastes = self.tastes(now);
+        let mut drawn = draw_by_genre(
+            best,
+            ARTISTS,
+            now.wrapping_add(1),
+            tastes.as_ref(),
+            |a| a.weight,
+            |a| a.genre.as_deref(),
+        );
         let mut extra = 0.5;
         for track in history.iter().chain(liked) {
             if drawn.len() >= ARTISTS {
@@ -416,6 +783,7 @@ impl Listening {
                 id: id.to_string(),
                 name: first_artist(&track.artists),
                 weight: extra,
+                genre: genre_of(id, &track.artists),
             });
             extra *= 0.9;
         }
@@ -445,38 +813,89 @@ fn one_per_artist(best: Vec<Seed>) -> Vec<Seed> {
         .collect()
 }
 
-/// `count` of the first [`DRAWN_FROM`] of `best`, each as likely as its
-/// weight (Efraimidis and Spirakis' draw), in the order drawn; the same
-/// draw all day, another the next.
-fn draw<T>(best: Vec<T>, count: usize, now: u64, weight: impl Fn(&T) -> f64) -> Vec<T> {
-    let mut random = Random::new(now / 86_400);
-    let mut keyed: Vec<(f64, T)> = best
-        .into_iter()
+/// The places (in `weights`, best first) of `count` of the first
+/// [`DRAWN_FROM`], each as likely as its weight (Efraimidis and Spirakis'
+/// draw), in the order drawn; the same draw for the same `day`.
+fn draw_places(weights: &[f64], count: usize, day: u64) -> Vec<usize> {
+    let mut random = Random::new(day);
+    let mut keyed: Vec<(f64, usize)> = weights
+        .iter()
         .take(DRAWN_FROM)
-        .map(|item| {
-            let w = weight(&item).max(1e-9);
-            (random.unit().powf(1.0 / w), item)
-        })
+        .enumerate()
+        .map(|(i, w)| (random.unit().powf(1.0 / w.max(1e-9)), i))
         .collect();
     keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
-    keyed
+    keyed.into_iter().take(count).map(|(_, i)| i).collect()
+}
+
+/// `count` of the first [`DRAWN_FROM`] of `best`, each as likely as its
+/// weight, in the order drawn; the same draw all day, another the next.
+fn draw<T>(best: Vec<T>, count: usize, now: u64, weight: impl Fn(&T) -> f64) -> Vec<T> {
+    let weights: Vec<f64> = best.iter().map(&weight).collect();
+    let places = draw_places(&weights, count, now / 86_400);
+    let mut slots: Vec<Option<T>> = best.into_iter().map(Some).collect();
+    places
         .into_iter()
-        .take(count)
-        .map(|(_, item)| item)
+        .filter_map(|i| slots.get_mut(i).and_then(Option::take))
         .collect()
+}
+
+/// As [`draw`], but each genre the listener plays gets its share of the
+/// `count` places ([`eased`], [`split`]), drawn from its own best; places
+/// a genre cannot fill go to the best of the rest. Without `tastes`, a
+/// plain [`draw`].
+fn draw_by_genre<T>(
+    best: Vec<T>,
+    count: usize,
+    now: u64,
+    tastes: Option<&Tastes>,
+    weight: impl Fn(&T) -> f64,
+    genre: impl Fn(&T) -> Option<&str>,
+) -> Vec<T> {
+    let targets = tastes
+        .map(|t| split(&eased(&t.genres), count))
+        .unwrap_or_default();
+    if targets.is_empty() {
+        return draw(best, count, now, weight);
+    }
+    let mut slots: Vec<Option<T>> = best.into_iter().map(Some).collect();
+    let mut drawn = Vec::new();
+    for (n, (wanted, places)) in targets.iter().enumerate() {
+        let of_genre: Vec<(usize, f64)> = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| {
+                slot.as_ref()
+                    .filter(|item| genre(item) == Some(wanted.as_str()))
+                    .map(|item| (i, weight(item)))
+            })
+            .collect();
+        let weights: Vec<f64> = of_genre.iter().map(|(_, w)| *w).collect();
+        // Another draw for each genre, the same all day.
+        let day = now / 86_400 + (n as u64 + 1) * 1_000_003;
+        for place in draw_places(&weights, *places, day) {
+            if let Some(item) = slots[of_genre[place].0].take() {
+                drawn.push(item);
+            }
+        }
+    }
+    let left = count.saturating_sub(drawn.len());
+    let rest: Vec<T> = slots.into_iter().flatten().collect();
+    drawn.extend(draw(rest, left, now, weight));
+    drawn
 }
 
 /// A small random number maker (xorshift), so that a day's draw is always
 /// the same.
-struct Random(u64);
+pub(crate) struct Random(u64);
 
 impl Random {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Self(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
     }
 
     /// A number in (0, 1).
-    fn unit(&mut self) -> f64 {
+    pub(crate) fn unit(&mut self) -> f64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -484,7 +903,8 @@ impl Random {
     }
 }
 
-/// A song whose radio Radar asks for, and how much the listener likes it.
+/// A song whose radio Radar asks for, how much the listener likes it, and
+/// its genre.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Seed {
     pub video_id: String,
@@ -492,15 +912,17 @@ pub struct Seed {
     /// Its artist's keys ([`artist_keys`]).
     keys: Vec<String>,
     pub weight: f64,
+    pub genre: Option<String>,
 }
 
-/// An artist whose page Radar asks for, and how much the listener plays
-/// them.
+/// An artist whose page Radar asks for, how much the listener plays them,
+/// and their genre.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArtistSeed {
     pub id: String,
     pub name: String,
     pub weight: f64,
+    pub genre: Option<String>,
 }
 
 /// What YouTube said, for [`rank`].
@@ -515,6 +937,9 @@ pub struct Found {
     pub radios: Vec<(Seed, Vec<Track>)>,
     /// The artists whose pages were asked for, each with its page.
     pub artists: Vec<(ArtistSeed, Page)>,
+    /// What Deezer's listeners say about those artists (nothing when it
+    /// did not answer).
+    pub opinion: Opinion,
 }
 
 /// Asks YouTube for what Radar chooses from: the account's History (and,
@@ -584,6 +1009,22 @@ pub struct ArtistPick {
     /// As YouTube writes it ("2.61M monthly audience").
     pub subtitle: String,
     pub thumbnail: Option<Thumb>,
+    /// The genre of the favourites it is like.
+    pub genre: Option<String>,
+}
+
+/// A new song for the station ([`crate::station`]), and why.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pick {
+    pub track: Track,
+    /// How well it suits the listener, before the station's own reckoning.
+    pub score: f64,
+    /// The genre it is played for: that of the favourite whose radio
+    /// suggested it most.
+    pub genre: Option<String>,
+    /// The songs whose radios suggested it (their video IDs).
+    pub seeds: Vec<String>,
 }
 
 /// An album or single in "New from your artists".
@@ -603,22 +1044,29 @@ pub struct ReleasePick {
 }
 
 /// What Radar suggests, as chosen on the day it was made; [`Radar::page`]
-/// shows it, leaving out what has since been played or marked unwanted.
+/// shows it, leaving out what has since been marked unwanted, and the
+/// station ([`crate::station`]) plays from its pool.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Radar {
     /// When it was made, in seconds since 1970.
     pub made: u64,
-    /// "New to you", best first.
-    pub songs: Vec<Track>,
-    /// The songs whose radios suggested them most (for its line).
-    pub because: Vec<String>,
-    /// "Artists to try", best first.
+    /// [`RADAR_VERSION`], when made by this YTFast.
+    pub version: u32,
+    /// The station's new songs, best first.
+    pub pool: Vec<Pick>,
+    /// The songs the listener knew from YouTube (History, Liked Music)
+    /// when it was made: the station leaves them out of new radios too.
+    pub known: Vec<String>,
+    /// "Artists to try", mixed by the genres the listener plays.
     pub artists: Vec<ArtistPick>,
     /// The artists they are like (for its line).
     pub like: Vec<String>,
     /// "New from your artists", newest first.
     pub releases: Vec<ReleasePick>,
+    /// Deezer's IDs of favourite artists (by [`deezer::name_key`]), kept
+    /// for the next Radar.
+    pub deezer_ids: BTreeMap<String, u64>,
 }
 
 /// What the listener knows already: the songs and artists noted, and
@@ -651,7 +1099,7 @@ impl Known {
 
 /// How much a kind of row counts: official songs first, then music
 /// videos, fans' uploads (covers, "slowed + reverb") last.
-fn kind_factor(kind: &TrackKind) -> f64 {
+pub(crate) fn kind_factor(kind: &TrackKind) -> f64 {
     match kind {
         TrackKind::Song => 1.0,
         TrackKind::MusicVideo => 0.8,
@@ -660,31 +1108,52 @@ fn kind_factor(kind: &TrackKind) -> f64 {
     }
 }
 
-/// Chooses what Radar suggests from what YouTube said ([`gather`]), at
-/// `now` (seconds since 1970).
+/// How much more a song counts when Deezer's listeners agree: the song
+/// in a favourite's Deezer radio, its artist related to one.
+const DEEZER_SONG: f64 = 1.6;
+const DEEZER_ARTIST: f64 = 1.25;
+
+/// Chooses what Radar suggests from what YouTube (and Deezer) said
+/// ([`gather`]), at `now` (seconds since 1970).
 pub fn rank(listening: &Listening, found: &Found, now: u64) -> Radar {
     let known = Known::of(listening, found);
-    let (songs, because) = new_songs(listening, found, &known);
-    let (artists, like) = artists_to_try(listening, found, &known);
+    let tastes = listening.tastes(now);
+    let pool = new_songs(listening, found, &known);
+    let (artists, like) = artists_to_try(listening, found, &known, tastes.as_ref());
     let releases = new_releases(listening, found, now);
+    let mut known_songs: Vec<String> = found
+        .history
+        .iter()
+        .chain(&found.liked)
+        .map(|t| t.video_id.clone())
+        .filter(|id| !id.is_empty())
+        .collect();
+    known_songs.sort();
+    known_songs.dedup();
     Radar {
         made: now,
-        songs,
-        because,
+        version: RADAR_VERSION,
+        pool,
+        known: known_songs,
         artists,
         like,
         releases,
+        deezer_ids: found.opinion.ids.clone(),
     }
 }
 
-/// "New to you": the songs the seeds' radios suggest, new to the listener,
-/// each scored by its seed's weight and how near the radio's start it
-/// stands; a song several radios suggest gains half again for each more.
-fn new_songs(listening: &Listening, found: &Found, known: &Known) -> (Vec<Track>, Vec<String>) {
+/// The station's pool: the songs the seeds' radios suggest, new to the
+/// listener, each scored by its seed's weight and how near the radio's
+/// start it stands; a song several radios suggest gains half again for
+/// each more, and more again when Deezer's listeners agree. Each is
+/// played for the genre of the seed that suggested it most.
+fn new_songs(listening: &Listening, found: &Found, known: &Known) -> Vec<Pick> {
     struct Candidate {
         track: Track,
         score: f64,
-        seeds: Vec<usize>,
+        /// Each seed that suggested it (its place in `found.radios`), and
+        /// how much.
+        seeds: Vec<(usize, f64)>,
     }
     let mut candidates: HashMap<String, Candidate> = HashMap::new();
     for (index, (seed, radio)) in found.radios.iter().enumerate() {
@@ -707,8 +1176,9 @@ fn new_songs(listening: &Listening, found: &Found, known: &Known) -> (Vec<Track>
                     seeds: Vec::new(),
                 });
             candidate.score += gain;
-            if !candidate.seeds.contains(&index) {
-                candidate.seeds.push(index);
+            match candidate.seeds.iter_mut().find(|(i, _)| *i == index) {
+                Some((_, part)) => *part += gain,
+                None => candidate.seeds.push((index, gain)),
             }
         }
     }
@@ -716,6 +1186,13 @@ fn new_songs(listening: &Listening, found: &Found, known: &Known) -> (Vec<Track>
         .into_values()
         .map(|mut c| {
             c.score *= 1.0 + 0.5 * (c.seeds.len() as f64 - 1.0);
+            let (artist, song) = found.opinion.agrees(&c.track.title, &c.track.artists);
+            if song {
+                c.score *= DEEZER_SONG;
+            }
+            if artist {
+                c.score *= DEEZER_ARTIST;
+            }
             c
         })
         .collect();
@@ -724,34 +1201,42 @@ fn new_songs(listening: &Listening, found: &Found, known: &Known) -> (Vec<Track>
             .total_cmp(&a.score)
             .then_with(|| a.track.video_id.cmp(&b.track.video_id))
     });
-    let picked = few_per_artist(ranked, SONGS_KEPT, |c| track_keys(&c.track));
-    // The seeds behind most of what was picked, for the row's line.
-    let mut credit = vec![0usize; found.radios.len()];
-    for candidate in &picked {
-        for &seed in &candidate.seeds {
-            credit[seed] += 1;
-        }
-    }
-    let mut order: Vec<usize> = (0..credit.len()).filter(|&i| credit[i] > 0).collect();
-    order.sort_by(|&a, &b| credit[b].cmp(&credit[a]).then(a.cmp(&b)));
-    let because = order
+    few_per_artist(ranked, POOL_KEPT, POOL_PER_ARTIST, |c| track_keys(&c.track))
         .into_iter()
-        .take(2)
-        .map(|i| found.radios[i].0.title.clone())
-        .filter(|title| !title.is_empty())
-        .collect();
-    (picked.into_iter().map(|c| c.track).collect(), because)
+        .map(|c| {
+            let most = c
+                .seeds
+                .iter()
+                .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+                .map(|(i, _)| *i);
+            Pick {
+                genre: most.and_then(|i| found.radios[i].0.genre.clone()),
+                seeds: c
+                    .seeds
+                    .iter()
+                    .map(|(i, _)| found.radios[*i].0.video_id.clone())
+                    .collect(),
+                score: c.score,
+                track: c.track,
+            }
+        })
+        .collect()
 }
 
-/// The first `count` of `ranked`, at most [`PER_ARTIST`] of one artist.
-fn few_per_artist<T>(ranked: Vec<T>, count: usize, keys: impl Fn(&T) -> Vec<String>) -> Vec<T> {
+/// The first `count` of `ranked`, at most `per` of one artist.
+fn few_per_artist<T>(
+    ranked: Vec<T>,
+    count: usize,
+    per: usize,
+    keys: impl Fn(&T) -> Vec<String>,
+) -> Vec<T> {
     let mut per_artist: HashMap<String, usize> = HashMap::new();
     let mut picked = Vec::new();
     for item in ranked {
         let keys = keys(&item);
         if keys
             .iter()
-            .any(|k| per_artist.get(k).copied().unwrap_or(0) >= PER_ARTIST)
+            .any(|k| per_artist.get(k).copied().unwrap_or(0) >= per)
         {
             continue;
         }
@@ -807,16 +1292,20 @@ fn similar_artists(page: &Page) -> Vec<&Card> {
 
 /// "Artists to try": artists the favourite artists' pages call similar,
 /// new to the listener, scored by the favourite's weight and how early its
-/// page lists them; one several pages list gains half again for each more.
+/// page lists them; one several pages list gains half again for each
+/// more, and half again for each favourite Deezer's listeners relate it
+/// to. One row, mixed as the listener's genres are ([`eased`], [`split`]):
+/// each artist counts for the genre of the favourite it is most like.
 fn artists_to_try(
     listening: &Listening,
     found: &Found,
     known: &Known,
+    tastes: Option<&Tastes>,
 ) -> (Vec<ArtistPick>, Vec<String>) {
     struct Candidate {
         pick: ArtistPick,
         score: f64,
-        from: Vec<usize>,
+        from: Vec<(usize, f64)>,
     }
     let seeds: HashSet<&str> = found.artists.iter().map(|(a, _)| a.id.as_str()).collect();
     let mut candidates: HashMap<String, Candidate> = HashMap::new();
@@ -837,13 +1326,16 @@ fn artists_to_try(
                     name: card.title.clone(),
                     subtitle: card.subtitle.clone(),
                     thumbnail: card.thumbnail.clone(),
+                    genre: None,
                 },
                 score: 0.0,
                 from: Vec::new(),
             });
-            candidate.score += artist.weight / (1.0 + place as f64 / 5.0);
-            if !candidate.from.contains(&index) {
-                candidate.from.push(index);
+            let gain = artist.weight / (1.0 + place as f64 / 5.0);
+            candidate.score += gain;
+            match candidate.from.iter_mut().find(|(i, _)| *i == index) {
+                Some((_, part)) => *part += gain,
+                None => candidate.from.push((index, gain)),
             }
         }
     }
@@ -851,6 +1343,13 @@ fn artists_to_try(
         .into_values()
         .map(|mut c| {
             c.score *= 1.0 + 0.5 * (c.from.len() as f64 - 1.0);
+            c.score *= 1.0 + 0.5 * f64::from(found.opinion.names(&c.pick.name));
+            let most = c
+                .from
+                .iter()
+                .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+                .map(|(i, _)| *i);
+            c.pick.genre = most.and_then(|i| found.artists[i].0.genre.clone());
             c
         })
         .collect();
@@ -859,10 +1358,11 @@ fn artists_to_try(
             .total_cmp(&a.score)
             .then_with(|| a.pick.id.cmp(&b.pick.id))
     });
+    let ranked = mixed(ranked, CARDS_KEPT, tastes, |c| c.pick.genre.as_deref());
     let mut credit = vec![0usize; found.artists.len()];
-    for candidate in ranked.iter().take(CARDS_KEPT) {
-        for &from in &candidate.from {
-            credit[from] += 1;
+    for candidate in &ranked {
+        for (from, _) in &candidate.from {
+            credit[*from] += 1;
         }
     }
     let mut order: Vec<usize> = (0..credit.len()).filter(|&i| credit[i] > 0).collect();
@@ -873,18 +1373,65 @@ fn artists_to_try(
         .map(|i| found.artists[i].0.name.clone())
         .filter(|name| !name.is_empty())
         .collect();
-    let picks = ranked
-        .into_iter()
-        .take(CARDS_KEPT)
-        .map(|c| c.pick)
+    (ranked.into_iter().map(|c| c.pick).collect(), like)
+}
+
+/// The first `count` of `ranked` (best first), mixed as the listener's
+/// genres are: each genre its share of the places ([`eased`], [`split`]),
+/// taken in turn, a genre at a time; places a genre cannot fill go to the
+/// best of the rest. Without `tastes`, the first `count`.
+fn mixed<T>(
+    ranked: Vec<T>,
+    count: usize,
+    tastes: Option<&Tastes>,
+    genre: impl Fn(&T) -> Option<&str>,
+) -> Vec<T> {
+    let targets = tastes
+        .map(|t| split(&eased(&t.genres), count))
+        .unwrap_or_default();
+    if targets.is_empty() {
+        return ranked.into_iter().take(count).collect();
+    }
+    let mut slots: Vec<Option<T>> = ranked.into_iter().map(Some).collect();
+    // Each genre's best, as many as its places.
+    let mut groups: Vec<Vec<T>> = targets
+        .iter()
+        .map(|(wanted, places)| {
+            let mut group = Vec::new();
+            for slot in slots.iter_mut() {
+                if group.len() >= *places {
+                    break;
+                }
+                if slot
+                    .as_ref()
+                    .is_some_and(|item| genre(item) == Some(wanted.as_str()))
+                    && let Some(item) = slot.take()
+                {
+                    group.push(item);
+                }
+            }
+            group.reverse();
+            group
+        })
         .collect();
-    (picks, like)
+    let mut picked = Vec::new();
+    while groups.iter().any(|g| !g.is_empty()) {
+        for group in groups.iter_mut() {
+            if let Some(item) = group.pop() {
+                picked.push(item);
+            }
+        }
+    }
+    let left = count.saturating_sub(picked.len());
+    picked.extend(slots.into_iter().flatten().take(left));
+    picked
 }
 
 /// "New from your artists": the favourite artists' albums, EPs and
 /// singles from this year or last, that the listener has not played from,
-/// newest first, then by how much the artist is played; at most
-/// [`PER_ARTIST`] of each.
+/// newest first, then by how much the artist is played; one of each
+/// artist ([`RELEASES_PER_ARTIST`]), and one of a title (an album over an
+/// EP or a single of the same name).
 fn new_releases(listening: &Listening, found: &Found, now: u64) -> Vec<ReleasePick> {
     let this_year = year_of(now);
     let played_albums: HashSet<&str> = listening
@@ -942,13 +1489,21 @@ fn new_releases(listening: &Listening, found: &Found, now: u64) -> Vec<ReleasePi
             }
         }
     }
+    let kind_order = |kind: &str| match kind {
+        "Album" => 0,
+        "EP" => 1,
+        _ => 2,
+    };
     ranked.sort_by(|(wa, a), (wb, b)| {
         b.year
             .cmp(&a.year)
             .then(wb.total_cmp(wa))
+            .then(kind_order(&a.kind).cmp(&kind_order(&b.kind)))
             .then_with(|| a.id.cmp(&b.id))
     });
-    few_per_artist(ranked, CARDS_KEPT, |(_, pick)| {
+    let mut titles: HashSet<String> = HashSet::new();
+    ranked.retain(|(_, pick)| titles.insert(deezer::song_key(&pick.title, &pick.artist)));
+    few_per_artist(ranked, CARDS_KEPT, RELEASES_PER_ARTIST, |(_, pick)| {
         artist_keys(None, &pick.artist)
     })
     .into_iter()
@@ -1003,60 +1558,60 @@ fn listed(names: &[String]) -> String {
 }
 
 impl Radar {
-    /// Made less than a day before `now`.
+    /// Made less than a day before `now`, by this YTFast.
     pub fn fresh(&self, now: u64) -> bool {
-        now >= self.made && now - self.made < FRESH_FOR
+        self.version == RADAR_VERSION && now >= self.made && now - self.made < FRESH_FOR
     }
 
-    /// The page: its rows, leaving out what has since been played in
-    /// YTFast or marked unwanted (what was kept beyond a row's first ones
-    /// comes forward). An empty row is left out.
+    /// The page: its rows, leaving out what has since been marked
+    /// unwanted (what was kept beyond a row's first ones comes forward).
+    /// An empty row is left out. The station's songs are not shown: the
+    /// page's button plays them.
     pub fn page(&self, listening: &Listening) -> Page {
         let mut sections = Vec::new();
-        let songs: Vec<Item> = self
-            .songs
-            .iter()
-            .filter(|track| !listening.knows(&track.video_id) && !listening.unwanted(track))
-            .take(SONGS_SHOWN)
-            .map(|track| Item::Track(track.clone()))
-            .collect();
-        if !songs.is_empty() {
-            let strapline = if self.because.is_empty() {
-                String::new()
-            } else {
-                format!("Because you play {}", listed(&self.because))
-            };
-            sections.push(row("New to you", strapline, songs));
-        }
-        let artists: Vec<Item> = self
+        let shown: Vec<&ArtistPick> = self
             .artists
             .iter()
             .filter(|a| !listening.unwanted_artist(Some(a.id.as_str()), &a.name))
             .take(CARDS_SHOWN)
-            .map(|a| {
-                Item::Card(Card {
-                    title: a.name.clone(),
-                    subtitle: a.subtitle.clone(),
-                    thumbnail: a.thumbnail.clone(),
-                    round: true,
-                    open: Some(Target::Browse {
-                        id: a.id.clone(),
-                        kind: PageKind::Artist,
-                        params: None,
-                    }),
-                    play: None,
-                    podcast: None,
-                    look: CardLook::default(),
-                })
-            })
             .collect();
-        if !artists.is_empty() {
-            let strapline = if self.like.is_empty() {
-                String::new()
-            } else {
+        if !shown.is_empty() {
+            let mut genres: Vec<String> = Vec::new();
+            for artist in &shown {
+                if let Some(genre) = &artist.genre
+                    && !genres.contains(genre)
+                {
+                    genres.push(genre.clone());
+                }
+            }
+            genres.truncate(3);
+            let strapline = if !genres.is_empty() {
+                format!("In {}", listed(&genres))
+            } else if !self.like.is_empty() {
                 format!("Like {}", listed(&self.like))
+            } else {
+                String::new()
             };
-            sections.push(row("Artists to try", strapline, artists));
+            let cards = shown
+                .into_iter()
+                .map(|a| {
+                    Item::Card(Card {
+                        title: a.name.clone(),
+                        subtitle: a.subtitle.clone(),
+                        thumbnail: a.thumbnail.clone(),
+                        round: true,
+                        open: Some(Target::Browse {
+                            id: a.id.clone(),
+                            kind: PageKind::Artist,
+                            params: None,
+                        }),
+                        play: None,
+                        podcast: None,
+                        look: CardLook::default(),
+                    })
+                })
+                .collect();
+            sections.push(row("Artists to try", strapline, cards));
         }
         let releases: Vec<Item> = self
             .releases
@@ -1098,6 +1653,14 @@ impl Radar {
             sections,
             sort: None,
         }
+    }
+
+    /// The station's songs still new to the listener.
+    pub fn songs_left(&self, listening: &Listening) -> usize {
+        self.pool
+            .iter()
+            .filter(|p| !listening.knows(&p.track.video_id) && !listening.unwanted(&p.track))
+            .count()
     }
 }
 
@@ -1182,7 +1745,22 @@ mod tests {
             title: id.to_uppercase(),
             keys: artist_keys(Some(format!("UC{artist}").as_str()), artist),
             weight,
+            genre: None,
         }
+    }
+
+    /// A listener who finished songs of these genres this week, each of
+    /// another artist (`{genre}{n}`).
+    fn listener(genres: &[(&str, usize)]) -> Listening {
+        let mut listening = Listening::default();
+        for (genre, count) in genres {
+            for n in 0..*count {
+                let track = song(&format!("{genre}-song{n}"), &format!("{genre}{n}"));
+                finished(&mut listening, &track, 1, NOW - DAY);
+                listening.set_genre(&track.video_id, Some(genre.to_string()));
+            }
+        }
+        listening
     }
 
     #[test]
@@ -1306,7 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn new_to_you_is_new_official_and_agreed_on() {
+    fn the_pool_is_new_official_and_agreed_on() {
         let mut listening = Listening::default();
         let known = song("known", "Z");
         finished(&mut listening, &known, 1, NOW);
@@ -1316,11 +1894,13 @@ mod tests {
         liked.like = Some(Rating::Like);
         let mut gone = song("gone", "G");
         gone.playable = false;
+        let mut first = seed("s1", "S", 1.0);
+        first.genre = Some("J-Pop".into());
         let found = Found {
             history: vec![song("history", "H")],
             radios: vec![
                 (
-                    seed("s1", "S", 1.0),
+                    first,
                     vec![
                         song("s1", "S"),
                         song("only1", "X"),
@@ -1340,31 +1920,66 @@ mod tests {
             ..Found::default()
         };
         let radar = rank(&listening, &found, NOW);
-        let ids: Vec<&str> = radar.songs.iter().map(|t| t.video_id.as_str()).collect();
+        let ids: Vec<&str> = radar
+            .pool
+            .iter()
+            .map(|p| p.track.video_id.as_str())
+            .collect();
         // Suggested by both radios: first, though late in the first.
         assert_eq!(ids[0], "both", "{ids:?}");
+        assert_eq!(radar.pool[0].seeds, ["s1", "s2"]);
         for left_out in ["s1", "known", "history", "liked", "gone"] {
             assert!(!ids.contains(&left_out), "{left_out}: {ids:?}");
         }
         // A fan's upload last.
         assert_eq!(ids.last(), Some(&"fan"), "{ids:?}");
-        assert_eq!(radar.because, ["S1", "S2"]);
+        // Each is played for its seed's genre.
+        let only1 = radar.pool.iter().find(|p| p.track.video_id == "only1");
+        assert_eq!(only1.unwrap().genre.as_deref(), Some("J-Pop"));
+        assert_eq!(radar.known, ["history"]);
+        assert_eq!(radar.version, RADAR_VERSION);
+        assert_eq!(radar.songs_left(&listening), ids.len());
     }
 
     #[test]
-    fn at_most_two_of_one_artist_in_a_row() {
+    fn deezers_listeners_agreeing_count() {
         let listening = Listening::default();
-        let radio: Vec<Track> = (0..6).map(|n| song(&format!("x{n}"), "X")).collect();
+        let radio = vec![song("plain", "P"), song("artist", "Q"), song("both", "R")];
+        let opinion = Opinion {
+            artists: HashMap::from([(deezer::name_key("Q"), 1), (deezer::name_key("R"), 1)]),
+            songs: HashSet::from([deezer::song_key("BOTH", "R")]),
+            ids: BTreeMap::from([("s".to_string(), 7)]),
+        };
+        let found = Found {
+            radios: vec![(seed("s", "S", 1.0), radio)],
+            opinion,
+            ..Found::default()
+        };
+        let radar = rank(&listening, &found, NOW);
+        let ids: Vec<&str> = radar
+            .pool
+            .iter()
+            .map(|p| p.track.video_id.as_str())
+            .collect();
+        // Later in YouTube's radio, but Deezer's listeners agree.
+        assert_eq!(ids, ["both", "artist", "plain"]);
+        assert_eq!(radar.deezer_ids.get("s"), Some(&7));
+    }
+
+    #[test]
+    fn the_pool_keeps_a_few_of_each_artist() {
+        let listening = Listening::default();
+        let radio: Vec<Track> = (0..8).map(|n| song(&format!("x{n}"), "X")).collect();
         let found = Found {
             radios: vec![(seed("s", "S", 1.0), radio)],
             ..Found::default()
         };
         let radar = rank(&listening, &found, NOW);
-        assert_eq!(radar.songs.len(), PER_ARTIST);
+        assert_eq!(radar.pool.len(), POOL_PER_ARTIST);
     }
 
     #[test]
-    fn not_interested_leaves_out_the_song_then_its_artist() {
+    fn songs_left_leave_out_what_is_played_or_unwanted() {
         let mut listening = Listening::default();
         let radio: Vec<Track> = (0..4)
             .map(|n| song(&format!("x{n}"), &format!("X{}", n / 2)))
@@ -1375,28 +1990,17 @@ mod tests {
             ..Found::default()
         };
         let radar = rank(&listening, &found, NOW);
-        let shown = |listening: &Listening| -> Vec<String> {
-            radar.page(listening).sections[0]
-                .tracks()
-                .into_iter()
-                .map(|t| t.video_id)
-                .collect()
-        };
-        assert!(shown(&listening).contains(&"x0".to_string()));
+        assert_eq!(radar.songs_left(&listening), 7);
         listening.not_interested(&Unwanted::Song(song("x0", "X0")));
-        assert!(!shown(&listening).contains(&"x0".to_string()));
-        assert!(
-            shown(&listening).contains(&"x1".to_string()),
-            "its artist stays"
-        );
+        assert_eq!(radar.songs_left(&listening), 6, "its artist stays");
         // Three of one artist's songs disliked or unwanted: the artist goes.
         for n in 0..ARTIST_AFTER {
             listening.rated(&song(&format!("old{n}"), "Y"), Rating::Dislike);
         }
-        assert!(!shown(&listening).iter().any(|id| id.starts_with('y')));
+        assert_eq!(radar.songs_left(&listening), 3);
         // A song played since is no longer new.
         listening.played(&song("x2", "X1"), 100.0, 100.0, Ending::Finished, NOW);
-        assert!(!shown(&listening).contains(&"x2".to_string()));
+        assert_eq!(radar.songs_left(&listening), 2);
     }
 
     #[test]
@@ -1416,6 +2020,7 @@ mod tests {
             id: format!("UC{name}"),
             name: name.to_string(),
             weight: 1.0,
+            genre: None,
         };
         let found = Found {
             artists: vec![
@@ -1465,6 +2070,7 @@ mod tests {
                     id: "UCA".into(),
                     name: "A".into(),
                     weight: 1.0,
+                    genre: None,
                 },
                 Page {
                     sections: vec![
@@ -1493,9 +2099,8 @@ mod tests {
         };
         let radar = rank(&listening, &found, NOW);
         let titles: Vec<&str> = radar.releases.iter().map(|r| r.title.as_str()).collect();
-        // Newest first; two of one artist at most.
-        assert_eq!(titles, ["Fresh", "Short"]);
-        assert_eq!(radar.releases[1].kind, "EP");
+        // The newest; one of each artist.
+        assert_eq!(titles, ["Fresh"]);
         assert_eq!(
             radar.releases[0].playlist_id.as_deref(),
             Some("OLAK5uy_Fresh")
@@ -1513,29 +2118,293 @@ mod tests {
     }
 
     #[test]
+    fn one_release_of_a_title() {
+        let listening = Listening::default();
+        let releases = |name: &str, cards: Vec<Item>| {
+            (
+                ArtistSeed {
+                    id: format!("UC{name}"),
+                    name: name.to_string(),
+                    weight: 1.0,
+                    genre: None,
+                },
+                Page {
+                    sections: vec![Section {
+                        title: "Singles & EPs".into(),
+                        items: cards,
+                        ..Section::default()
+                    }],
+                    ..Page::default()
+                },
+            )
+        };
+        let mut single = release_card("Same Song", "Single \u{2022} 2026");
+        if let Item::Card(card) = &mut single {
+            card.open = Some(Target::Browse {
+                id: "MPREb_single".into(),
+                kind: PageKind::Album,
+                params: None,
+            });
+        }
+        let found = Found {
+            artists: vec![
+                releases(
+                    "A",
+                    vec![
+                        single,
+                        release_card("Same Song (Deluxe)", "EP \u{2022} 2026"),
+                    ],
+                ),
+                releases("B", vec![release_card("Other", "Single \u{2022} 2026")]),
+            ],
+            ..Found::default()
+        };
+        let radar = rank(&listening, &found, NOW);
+        let shown: Vec<(&str, &str)> = radar
+            .releases
+            .iter()
+            .map(|r| (r.title.as_str(), r.kind.as_str()))
+            .collect();
+        // The EP of the same name stands for its single.
+        assert_eq!(shown, [("Same Song (Deluxe)", "EP"), ("Other", "Single")]);
+    }
+
+    #[test]
     fn the_page_says_why_and_leaves_out_empty_rows() {
+        let pick = |name: &str, genre: Option<&str>| ArtistPick {
+            id: format!("UC{name}"),
+            name: name.to_string(),
+            genre: genre.map(str::to_string),
+            ..ArtistPick::default()
+        };
         let radar = Radar {
             made: NOW,
-            songs: vec![song("n", "N")],
-            because: vec!["Lemon".into(), "Idol".into()],
+            version: RADAR_VERSION,
+            artists: vec![pick("N", None)],
+            like: vec!["Lemon".into(), "Idol".into()],
             ..Radar::default()
         };
         let page = radar.page(&Listening::default());
         assert_eq!(page.sections.len(), 1);
-        assert_eq!(page.sections[0].title, "New to you");
-        assert_eq!(
-            page.sections[0].strapline,
-            "Because you play Lemon and Idol"
-        );
+        assert_eq!(page.sections[0].title, "Artists to try");
+        assert_eq!(page.sections[0].strapline, "Like Lemon and Idol");
         assert_eq!(page.sections[0].shape, Shape::Carousel);
+        let genres = Radar {
+            artists: vec![
+                pick("A", Some("J-Pop")),
+                pick("B", Some("Rock")),
+                pick("C", Some("J-Pop")),
+            ],
+            ..radar.clone()
+        };
+        assert_eq!(
+            genres.page(&Listening::default()).sections[0].strapline,
+            "In J-Pop and Rock"
+        );
         assert!(radar.fresh(NOW + FRESH_FOR - 1));
         assert!(!radar.fresh(NOW + FRESH_FOR));
+        // One made by an older YTFast is made again.
+        let older = Radar {
+            version: 0,
+            ..radar.clone()
+        };
+        assert!(!older.fresh(NOW));
         assert!(
             Radar::default()
                 .page(&Listening::default())
                 .sections
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn plays_are_kept_with_their_dates_for_a_while() {
+        let mut listening = Listening::default();
+        let a = song("a", "A");
+        assert_eq!(
+            listening.played(&a, 30.0, 200.0, Ending::Stopped, NOW - 40 * DAY),
+            Some(Outcome::Played)
+        );
+        assert_eq!(
+            listening.played(&a, 3.0, 200.0, Ending::Skipped, NOW - DAY),
+            Some(Outcome::Skipped)
+        );
+        assert_eq!(
+            listening.played(&a, 200.0, 200.0, Ending::Finished, NOW),
+            Some(Outcome::Finished)
+        );
+        assert_eq!(listening.played(&a, 1.0, 200.0, Ending::Stopped, NOW), None);
+        // The play 40 days old is let go of; the song's counts stay.
+        let log: Vec<(u64, Ending, u32)> = listening
+            .log()
+            .iter()
+            .map(|p| (p.at, p.ending, p.heard))
+            .collect();
+        assert_eq!(
+            log,
+            [
+                (NOW - DAY, Ending::Skipped, 3),
+                (NOW, Ending::Finished, 200)
+            ]
+        );
+        assert_eq!(listening.songs()["a"].plays, 3);
+    }
+
+    #[test]
+    fn genres_are_noted_and_asked_for() {
+        let mut listening = Listening::default();
+        let loved = song("loved", "A");
+        let other = song("other", "A");
+        let fresh = song("fresh", "B");
+        finished(&mut listening, &loved, 3, NOW);
+        finished(&mut listening, &other, 1, NOW);
+        finished(&mut listening, &fresh, 2, NOW);
+        assert!(listening.wants_genre("loved"));
+        let missing: Vec<String> = listening
+            .missing_genres(2, NOW)
+            .into_iter()
+            .map(|t| t.video_id)
+            .collect();
+        assert_eq!(missing, ["loved", "fresh"], "the best liked first");
+        assert!(listening.set_genre("loved", Some("J-Pop".into())));
+        assert!(!listening.set_genre("loved", Some("J-Pop".into())));
+        // None known: asked no more, and of no genre.
+        assert!(listening.set_genre("fresh", None));
+        assert!(!listening.wants_genre("loved") && !listening.wants_genre("fresh"));
+        assert!(!listening.set_genre("unknown", Some("Rock".into())));
+        // A song of no genre takes its artist's.
+        assert_eq!(listening.genre_for(&other).as_deref(), Some("J-Pop"));
+        assert_eq!(listening.genre_for(&fresh), None);
+    }
+
+    #[test]
+    fn tastes_say_this_week_else_this_month_else_lately() {
+        let mut listening = listener(&[("J-Pop", 6), ("Rock", 2)]);
+        let tastes = listening.tastes(NOW).unwrap();
+        assert_eq!(tastes.span, Span::Week);
+        assert_eq!(tastes.genres[0], ("J-Pop".to_string(), 0.75));
+        assert_eq!(tastes.line(), "This week you played mostly J-Pop and Rock");
+        // Ten days on, the plays are this month's.
+        assert_eq!(listening.tastes(NOW + 10 * DAY).unwrap().span, Span::Month);
+        // Forty days on, the record's songs by how much they are liked.
+        assert_eq!(listening.tastes(NOW + 40 * DAY).unwrap().span, Span::Lately);
+        // Early skips do not count.
+        for n in 0..10 {
+            let track = song(&format!("skip{n}"), &format!("Skip{n}"));
+            listening.played(&track, 2.0, 200.0, Ending::Skipped, NOW);
+            listening.set_genre(&track.video_id, Some("Metal".into()));
+        }
+        assert_eq!(listening.tastes(NOW).unwrap().genres.len(), 2);
+        // Too little known: nothing said.
+        assert_eq!(listener(&[("J-Pop", 3)]).tastes(NOW), None);
+        let one = Tastes {
+            span: Span::Lately,
+            genres: vec![("J-Pop".into(), 0.95), ("Rock".into(), 0.05)],
+        };
+        assert_eq!(one.line(), "Lately you play mostly J-Pop");
+    }
+
+    #[test]
+    fn shares_are_eased_and_split() {
+        let genres = vec![
+            ("J-Pop".to_string(), 0.62),
+            ("Rock".to_string(), 0.21),
+            ("Hip-Hop".to_string(), 0.09),
+            ("Jazz".to_string(), 0.04),
+            ("Metal".to_string(), 0.04),
+        ];
+        let mix = eased(&genres);
+        let shares: Vec<i64> = mix
+            .iter()
+            .map(|(_, s)| (s * 100.0).round() as i64)
+            .collect();
+        assert_eq!(shares, [51, 30, 19], "{mix:?}");
+        assert_eq!(
+            split(&mix, 12),
+            [
+                ("J-Pop".to_string(), 6),
+                ("Rock".to_string(), 4),
+                ("Hip-Hop".to_string(), 2)
+            ]
+        );
+        // Few places: one each while they last.
+        assert_eq!(
+            split(&mix, 2),
+            [
+                ("J-Pop".to_string(), 1),
+                ("Rock".to_string(), 1),
+                ("Hip-Hop".to_string(), 0)
+            ]
+        );
+        assert!(eased(&[]).is_empty());
+        assert!(split(&[], 4).is_empty());
+    }
+
+    #[test]
+    fn seeds_and_artists_follow_the_genres() {
+        // Mostly J-Pop, some Rock (eased: 61% and 39%): of four seeds, two
+        // of each, the larger remainder rounded up.
+        let listening = listener(&[("J-Pop", 10), ("Rock", 4)]);
+        let seeds = listening.seeds(&[], &[], NOW);
+        let genre_count = |genre: &str| {
+            seeds
+                .iter()
+                .filter(|s| s.genre.as_deref() == Some(genre))
+                .count()
+        };
+        assert_eq!((genre_count("J-Pop"), genre_count("Rock")), (2, 2));
+        let artists = listening.top_artists(&[], &[], NOW);
+        let rock = artists
+            .iter()
+            .filter(|a| a.genre.as_deref() == Some("Rock"))
+            .count();
+        assert_eq!((artists.len(), rock), (ARTISTS, 2));
+    }
+
+    #[test]
+    fn artists_to_try_are_mixed_by_genre() {
+        let listening = listener(&[("J-Pop", 8), ("Rock", 2)]);
+        let page = |names: Vec<String>| Page {
+            sections: vec![Section {
+                title: "Fans might also like".into(),
+                items: names.iter().map(|n| artist_card(n)).collect(),
+                shape: Shape::Carousel,
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        let artist = |name: &str, weight: f64, genre: &str| ArtistSeed {
+            id: format!("UC{name}"),
+            name: name.to_string(),
+            weight,
+            genre: Some(genre.to_string()),
+        };
+        // The J-Pop favourite weighs far more: alone, it would fill the row.
+        let found = Found {
+            artists: vec![
+                (
+                    artist("Jfav", 10.0, "J-Pop"),
+                    page((0..20).map(|n| format!("NewJ{n}")).collect()),
+                ),
+                (
+                    artist("Rfav", 1.0, "Rock"),
+                    page((0..20).map(|n| format!("NewR{n}")).collect()),
+                ),
+            ],
+            ..Found::default()
+        };
+        let radar = rank(&listening, &found, NOW);
+        let genres: Vec<&str> = radar
+            .artists
+            .iter()
+            .map(|a| a.genre.as_deref().unwrap_or("?"))
+            .collect();
+        assert_eq!(radar.artists.len(), CARDS_KEPT);
+        let rock = genres.iter().filter(|g| **g == "Rock").count();
+        // J-Pop 80%, Rock 20%: eased, 67% and 33%, of 16 places.
+        assert_eq!(rock, 5, "{genres:?}");
+        // Taken in turn, so the row is mixed from its start.
+        assert_eq!(genres[..2], ["J-Pop", "Rock"]);
     }
 
     #[test]
@@ -1555,6 +2424,7 @@ mod tests {
     fn the_record_keeps_through_saving() {
         let mut listening = Listening::default();
         finished(&mut listening, &song("a", "A"), 2, NOW);
+        listening.set_genre("a", Some("J-Pop".into()));
         listening.not_interested(&Unwanted::Release("MPREb_x".into()));
         let saved = serde_json::to_string(&listening).unwrap();
         let read: Listening = serde_json::from_str(&saved).unwrap();

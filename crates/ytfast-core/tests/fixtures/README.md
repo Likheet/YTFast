@@ -1,7 +1,7 @@
 # Test fixtures
 
 Replies from YouTube Music's internal API, used to test the readers in
-`src/read/`.
+`src/read/`, and from Deezer's public API, for `src/deezer.rs`.
 
 | File | Source |
 |---|---|
@@ -18,6 +18,7 @@ Replies from YouTube Music's internal API, used to test the readers in
 | `search_synthetic.json` | Written by hand in the search layout (top result card, song and album shelves). Not a real reply. |
 | `search.json` | Real search reply (October 2026), signed out, for "coldplay": the top result card (an artist, its three songs and its Shuffle and Mix buttons), then one result per `itemSectionRenderer`. Trimmed to the card and the first six results, with tracking data dropped and at most two sizes of each picture. |
 | `search_suggestions.json` | Real `music/get_search_suggestions` reply (October 2026), signed out, for "coldp": six suggestions, then an artist and a song with pictures. Trimmed to those two rows, with tracking data and the song's menu dropped. |
+| `deezer_search.json`, `deezer_related.json`, `deezer_radio.json` | Real Deezer replies (27 October 2026) about YOASOBI: `search/artist`, `artist/{id}/related` (12 artists) and `artist/{id}/radio` (25 songs). Public data, asked with no key. Trimmed to the fields read: IDs, names, titles. |
 | `next_synthetic.json` | Written by hand in the Up next layout ytmusicapi reads (`playlistPanelRenderer`, with a song/video pair and an unplayable row), with a queue header ("Playing from") in the shape the live page shows. Not a real reply. |
 
 Trimming kept the structure the readers walk and dropped tracking blobs,

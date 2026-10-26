@@ -223,6 +223,17 @@ there, not in `App::ui`.
   per play, as its report is finished); whatever ends a song in a new way
   sets `Playback::ending` first (`Finished`, `Skipped`), or it counts as
   stopped. Radar's limits on requests are in AGENTS.md's list: keep them.
+- **Radar's station owns its queue.** While the queue playing is the one
+  `App::play_radar` made (`StationRun::generation`), `App::ask_for_more`
+  asks the station, never YouTube's Up next, and a reaction steers it
+  where it happens: a like or dislike in `Action::Rate`, an early skip in
+  `Action::Next` before the next song starts, a song heard to its end in
+  `App::note_play` (that one only leans, so the song made ready ahead
+  stays). Steering takes the station's songs still to come out
+  (`Queue::take_coming`, never songs lined up by hand) and picks again.
+  Don't steer from inside `App::start_from`'s work: `note_play` runs
+  there, which is why it never chooses again. A station radio's answer
+  carries the station's number; one for another station is dropped.
 - **The equalizer runs on the sound device's thread.** Nothing there may
   wait: `eq::Processor` takes new settings with `try_lock` and keeps the
   old ones a block longer when the window holds the lock.

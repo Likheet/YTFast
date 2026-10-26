@@ -10,8 +10,12 @@
 //! - [`read`]: reading YouTube's replies (the only place that does), and
 //!   the page model the app draws.
 //! - [`lyrics`]: lyrics, and LRCLIB for songs YouTube has none for.
-//! - [`musixmatch`]: lyrics timed word by word, and people's translations.
+//! - [`musixmatch`]: lyrics timed word by word, people's translations, and
+//!   each song's genre ([`genre`] names its family).
 //! - [`translate`]: lyrics in another language and in Latin letters.
+//! - [`radar`], [`station`] and [`deezer`]: Radar, YTFast's own
+//!   recommendations, its station, and Deezer's listeners as a second
+//!   opinion.
 //! - [`playreport`]: telling YouTube what was played (History, mixes).
 //! - [`direct`] and [`solver`]: finding a song's audio the website's way
 //!   (the fast way), with yt-dlp's challenge solver kept running in Deno.
@@ -28,8 +32,10 @@
 pub mod audio;
 pub mod auth;
 pub mod cookies;
+pub mod deezer;
 pub mod direct;
 pub mod eq;
+pub mod genre;
 pub mod helpers;
 pub mod innertube;
 pub mod library;
@@ -42,6 +48,7 @@ pub mod radar;
 pub mod read;
 pub mod redact;
 pub mod solver;
+pub mod station;
 pub mod stream;
 pub mod translate;
 pub mod video;

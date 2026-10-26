@@ -2,7 +2,7 @@
 //! runtime of its own, so the window never waits. The window sends
 //! [`Request`]s and reads [`Event`]s each frame.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -157,12 +157,26 @@ pub enum Request {
         play: bool,
     },
     /// Make Radar: ask YouTube for what it chooses from (at most ten
-    /// requests, one at a time) and choose, by `listening`. `build` is
-    /// given back with the answer ([`Event::Radar`]), so a late one is
-    /// known.
+    /// requests, one at a time), and Deezer for its listeners' opinion of
+    /// the favourite artists (at most three requests each, `deezer_ids`
+    /// saving the searches), and choose, by `listening`. `build` is given
+    /// back with the answer ([`Event::Radar`]), so a late one is known.
     Radar {
         build: u64,
         listening: Box<ytfast_core::radar::Listening>,
+        deezer_ids: BTreeMap<String, u64>,
+    },
+    /// A song's genre, from Musixmatch (one request), for Radar
+    /// ([`Event::Genre`]).
+    Genre(Track),
+    /// The genres of songs played before YTFast asked for genres, one at a
+    /// time, a second and a half apart.
+    Genres(Vec<Track>),
+    /// The radio of a song played in Radar's station (one request), for
+    /// the station `station` ([`Event::StationRadio`]).
+    StationRadio {
+        station: u64,
+        video_id: String,
     },
     /// What plays after a song (its playlist, or a radio). `queue` is the
     /// queue it is asked for ([`crate::queue::Queue::generation`]), given
@@ -369,6 +383,21 @@ pub enum Event {
     Radar {
         build: u64,
         result: Result<ytfast_core::radar::Radar, String>,
+    },
+    /// A song's genre ([`Request::Genre`]): `None` when Musixmatch has
+    /// none. Not `settled` when it could not be asked (Musixmatch resting,
+    /// the network): it may be asked again later.
+    Genre {
+        video_id: String,
+        genre: Option<String>,
+        settled: bool,
+    },
+    /// The radio of a song played in Radar's station
+    /// ([`Request::StationRadio`]).
+    StationRadio {
+        station: u64,
+        video_id: String,
+        result: Result<Vec<Track>, String>,
     },
     UpNext {
         video_id: String,
@@ -720,9 +749,11 @@ struct Shared {
     /// Counts sign-ins and sign-outs: a session's renewer reads the
     /// browser again only while its sign-in is the current one.
     sign_ins: Arc<std::sync::atomic::AtomicU64>,
-    /// Lyrics timed word by word, and people's translations (none in the
-    /// demo, or when the client cannot be made).
+    /// Lyrics timed word by word, people's translations, and songs'
+    /// genres (none in the demo, or when the client cannot be made).
     musixmatch: Option<ytfast_core::musixmatch::Musixmatch>,
+    /// Deezer's listeners, Radar's second opinion (none in the demo).
+    deezer: Option<ytfast_core::deezer::Deezer>,
     /// Google Translate's client, made the first time lyrics are
     /// translated (`translate::client`).
     translator: std::sync::OnceLock<reqwest::Client>,
@@ -770,6 +801,7 @@ async fn serve(
         pictures_asked: std::sync::atomic::AtomicU64::new(0),
         sign_ins: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         musixmatch,
+        deezer: (!demo).then(|| ytfast_core::deezer::Deezer::new(net::api_client())),
         translator: std::sync::OnceLock::new(),
     });
     // Rest the solver when YtFast is not being used.
@@ -884,7 +916,21 @@ async fn serve(
                     musixmatch,
                 } => translate(&shared, video_id, lines, musixmatch).await,
                 Request::Related(video_id) => related(&shared, video_id).await,
-                Request::Radar { build, listening } => radar(&shared, build, *listening).await,
+                Request::Radar {
+                    build,
+                    listening,
+                    deezer_ids,
+                } => radar(&shared, build, *listening, deezer_ids).await,
+                Request::Genre(track) => genre(&shared, track).await,
+                Request::Genres(tracks) => {
+                    for track in tracks {
+                        genre(&shared, track).await;
+                        tokio::time::sleep(GENRES_PAUSE).await;
+                    }
+                }
+                Request::StationRadio { station, video_id } => {
+                    station_radio(&shared, station, video_id).await;
+                }
                 Request::Details(video_id) => song_started(&shared, video_id).await,
                 Request::Video { entry, video_id } => video(&shared, entry, video_id).await,
                 // Queued above, in order.
@@ -954,6 +1000,16 @@ fn failure_for(request: &Request) -> Option<Event> {
         Request::Related(video_id) => Event::Related(video_id.clone(), Err(failed())),
         Request::Radar { build, .. } => Event::Radar {
             build: *build,
+            result: Err(failed()),
+        },
+        Request::Genre(track) => Event::Genre {
+            video_id: track.video_id.clone(),
+            genre: None,
+            settled: false,
+        },
+        Request::StationRadio { station, video_id } => Event::StationRadio {
+            station: *station,
+            video_id: video_id.clone(),
             result: Err(failed()),
         },
         Request::Image(url) => Event::Image(url.clone(), None),
@@ -1867,9 +1923,16 @@ async fn lyrics(
             album: album.as_deref(),
             duration,
         };
-        find_lyrics(shared, &p.session, &song)
-            .await
-            .map(crate::lyrics::Lyrics::from)
+        let (lyrics, genre) = find_lyrics(shared, &p.session, &song).await;
+        // Musixmatch named the song's genre: Radar keeps it.
+        if let Some(genre) = genre {
+            shared.send(Event::Genre {
+                video_id: video_id.clone(),
+                genre: Some(genre),
+                settled: true,
+            });
+        }
+        lyrics.map(crate::lyrics::Lyrics::from)
     } else {
         None
     };
@@ -1894,12 +1957,13 @@ const MUSIXMATCH_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
 /// word by word, else YouTube Music's own timed lyrics, else LRCLIB's,
 /// else YouTube Music's plain ones. Musixmatch is asked beside the others,
 /// so it adds no wait unless it is the slowest; the song it finds stays
-/// with whichever lyrics show, for people's translation of them.
+/// with whichever lyrics show, for people's translation of them. With the
+/// song's genre, when Musixmatch named it.
 async fn find_lyrics(
     shared: &Shared,
     session: &Session,
     song: &Song<'_>,
-) -> Option<ytfast_core::lyrics::Lyrics> {
+) -> (Option<ytfast_core::lyrics::Lyrics>, Option<String>) {
     let musixmatch = async {
         // Without the song's length, Musixmatch's song could be another
         // version of it.
@@ -1920,7 +1984,8 @@ async fn find_lyrics(
         }
     };
     let (found, timed_by_line) = tokio::join!(musixmatch, lyrics_by_line(shared, session, song));
-    match found {
+    let genre = found.as_ref().and_then(|f| f.genre.clone());
+    let lyrics = match found {
         // Only the song's own words: another version's (another language's)
         // are left out, with its translations.
         Some(ytfast_core::musixmatch::Found {
@@ -1938,7 +2003,8 @@ async fn find_lyrics(
             lyrics
         }),
         None => timed_by_line,
-    }
+    };
+    (lyrics, genre)
 }
 
 /// YouTube Music's own timed lyrics, else LRCLIB's, else YouTube Music's
@@ -2056,7 +2122,12 @@ async fn related(shared: &Shared, video_id: String) {
 /// Makes Radar: YouTube asked what it chooses from (at most ten requests,
 /// one at a time), then chosen by what the listener did. The demo chooses
 /// from made-up radios and artists.
-async fn radar(shared: &Shared, build: u64, listening: ytfast_core::radar::Listening) {
+async fn radar(
+    shared: &Shared,
+    build: u64,
+    listening: ytfast_core::radar::Listening,
+    deezer_ids: BTreeMap<String, u64>,
+) {
     use ytfast_core::radar;
     let now = radar::now();
     let result = if shared.demo {
@@ -2067,14 +2138,81 @@ async fn radar(shared: &Shared, build: u64, listening: ytfast_core::radar::Liste
             now,
         ))
     } else if let Some(p) = shared.preparer().await {
-        radar::gather(&p.session, &listening, now)
-            .await
-            .map(|found| radar::rank(&listening, &found, now))
-            .map_err(|e| api_error(shared, e))
+        match radar::gather(&p.session, &listening, now).await {
+            Ok(mut found) => {
+                // Deezer's listeners on the same favourite artists: a
+                // second opinion, when it answers.
+                if let Some(deezer) = &shared.deezer {
+                    let names: Vec<String> =
+                        found.artists.iter().map(|(a, _)| a.name.clone()).collect();
+                    found.opinion = deezer.opinion(&names, &deezer_ids).await;
+                    found.opinion.ids.extend(deezer_ids);
+                }
+                Ok(radar::rank(&listening, &found, now))
+            }
+            Err(e) => Err(api_error(shared, e)),
+        }
     } else {
         Err("Not signed in.".into())
     };
     shared.send(Event::Radar { build, result });
+}
+
+/// The pause between two songs' genres asked for together
+/// ([`Request::Genres`]).
+const GENRES_PAUSE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// A song's genre, from Musixmatch: one request.
+async fn genre(shared: &Shared, track: Track) {
+    let (genre, settled) = if shared.demo {
+        (demo::genre(&track.artists), true)
+    } else if let Some(client) = &shared.musixmatch {
+        let artist = track
+            .artists
+            .split([',', '&'])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        match client
+            .genre(&track.title, artist, track.album.as_deref())
+            .await
+        {
+            Ok(genre) => (genre, true),
+            Err(e) => {
+                log::info!("Musixmatch did not say a song's genre: {e}");
+                (None, false)
+            }
+        }
+    } else {
+        (None, false)
+    };
+    shared.send(Event::Genre {
+        video_id: track.video_id,
+        genre,
+        settled,
+    });
+}
+
+/// The radio of a song played in Radar's station: its Up next, as a radio.
+async fn station_radio(shared: &Shared, station: u64, video_id: String) {
+    let result = if shared.demo {
+        Ok(demo::up_next(&video_id).0)
+    } else {
+        match shared.preparer().await {
+            Some(p) => p
+                .session
+                .up_next(&video_id, None)
+                .await
+                .map(|(tracks, _)| tracks)
+                .map_err(|e| api_error(shared, e)),
+            None => Err("Not signed in.".into()),
+        }
+    };
+    shared.send(Event::StationRadio {
+        station,
+        video_id,
+        result,
+    });
 }
 
 async fn edit(shared: &Shared, change: Edit) {

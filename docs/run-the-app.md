@@ -277,14 +277,20 @@ Bass Booster, Vocal Booster and Rock. It turns the whole sound down by as
 much as it boosts, so it never distorts.
 
 **Radar** (in the menu on the left, under Library): new music chosen
-for you by YTFast, from what you play. **New to you** has songs you have
-not heard, from the radios of songs you love; **Artists to try**, artists
-like the ones you play; **New from your artists**, their albums and
-singles of this year. The small words above each row say why. Radar
-changes every day. Songs you finish count for them, songs you skip in
-their first seconds or dislike count against; this stays on your
-computer. Don't want something? Its menu (the three dots) on Radar has
-**Not interested**. **Settings**, **Radar**, **Forget** starts it again.
+for you by YTFast, from what you play. Its top says which genres you
+play ("This week you played mostly J-Pop, Rock and Hip-Hop"). Its
+**Play** button starts Radar's station: new songs, one after another,
+mixed as your genres are, with a surprise now and then. Like a song, and
+more like it come next; dislike it, or skip it in its first seconds, and
+the station turns away from it (an artist you dislike does not come back
+that time). **Artists to try** mixes new artists from your genres; **New
+from your artists** has one new album or single from each artist you
+play. Radar changes every day. What you play, finish, skip, like and
+dislike stays on your computer. To learn genres, each new song's name
+goes to Musixmatch once; your favourite artists' names go to Deezer,
+whose listeners give a second opinion. Don't want an artist or a
+release? Its menu (the three dots) on Radar has **Not interested**.
+**Settings**, **Radar**, **Forget** starts it again.
 
 **Discord status** (Settings, off at first): your Discord profile shows
 the song you are playing, its cover and how far into it you are, while

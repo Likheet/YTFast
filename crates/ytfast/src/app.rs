@@ -14,6 +14,7 @@ use ytfast_core::radar;
 use ytfast_core::read::{
     Item, Page, PlayerInfo, Section, SortOrder, Target, Track, TrackKind, VideoPair,
 };
+use ytfast_core::station::{Reaction, Station};
 use ytfast_core::ytdlp::Browser;
 
 use crate::audio_thread::{Audio, Command, Status};
@@ -450,6 +451,8 @@ pub enum Action {
     SetEqualizer(ytfast_core::eq::Equalizer),
     /// "Not interested", on the Radar page: never suggested again.
     NotInterested(radar::Unwanted),
+    /// Radar's button: its station plays new songs, one after another.
+    PlayRadar,
     /// Radar forgets what it noted (Settings, after asking).
     ForgetListening,
     JumpTo(u64),
@@ -590,7 +593,30 @@ fn asks_first(action: &Action, lined_up: usize) -> bool {
                 | Action::Open(Target::Watch { .. }, _)
                 | Action::Play(Target::Watch { .. }, _)
                 | Action::QueuePlaylist(_, QueueMode::Play | QueueMode::Shuffle)
+                | Action::PlayRadar
         )
+}
+
+/// Songs Radar's station keeps queued after the one playing (Up next shows
+/// them; the next is made ready ahead).
+const STATION_AHEAD: usize = 3;
+/// Songs played before YTFast asked for genres whose genre is asked for
+/// each time Radar is made (a day), the best liked first.
+const GENRES_A_DAY: usize = 12;
+/// Heard this long (in seconds), a song is worth asking its genre for.
+const GENRE_AFTER: f64 = 30.0;
+/// What Radar says when its station has nothing new left.
+const RADAR_NOTHING_NEW: &str =
+    "Radar has no more new songs for now. Play more music, and it finds more.";
+
+/// Radar's station while its queue plays ([`App::play_radar`]).
+struct StationRun {
+    station: Station,
+    /// The queue it fills ([`crate::queue::Queue::generation`]): another
+    /// queue ends it.
+    generation: u64,
+    /// Its number, given with its radios' answers.
+    number: u64,
 }
 
 /// A song's length, in seconds: as its audio says, else as its row did.
@@ -707,6 +733,19 @@ pub struct App {
     radar_files: Option<crate::radar_files::RadarFiles>,
     listening_changed: bool,
     listening_written: Option<Instant>,
+    /// What Radar's page says of the listener's genres ("This week you
+    /// played mostly ..."), once enough is known.
+    pub radar_line: Option<String>,
+    /// Radar's station, while its queue plays, and how many there were.
+    station: Option<StationRun>,
+    stations: u64,
+    /// Radar's button was pressed before a Radar was made: the station
+    /// plays once one is.
+    station_wanted: bool,
+    /// Songs whose genre was asked for in this run (each once), and
+    /// genres that came for songs not yet noted (the song playing).
+    genres_asked: HashSet<String>,
+    genres_waiting: HashMap<String, Option<String>>,
     /// The icon is shown, so a window closed can leave YTFast running.
     pub has_tray: bool,
     /// A window is open; none while YTFast runs on, closed (or started
@@ -941,6 +980,9 @@ impl App {
                 app.radar = files.radar();
                 app.radar_files = Some(files);
             }
+        } else {
+            // A made-up listener, so the demo's Radar has genres to tell.
+            app.listening = crate::demo::listening(radar::now());
         }
         // A Mac's YTFast opened from its disk image offers to move itself.
         if !demo && crate::update_mac::from_disk_image() {
@@ -1057,6 +1099,12 @@ impl App {
             radar_files: None,
             listening_changed: false,
             listening_written: None,
+            radar_line: None,
+            station: None,
+            stations: 0,
+            station_wanted: false,
+            genres_asked: HashSet::new(),
+            genres_waiting: HashMap::new(),
             has_tray: false,
             // The tests' window; from the first window on, the shell's.
             window_open: true,
@@ -1757,6 +1805,16 @@ impl App {
                     ready,
                 } => self.ready_ahead(entry, &video_id, ready),
                 Event::Radar { build, result } => self.radar_made(build, result),
+                Event::Genre {
+                    video_id,
+                    genre,
+                    settled,
+                } => self.genre_arrived(video_id, genre, settled),
+                Event::StationRadio {
+                    station,
+                    video_id,
+                    result,
+                } => self.station_radio(station, &video_id, result),
                 Event::UpNext {
                     video_id,
                     playlist_id,
@@ -2010,6 +2068,187 @@ impl App {
             self.song_failed(&entry.track.title, failure.message, failure.song_only);
         }
         self.keep_ahead();
+    }
+
+    // ---- Radar's station ----
+
+    /// Radar's button: its station plays new songs, one after another,
+    /// and what the listener does with each steers what comes next. With
+    /// no Radar yet (or one made by an older YTFast), one is made first,
+    /// and the station plays when it arrives.
+    fn play_radar(&mut self) {
+        let made = self
+            .radar
+            .as_ref()
+            .filter(|r| r.version == radar::RADAR_VERSION);
+        let Some(made) = made else {
+            self.station_wanted = true;
+            self.make_radar();
+            self.notify("Radar is finding new songs for you\u{2026}");
+            return;
+        };
+        let now = radar::now();
+        let mut station = Station::new(made, &self.listening, now, now);
+        let first = station.pick(&self.listening, STATION_AHEAD + 1);
+        if first.is_empty() {
+            self.notify(RADAR_NOTHING_NEW);
+            return;
+        }
+        self.play_tracks(first, 0, None);
+        self.queue.title = Some("Radar".into());
+        self.stations += 1;
+        self.station = Some(StationRun {
+            station,
+            generation: self.queue.generation(),
+            number: self.stations,
+        });
+    }
+
+    /// Radar's station, while its queue is the one playing.
+    fn station_playing(&self) -> Option<&StationRun> {
+        self.station
+            .as_ref()
+            .filter(|run| run.generation == self.queue.generation())
+    }
+
+    /// More of the station's songs at the end of the queue, as it runs
+    /// out; and, when few are left, a radio to refill it.
+    fn station_more(&mut self) {
+        let generation = self.queue.generation();
+        let Some(run) = self
+            .station
+            .as_mut()
+            .filter(|run| run.generation == generation)
+        else {
+            return;
+        };
+        let picks = run.station.pick(&self.listening, STATION_AHEAD);
+        let ask = run.station.wants_radio(&self.listening);
+        let number = run.number;
+        if let Some(video_id) = ask.clone() {
+            self.backend.send(Request::StationRadio {
+                station: number,
+                video_id,
+            });
+        }
+        if picks.is_empty() {
+            if ask.is_none() && self.playback.state == PlayState::WaitingForMore {
+                self.notify(RADAR_NOTHING_NEW);
+            }
+            return;
+        }
+        self.queue.append(picks);
+        self.queue_grew();
+    }
+
+    /// The listener took a song the station played this way: the station
+    /// leans toward it or away (asking for a liked song's radio), and
+    /// chooses its songs still to come again, unless it was only heard to
+    /// its end (that leans the station, and the songs to come stay: one
+    /// made ready ahead is not let go of for so little).
+    fn steer_station(&mut self, track: &Track, reaction: Reaction) {
+        let generation = self.queue.generation();
+        let Some(run) = self
+            .station
+            .as_mut()
+            .filter(|run| run.generation == generation && run.station.owns(&track.video_id))
+        else {
+            return;
+        };
+        let ask = run.station.react(track, reaction);
+        let number = run.number;
+        if let Some(video_id) = ask {
+            self.backend.send(Request::StationRadio {
+                station: number,
+                video_id,
+            });
+        }
+        if reaction != Reaction::Finished {
+            self.choose_again();
+        }
+    }
+
+    /// The station's songs still to come, chosen again (after it was
+    /// steered, or a radio arrived): those it queued go back, and its best
+    /// now take their places. Songs put in the queue by hand stay where
+    /// they are.
+    fn choose_again(&mut self) {
+        let generation = self.queue.generation();
+        let Some(run) = self
+            .station
+            .as_mut()
+            .filter(|run| run.generation == generation)
+        else {
+            return;
+        };
+        let taken = self
+            .queue
+            .take_coming(|track| run.station.owns(&track.video_id));
+        let ids: Vec<String> = taken.into_iter().map(|t| t.video_id).collect();
+        run.station.give_back(&ids);
+        let picks = run.station.pick(&self.listening, STATION_AHEAD);
+        self.queue.append(picks);
+        self.queue_grew();
+    }
+
+    /// The radio of a song played in the station arrived: its new songs
+    /// join the station, and may come next.
+    fn station_radio(&mut self, number: u64, video_id: &str, result: Result<Vec<Track>, String>) {
+        let tracks = match result {
+            Ok(tracks) => tracks,
+            Err(e) => {
+                log::info!("Radar's station: a radio did not load: {e}");
+                return;
+            }
+        };
+        let seed = self.track_named(video_id);
+        let generation = self.queue.generation();
+        let Some(run) = self
+            .station
+            .as_mut()
+            .filter(|run| run.generation == generation && run.number == number)
+        else {
+            return;
+        };
+        if run.station.add_radio(&seed, &tracks, &self.listening) > 0 {
+            self.choose_again();
+        }
+    }
+
+    // ---- Genres, for Radar ----
+
+    /// A song's genre arrived (asked for, or with its lyrics): Radar
+    /// keeps it. One for a song not noted yet (the song playing) waits
+    /// until it is. One that could not be asked may be asked again.
+    fn genre_arrived(&mut self, video_id: String, genre: Option<String>, settled: bool) {
+        if !settled {
+            self.genres_asked.remove(&video_id);
+            return;
+        }
+        if self.listening.set_genre(&video_id, genre.clone()) {
+            self.listening_changed = true;
+            self.radar_line = self.listening.tastes(radar::now()).map(|t| t.line());
+        } else if !self.listening.knows(&video_id) {
+            if self.genres_waiting.len() >= 64 {
+                self.genres_waiting.clear();
+            }
+            self.genres_waiting.insert(video_id, genre);
+        }
+    }
+
+    /// Asks for the genre of a song just noted, once: heard long enough to
+    /// count, and not known yet.
+    fn want_genre(&mut self, track: &Track) {
+        let id = &track.video_id;
+        if let Some(genre) = self.genres_waiting.remove(id) {
+            if self.listening.set_genre(id, genre) {
+                self.listening_changed = true;
+            }
+            return;
+        }
+        if self.listening.wants_genre(id) && self.genres_asked.insert(id.clone()) {
+            self.backend.send(Request::Genre(track.clone()));
+        }
     }
 
     fn prepared(
@@ -2850,14 +3089,19 @@ impl App {
             .iter()
             .map(|(from, to)| (to - from).max(0.0))
             .sum();
-        self.listening.played(
-            &entry.track,
-            heard,
-            self.playback.length,
-            ending,
-            radar::now(),
-        );
+        let track = entry.track.clone();
+        let outcome =
+            self.listening
+                .played(&track, heard, self.playback.length, ending, radar::now());
         self.listening_changed = true;
+        if outcome == Some(radar::Outcome::Finished) || heard >= GENRE_AFTER {
+            self.want_genre(&track);
+        }
+        // Heard to its end in Radar's station: it leans that way. (An
+        // early skip steered it already, as Next was pressed.)
+        if outcome == Some(radar::Outcome::Finished) {
+            self.steer_station(&track, Reaction::Finished);
+        }
     }
 
     /// Radar's record written to its file, when it changed: at most every
@@ -2971,6 +3215,11 @@ impl App {
     /// Asks for what plays after the last song in the queue, once per song.
     /// Without autoplay, only a playlist's or album's own songs follow.
     fn ask_for_more(&mut self) {
+        // Radar's station chooses its own.
+        if self.station_playing().is_some() {
+            self.station_more();
+            return;
+        }
         if !self.settings.autoplay && self.queue.source.is_none() {
             return;
         }
@@ -3137,6 +3386,7 @@ impl App {
     /// while the first is made.
     fn open_radar(&mut self) {
         self.touch(&Route::Radar);
+        self.radar_line = self.listening.tastes(radar::now()).map(|t| t.line());
         match &self.radar {
             Some(made) => {
                 let page = made.page(&self.listening);
@@ -3174,9 +3424,15 @@ impl App {
         }
         self.radar_making = true;
         self.radar_build += 1;
+        let deezer_ids = self
+            .radar
+            .as_ref()
+            .map(|r| r.deezer_ids.clone())
+            .unwrap_or_default();
         self.backend.send(Request::Radar {
             build: self.radar_build,
             listening: Box::new(self.listening.clone()),
+            deezer_ids,
         });
     }
 
@@ -3194,19 +3450,55 @@ impl App {
                 }
                 self.radar = Some(made);
                 self.show_radar_again();
+                // The genres of songs played before YTFast asked for them,
+                // a few each day, the best liked first.
+                let missing: Vec<Track> = self
+                    .listening
+                    .missing_genres(GENRES_A_DAY * 2, radar::now())
+                    .into_iter()
+                    .filter(|t| !self.genres_asked.contains(&t.video_id))
+                    .take(GENRES_A_DAY)
+                    .collect();
+                if !missing.is_empty() {
+                    self.genres_asked
+                        .extend(missing.iter().map(|t| t.video_id.clone()));
+                    self.backend.send(Request::Genres(missing));
+                }
+                if std::mem::take(&mut self.station_wanted) {
+                    self.play_radar();
+                }
             }
             Err(message) if self.radar.is_none() => {
+                self.station_wanted = false;
                 if self.pages.contains_key(&Route::Radar) {
                     self.pages.insert(Route::Radar, Loadable::Failed(message));
                 }
             }
-            Err(message) => log::info!("Radar: a new one could not be made: {message}"),
+            Err(message) => {
+                log::info!("Radar: a new one could not be made: {message}");
+                // The one kept plays.
+                if std::mem::take(&mut self.station_wanted) {
+                    self.play_radar_kept();
+                }
+            }
+        }
+    }
+
+    /// Radar's station from the Radar kept, whatever made it (a new one
+    /// could not be made).
+    fn play_radar_kept(&mut self) {
+        if let Some(made) = &mut self.radar {
+            made.version = radar::RADAR_VERSION;
+        }
+        if self.radar.is_some() {
+            self.play_radar();
         }
     }
 
     /// Radar's page drawn again from the Radar kept, when it is kept (a
     /// new Radar, something marked Not interested).
     fn show_radar_again(&mut self) {
+        self.radar_line = self.listening.tastes(radar::now()).map(|t| t.line());
         if let Some(made) = &self.radar
             && self.pages.contains_key(&Route::Radar)
         {
@@ -3370,10 +3662,18 @@ impl App {
             Action::TogglePause => self.toggle_pause(),
             Action::Next => {
                 // The listener's own Next: Radar notes an early one as a
-                // skip.
+                // skip, and its station turns away before the next song.
                 self.playback.ending = radar::Ending::Skipped;
+                let early = self.audio_status.position < radar::early(self.playback.length);
+                if early
+                    && self.playback.state == PlayState::Playing
+                    && let Some(entry) = self.playback.entry.clone()
+                {
+                    self.steer_station(&entry.track, Reaction::Skipped);
+                }
                 self.next();
             }
+            Action::PlayRadar => self.play_radar(),
             Action::Previous => self.previous(),
             Action::Seek(to) if self.playback.state == PlayState::LeftOff => {
                 self.playback.start_at = to.max(0.0);
@@ -3534,6 +3834,12 @@ impl App {
                 let track = self.track_named(&video_id);
                 self.listening.rated(&track, rating);
                 self.listening_changed = true;
+                // A song of Radar's station: what comes next changes.
+                match like {
+                    LikeState::Liked => self.steer_station(&track, Reaction::Liked),
+                    LikeState::Disliked => self.steer_station(&track, Reaction::Disliked),
+                    LikeState::Neutral => {}
+                }
                 // The song playing, disliked: the next one, as YouTube
                 // Music does (Settings can keep it playing).
                 let skip = like == LikeState::Disliked
@@ -4418,12 +4724,19 @@ fn words(event: &Event) -> Vec<&str> {
         Event::Radar {
             result: Ok(made), ..
         } => {
-            for t in &made.songs {
-                track(t, &mut words);
+            for pick in &made.pool {
+                track(&pick.track, &mut words);
             }
             words.extend(made.artists.iter().map(|a| a.name.as_str()));
             words.extend(made.releases.iter().map(|r| r.title.as_str()));
-            words.extend(made.because.iter().chain(&made.like).map(String::as_str));
+            words.extend(made.like.iter().map(String::as_str));
+        }
+        Event::StationRadio {
+            result: Ok(tracks), ..
+        } => {
+            for t in tracks {
+                track(t, &mut words);
+            }
         }
         Event::Translated(_, Ok(translated)) => {
             words.extend(
@@ -6554,13 +6867,39 @@ mod tests {
         assert_eq!(h.app.discord_activity(), None, "paused");
     }
 
-    /// A Radar of one new song, made now.
+    /// A Radar made now: its station's songs (each of an artist of its
+    /// own, the first best), and an artist to try for each.
     fn made_radar(songs: &[&str]) -> radar::Radar {
         radar::Radar {
             made: radar::now(),
-            songs: songs.iter().map(|id| song(id)).collect(),
-            because: vec!["Lemon".into()],
+            version: radar::RADAR_VERSION,
+            pool: songs
+                .iter()
+                .enumerate()
+                .map(|(n, id)| radar::Pick {
+                    track: by(id, &format!("Artist{id}")),
+                    score: 1.0 - n as f64 / 100.0,
+                    ..radar::Pick::default()
+                })
+                .collect(),
+            artists: songs
+                .iter()
+                .map(|id| radar::ArtistPick {
+                    id: format!("UC{id}"),
+                    name: id.to_uppercase(),
+                    ..radar::ArtistPick::default()
+                })
+                .collect(),
             ..radar::Radar::default()
+        }
+    }
+
+    /// A song by `artist`.
+    fn by(id: &str, artist: &str) -> Track {
+        Track {
+            artists: artist.into(),
+            artist_id: Some(format!("UC{artist}")),
+            ..song(id)
         }
     }
 
@@ -6575,12 +6914,29 @@ mod tests {
             .collect()
     }
 
-    /// The songs Radar's page shows.
-    fn radar_songs(h: &Harness) -> Vec<String> {
+    /// The artists to try Radar's page shows.
+    fn radar_shown(h: &Harness) -> Vec<String> {
         match h.app.pages.get(&Route::Radar) {
-            Some(Loadable::Ready(page)) => page.tracks().into_iter().map(|t| t.video_id).collect(),
+            Some(Loadable::Ready(page)) => page
+                .sections
+                .iter()
+                .flat_map(|s| &s.items)
+                .filter_map(|item| match item {
+                    Item::Card(card) => Some(card.title.clone()),
+                    Item::Track(_) => None,
+                })
+                .collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// The songs coming after the one playing.
+    fn coming(h: &Harness) -> Vec<String> {
+        let from = h.app.queue.current_index().map_or(0, |i| i + 1);
+        h.app.queue.entries()[from..]
+            .iter()
+            .map(|e| e.track.video_id.clone())
+            .collect()
     }
 
     /// Radar is made when first opened (a spinner meanwhile), shown again
@@ -6600,12 +6956,12 @@ mod tests {
             build: asked[0],
             result: Ok(made_radar(&["n1", "n2"])),
         });
-        assert_eq!(radar_songs(&h), ["n1", "n2"]);
+        assert_eq!(radar_shown(&h), ["N1", "N2"]);
 
         h.act(Action::Navigate(Route::Home));
         h.act(Action::Navigate(Route::Radar));
         assert!(radar_asks(&h.requests()).is_empty(), "made today");
-        assert_eq!(radar_songs(&h), ["n1", "n2"]);
+        assert_eq!(radar_shown(&h), ["N1", "N2"]);
 
         if let Some(made) = &mut h.app.radar {
             made.made -= 2 * radar::FRESH_FOR;
@@ -6614,18 +6970,18 @@ mod tests {
         h.act(Action::Navigate(Route::Radar));
         let again = radar_asks(&h.requests());
         assert_eq!(again.len(), 1, "a day old: made again");
-        assert_eq!(radar_songs(&h), ["n1", "n2"], "the old one meanwhile");
+        assert_eq!(radar_shown(&h), ["N1", "N2"], "the old one meanwhile");
         // An answer for the first making: dropped.
         h.answer(Event::Radar {
             build: asked[0],
             result: Ok(made_radar(&["late"])),
         });
-        assert_eq!(radar_songs(&h), ["n1", "n2"]);
+        assert_eq!(radar_shown(&h), ["N1", "N2"]);
         h.answer(Event::Radar {
             build: again[0],
             result: Ok(made_radar(&["n3"])),
         });
-        assert_eq!(radar_songs(&h), ["n3"]);
+        assert_eq!(radar_shown(&h), ["N3"]);
         // A failure leaves the last one in place.
         h.app.radar.as_mut().unwrap().made = 0;
         h.act(Action::Navigate(Route::Home));
@@ -6635,7 +6991,7 @@ mod tests {
             build,
             result: Err("no network".into()),
         });
-        assert_eq!(radar_songs(&h), ["n3"]);
+        assert_eq!(radar_shown(&h), ["N3"]);
     }
 
     /// With nothing made yet, a failure says why, and Try again makes it.
@@ -6681,7 +7037,7 @@ mod tests {
         assert!(!h.app.listening.unwanted(&song("b")));
     }
 
-    /// "Not interested" takes the song off Radar at once; Forget (asked
+    /// "Not interested" takes the artist off Radar at once; Forget (asked
     /// first, in Settings) clears what was noted and what was made.
     #[test]
     fn not_interested_and_forget() {
@@ -6692,8 +7048,11 @@ mod tests {
             build,
             result: Ok(made_radar(&["n1", "n2"])),
         });
-        h.act(Action::NotInterested(radar::Unwanted::Song(song("n1"))));
-        assert_eq!(radar_songs(&h), ["n2"]);
+        h.act(Action::NotInterested(radar::Unwanted::Artist {
+            id: Some("UCn1".into()),
+            name: "N1".into(),
+        }));
+        assert_eq!(radar_shown(&h), ["N2"]);
         assert!(h.app.notice.is_some(), "it says so");
 
         h.act(Action::OpenDialog(Dialog::ForgetListening));
@@ -6712,9 +7071,10 @@ mod tests {
         ));
     }
 
-    /// The menu's Radar opens Radar (and "g then r"); the demo's Radar is
-    /// made from made-up music: new songs, new artists and this year's
-    /// albums.
+    /// The menu's Radar opens Radar (and "g then r"), whose button plays
+    /// its station; the demo's Radar is made from made-up music, for a
+    /// made-up listener whose genres it tells: new songs, each played for
+    /// a genre, new artists and this year's albums.
     #[test]
     fn the_menu_opens_radar_and_the_demo_has_one() {
         use crate::theme::Theme;
@@ -6723,19 +7083,243 @@ mod tests {
         let entry = w.find("Radar", 0);
         w.click(entry.center());
         assert_eq!(w.h.app.route, Route::Radar);
+        let build = radar_asks(&w.h.requests())[0];
+        w.h.answer(Event::Radar {
+            build,
+            result: Ok(made_radar(&["n1", "n2"])),
+        });
+        w.settle();
+        let play = w.find("Play Radar", 0);
+        w.click(play.center());
+        assert_eq!(w.h.app.queue.title.as_deref(), Some("Radar"));
+        assert_eq!(w.h.entry().1, "n1");
 
         let now = radar::now();
-        let listening = radar::Listening::default();
+        let listening = crate::demo::listening(now);
+        assert_eq!(
+            listening.tastes(now).map(|t| t.line()).as_deref(),
+            Some("This week you played mostly Pop, Rock and Electronic")
+        );
         let made = radar::rank(&listening, &crate::demo::radar_found(&listening, now), now);
-        assert!(made.songs.len() >= 8, "{} songs", made.songs.len());
+        assert!(made.pool.len() >= 8, "{} songs", made.pool.len());
+        assert!(made.pool.iter().all(|p| p.genre.is_some()));
         assert!(made.artists.len() >= 4, "{} artists", made.artists.len());
         assert!(!made.releases.is_empty());
         let page = made.page(&listening);
         let titles: Vec<&str> = page.sections.iter().map(|s| s.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["New to you", "Artists to try", "New from your artists"]
+        assert_eq!(titles, ["Artists to try", "New from your artists"]);
+    }
+
+    /// Radar's button plays its station: its new songs, more chosen as the
+    /// queue runs out (never YouTube's Up next), "Radar" in Up next.
+    /// Another queue ends it.
+    #[test]
+    fn radars_button_plays_its_station() {
+        let mut h = Harness::new();
+        h.app.radar = Some(made_radar(&[
+            "n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9",
+        ]));
+        h.act(Action::PlayRadar);
+        assert_eq!(h.entry().1, "n1");
+        // The best first; the fourth a surprise from further down.
+        let first = coming(&h);
+        assert_eq!(first[..2], ["n2", "n3"]);
+        assert_eq!(first.len(), 3);
+        assert_eq!(h.app.queue.title.as_deref(), Some("Radar"));
+        h.ready();
+        for _ in 0..4 {
+            at(&mut h, 200.0);
+            let (playing, _) = h.entry();
+            h.app.audio.set_status(|s| s.ended = Some(playing));
+            h.frame();
+            h.ready();
+        }
+        assert!(coming(&h).len() >= 2, "{:?}", coming(&h));
+        assert!(h.app.listening.songs().len() == 4, "four played to the end");
+        let requests = h.requests();
+        assert!(
+            !requests.iter().any(|r| matches!(r, Request::UpNext { .. })),
+            "the station chooses its own"
         );
+        // Another queue: the station ends.
+        h.play(&["x"]);
+        assert!(h.app.station_playing().is_none());
+    }
+
+    /// A like in Radar's station brings its song's radio, whose new songs
+    /// come next; a dislike turns away from its artist and moves on; an
+    /// early skip turns away before the next song.
+    #[test]
+    fn likes_dislikes_and_skips_steer_radars_station() {
+        let mut h = Harness::new();
+        h.app.radar = Some(made_radar(&["n1", "n2", "n3", "n4", "n5", "n6"]));
+        h.act(Action::PlayRadar);
+        h.ready();
+        h.requests();
+        h.act(Action::Rate("n1".into(), LikeState::Liked));
+        let asked: Vec<String> = h
+            .requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::StationRadio { video_id, .. } => Some(video_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, ["n1"]);
+        let station = h.app.station.as_ref().map(|s| s.number).unwrap();
+        h.answer(Event::StationRadio {
+            station,
+            video_id: "n1".into(),
+            result: Ok(vec![by("r1", "Radio artist"), by("n1", "Artistn1")]),
+        });
+        assert_eq!(coming(&h)[0], "r1", "{:?}", coming(&h));
+        // An answer for an older station is dropped.
+        h.answer(Event::StationRadio {
+            station: station + 1,
+            video_id: "n1".into(),
+            result: Ok(vec![by("late", "Late")]),
+        });
+        assert!(!coming(&h).contains(&"late".to_string()));
+
+        // r1 plays, and is disliked: on to another artist's song.
+        at(&mut h, 200.0);
+        let (playing, _) = h.entry();
+        h.app.audio.set_status(|s| s.ended = Some(playing));
+        h.frame();
+        h.ready();
+        assert_eq!(h.entry().1, "r1");
+        h.act(Action::Rate("r1".into(), LikeState::Disliked));
+        assert!(h.app.listening.unwanted(&by("r1", "Radio artist")));
+        assert_ne!(h.entry().1, "r1");
+        h.ready();
+
+        // Skipped in its first seconds: the next one is chosen again first.
+        let skipped = h.entry().1.to_string();
+        at(&mut h, 5.0);
+        h.act(Action::Next);
+        assert_ne!(h.entry().1, skipped);
+        assert_eq!(h.app.listening.songs()[&skipped].skipped, 1);
+    }
+
+    /// Without a Radar yet, the button makes one, and the station plays
+    /// when it arrives.
+    #[test]
+    fn radars_button_waits_for_its_first_radar() {
+        let mut h = Harness::new();
+        h.act(Action::PlayRadar);
+        let asked = radar_asks(&h.requests());
+        assert_eq!(asked.len(), 1);
+        assert!(h.app.playback.entry.is_none());
+        h.answer(Event::Radar {
+            build: asked[0],
+            result: Ok(made_radar(&["n1", "n2"])),
+        });
+        assert_eq!(h.entry().1, "n1");
+        assert_eq!(h.app.queue.title.as_deref(), Some("Radar"));
+    }
+
+    /// A song's genre is asked for once it is heard long enough, once; one
+    /// that came with its lyrics before the song was noted is kept then;
+    /// and Radar's page tells the genres once enough are known.
+    #[test]
+    fn genres_are_asked_for_once_and_kept() {
+        let mut h = Harness::new();
+        h.play(&["a", "b"]);
+        // Its lyrics named its genre while it played.
+        h.answer(Event::Genre {
+            video_id: "a".into(),
+            genre: Some("J-Pop".into()),
+            settled: true,
+        });
+        at(&mut h, 200.0);
+        let (a, _) = h.entry();
+        h.app.audio.set_status(|s| s.ended = Some(a));
+        h.frame();
+        assert_eq!(h.app.listening.songs()["a"].genre.as_deref(), Some("J-Pop"));
+        let genre_asks = |requests: Vec<Request>| {
+            requests
+                .into_iter()
+                .filter_map(|r| match r {
+                    Request::Genre(track) => Some(track.video_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(genre_asks(h.requests()).is_empty(), "known already");
+        // b, heard long enough: asked for, once.
+        h.ready();
+        at(&mut h, 120.0);
+        h.act(Action::Next);
+        assert_eq!(genre_asks(h.requests()), ["b"]);
+        h.answer(Event::Genre {
+            video_id: "b".into(),
+            genre: None,
+            settled: true,
+        });
+        assert_eq!(h.app.listening.songs()["b"].genre.as_deref(), Some(""));
+        assert!(!h.app.listening.wants_genre("b"));
+        // Enough known: the page's line.
+        for n in 0..6 {
+            let id = format!("j{n}");
+            h.app.listening.played(
+                &song(&id),
+                200.0,
+                200.0,
+                radar::Ending::Finished,
+                radar::now(),
+            );
+            h.answer(Event::Genre {
+                video_id: id,
+                genre: Some("J-Pop".into()),
+                settled: true,
+            });
+        }
+        assert_eq!(
+            h.app.radar_line.as_deref(),
+            Some("This week you played mostly J-Pop")
+        );
+    }
+
+    /// Each time Radar is made, the genres of a few songs played before
+    /// are asked for, the best liked first, each once.
+    #[test]
+    fn radar_asks_for_older_songs_genres_a_few_a_day() {
+        let mut h = Harness::new();
+        for n in 0..20 {
+            h.app.listening.played(
+                &song(&format!("old{n}")),
+                200.0,
+                200.0,
+                radar::Ending::Finished,
+                radar::now(),
+            );
+        }
+        let genres_asked = |requests: Vec<Request>| -> Vec<usize> {
+            requests
+                .into_iter()
+                .filter_map(|r| match r {
+                    Request::Genres(tracks) => Some(tracks.len()),
+                    _ => None,
+                })
+                .collect()
+        };
+        h.act(Action::Navigate(Route::Radar));
+        let build = radar_asks(&h.requests())[0];
+        h.answer(Event::Radar {
+            build,
+            result: Ok(made_radar(&["n1"])),
+        });
+        assert_eq!(genres_asked(h.requests()), [GENRES_A_DAY]);
+        // The next Radar asks for the others.
+        h.app.radar.as_mut().unwrap().made = 0;
+        h.act(Action::Navigate(Route::Home));
+        h.act(Action::Navigate(Route::Radar));
+        let build = radar_asks(&h.requests())[0];
+        h.answer(Event::Radar {
+            build,
+            result: Ok(made_radar(&["n1"])),
+        });
+        assert_eq!(genres_asked(h.requests()), [20 - GENRES_A_DAY]);
     }
 
     /// The equalizer's switch and bands reach the player, its bands kept

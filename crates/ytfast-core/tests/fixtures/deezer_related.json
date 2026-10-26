@@ -1,0 +1,77 @@
+{
+ "data": [
+  {
+   "id": 69128312,
+   "name": "Eve",
+   "nb_fan": 70289,
+   "type": "artist"
+  },
+  {
+   "id": 98064702,
+   "name": "yama",
+   "nb_fan": 14639,
+   "type": "artist"
+  },
+  {
+   "id": 5289039,
+   "name": "Kenshi Yonezu",
+   "nb_fan": 69339,
+   "type": "artist"
+  },
+  {
+   "id": 229176215,
+   "name": "tuki.",
+   "nb_fan": 2202,
+   "type": "artist"
+  },
+  {
+   "id": 13046819,
+   "name": "Creepy Nuts",
+   "nb_fan": 49392,
+   "type": "artist"
+  },
+  {
+   "id": 59871352,
+   "name": "Natori",
+   "nb_fan": 18931,
+   "type": "artist"
+  },
+  {
+   "id": 8152202,
+   "name": "Mrs. Green Apple",
+   "nb_fan": 32896,
+   "type": "artist"
+  },
+  {
+   "id": 12944623,
+   "name": "King Gnu",
+   "nb_fan": 21677,
+   "type": "artist"
+  },
+  {
+   "id": 52778562,
+   "name": "ZUTOMAYO",
+   "nb_fan": 33190,
+   "type": "artist"
+  },
+  {
+   "id": 14476055,
+   "name": "Tatsuya Kitani",
+   "nb_fan": 15379,
+   "type": "artist"
+  },
+  {
+   "id": 11446160,
+   "name": "LiSA",
+   "nb_fan": 144454,
+   "type": "artist"
+  },
+  {
+   "id": 99539532,
+   "name": "美波",
+   "nb_fan": 5275,
+   "type": "artist"
+  }
+ ],
+ "total": 20
+}

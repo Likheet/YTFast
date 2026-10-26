@@ -215,6 +215,23 @@ impl Queue {
         added
     }
 
+    /// Takes out the songs still to come that were not put in by hand and
+    /// that `wanted` picks (Radar's station chooses them again), keeping
+    /// their order.
+    pub fn take_coming(&mut self, wanted: impl Fn(&Track) -> bool) -> Vec<Track> {
+        let first = self.current.map_or(0, |i| i + 1);
+        let mut taken = Vec::new();
+        let mut i = first;
+        while i < self.entries.len() {
+            if !self.entries[i].lined_up && wanted(&self.entries[i].track) {
+                taken.push(self.entries.remove(i).track);
+            } else {
+                i += 1;
+            }
+        }
+        taken
+    }
+
     /// Fills in, wherever `track` is queued, what its entries lack
     /// ([`fill_in`]). True when something changed.
     pub fn fill_in(&mut self, track: &Track) -> bool {
@@ -524,6 +541,24 @@ mod tests {
         q.move_next(c);
         assert_eq!(ids(&q), ["a", "c", "b"]);
         assert_eq!(q.lined_up(), 1);
+    }
+
+    #[test]
+    fn songs_to_come_are_taken_out_but_not_those_lined_up() {
+        let mut q = Queue::default();
+        q.replace(vec![song("a"), song("r1"), song("b"), song("r2")], 1, None);
+        q.add_to_end(song("r3"));
+        // Only what comes after the song playing, and not by hand.
+        let taken = q.take_coming(|t| t.video_id.starts_with('r'));
+        assert_eq!(
+            taken
+                .iter()
+                .map(|t| t.video_id.as_str())
+                .collect::<Vec<_>>(),
+            ["r2"]
+        );
+        assert_eq!(ids(&q), ["a", "r1", "b", "r3"]);
+        assert_eq!(q.current().unwrap().track.video_id, "r1");
     }
 
     #[test]

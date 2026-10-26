@@ -8,10 +8,11 @@
 //! sources stand in.
 //!
 //! Two requests a song: which song it is (`matcher.track.get`, which also
-//! says what people have translated its lyrics into, though not always),
-//! then its words' times when it has them. A translation is one more, only
-//! when wanted, and one for rōmaji (Japanese in Latin letters, written by
-//! people: "rj").
+//! says what people have translated its lyrics into, though not always,
+//! and the song's genres), then its words' times when it has them. A
+//! translation is one more, only when wanted, and one for rōmaji
+//! (Japanese in Latin letters, written by people: "rj"). Radar asks for a
+//! song's genre alone ([`Musixmatch::genre`]): the first request only.
 //! When Musixmatch says YTFast asks too often, it is left alone for 15
 //! minutes.
 
@@ -20,10 +21,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use musixmatch_inofficial::models::{RichsyncLine, TrackId};
+use musixmatch_inofficial::models::{Genres, RichsyncLine, Track, TrackId};
 use musixmatch_inofficial::storage::SessionStorage;
 use musixmatch_inofficial::{Error, Musixmatch as Client};
 
+use crate::genre::{self, Tag};
 use crate::lyrics::{LyricLine, Lyrics, Word};
 use crate::redact;
 
@@ -60,12 +62,14 @@ impl Song {
     }
 }
 
-/// What Musixmatch knows of a song: the song (for its translations), and
-/// its lyrics timed word by word when it has them.
+/// What Musixmatch knows of a song: the song (for its translations), its
+/// lyrics timed word by word when it has them, and its genre's family
+/// ([`genre::family`]).
 #[derive(Clone, Debug, Default)]
 pub struct Found {
     pub song: Song,
     pub lyrics: Option<Lyrics>,
+    pub genre: Option<String>,
 }
 
 pub struct Musixmatch {
@@ -124,6 +128,7 @@ impl Musixmatch {
             );
             return Ok(None);
         }
+        let genre = genre_of(&track);
         let statuses = &track.track_lyrics_translation_status;
         let song = Song {
             track_id: track.track_id,
@@ -135,7 +140,11 @@ impl Musixmatch {
             language: statuses.iter().find_map(|s| s.from.clone()),
         };
         if !track.has_richsync {
-            return Ok(Some(Found { song, lyrics: None }));
+            return Ok(Some(Found {
+                song,
+                lyrics: None,
+                genre,
+            }));
         }
         let asked = self.client.track_richsync(
             TrackId::TrackId(track.track_id),
@@ -145,7 +154,11 @@ impl Musixmatch {
         let richsync = match patiently(asked).await {
             Ok(richsync) => richsync,
             Err(Error::NotFound | Error::NotAvailable) => {
-                return Ok(Some(Found { song, lyrics: None }));
+                return Ok(Some(Found {
+                    song,
+                    lyrics: None,
+                    genre,
+                }));
             }
             Err(e) => return Err(self.failed(e)),
         };
@@ -164,7 +177,34 @@ impl Musixmatch {
                 .or_else(|| song.language.clone()),
             musixmatch: Some(song.clone()),
         });
-        Ok(Some(Found { song, lyrics }))
+        Ok(Some(Found {
+            song,
+            lyrics,
+            genre,
+        }))
+    }
+
+    /// The genre of the song Musixmatch has by this title and artist (and
+    /// album), as a family ([`genre::family`]): one request. `Ok(None)`
+    /// when it has no such song, or no genre for it. Another version of
+    /// the song (a live one, another language's) is of the same genre.
+    pub async fn genre(
+        &self,
+        title: &str,
+        artist: &str,
+        album: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        if self.resting() {
+            return Err("Musixmatch is being left alone for a while".into());
+        }
+        let asked =
+            self.client
+                .matcher_track(title, artist, album.unwrap_or_default(), true, false, false);
+        match patiently(asked).await {
+            Ok(track) => Ok(genre_of(&track)),
+            Err(Error::NotFound | Error::NotAvailable) => Ok(None),
+            Err(e) => Err(self.failed(e)),
+        }
     }
 
     /// People's translation of a song's lyrics into `language` (ISO 639-1):
@@ -213,6 +253,22 @@ impl Musixmatch {
         }
         redact::urls(&e.to_string())
     }
+}
+
+/// A song's genre's family, from Musixmatch's genres for it.
+fn genre_of(track: &Track) -> Option<String> {
+    fn tags(genres: &Genres) -> Vec<Tag<'_>> {
+        genres
+            .music_genre_list
+            .iter()
+            .map(|g| Tag {
+                id: g.music_genre.music_genre_id,
+                parent: g.music_genre.music_genre_parent_id,
+                name: &g.music_genre.music_genre_name,
+            })
+            .collect()
+    }
+    genre::family(&tags(&track.primary_genres), &tags(&track.secondary_genres))
 }
 
 /// A request given [`PATIENCE`] to answer.
@@ -452,6 +508,7 @@ mod tests {
     /// song's finds nothing; Kaikai Kitan (Eve) has rōmaji by people. (Idol,
     /// YOASOBI, finds the English version of アイドル, the same length:
     /// `lyrics::same_words` leaves it out beside YouTube's own lyrics.)
+    /// Lemon is J-Pop, and Kesariya (Arijit Singh) Indian.
     #[tokio::test]
     async fn musixmatch_itself() {
         let Ok(folder) = std::env::var("YTFAST_TEST_MUSIXMATCH") else {
@@ -466,6 +523,7 @@ mod tests {
             .unwrap()
             .expect("Lemon");
         eprintln!("Lemon found in {:?}", started.elapsed());
+        assert_eq!(lemon.genre.as_deref(), Some("J-Pop"));
         let lyrics = lemon.lyrics.as_ref().expect("timed word by word");
         assert!(lyrics.timed_words && lyrics.lines.len() > 20);
         for line in &lyrics.lines {
@@ -506,5 +564,11 @@ mod tests {
         let romaji = client.translation(kitan.song.track_id, "rj").await.unwrap();
         eprintln!("{} lines in rōmaji by people", romaji.len());
         assert!(romaji.len() > 10);
+        // A song's genre alone: one request.
+        let genre = client
+            .genre("Kesariya", "Arijit Singh", None)
+            .await
+            .unwrap();
+        assert_eq!(genre.as_deref(), Some("Indian"));
     }
 }

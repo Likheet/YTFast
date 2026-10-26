@@ -101,7 +101,7 @@ sound upgrade (1.4.0: gapless, crossfade, the equalizer, the Discord
 status). Still to do: performance measured on the real apps (startup
 time, memory, including the helper programs).
 
-## Radar: YTFast's own recommendations (steps 1 and 2 built, 1.5.0)
+## Radar: YTFast's own recommendations (steps 1 and 2 built, 1.5.0; the station, 1.6.0)
 
 The owner finds YouTube Music's recommendations poor, and wants better
 ones without changing what YouTube Music's users know: Home, Explore and
@@ -134,6 +134,21 @@ favourites); Artists to try (similar to the artists played most, not yet
 played); New from your artists (new songs and albums from the artists
 actually played).
 
+**The station (27 October 2026, at the owner's word).** The owner found
+rows of "songs like this song" dull, and wanted Radar to think in genres
+and in time (this week, this month), to tell people which genres they
+play ("most people do not know what genre they like"), and above all one
+button that plays songs the listener did not choose, steered by likes
+and dislikes as they come. Built in 1.6.0: the record keeps each play's
+date and each song's genre (Musixmatch's); the page says "This week you
+played mostly ..." and has one Play button; "New to you" became the
+station's pool; "Artists to try" is one row mixed by genre; "New from
+your artists" has one release per artist (the owner had found
+duplicates). Deezer's listeners give a second opinion, with no key (the
+owner wanted only sources that need nothing from them: no API keys, no
+accounts; Last.fm and ListenBrainz's radios need one, Spotify's are
+closed). How the station chooses is in AGENTS.md.
+
 **Later:** an endless Radar station (new songs, a familiar one now and
 then), Deep cuts (album songs the user has not heard from artists they
 play), Rediscover (songs once finished often, not played for months).
@@ -151,9 +166,14 @@ made-up rows. AGENTS.md's list of request limits gets Radar's.
 2. The Radar page with its first three rows and "Not interested",
    tried in the demo: released as 1.5.0. **Built** (20 October 2026),
    with Settings' Forget; how it chooses is in AGENTS.md.
-3. The station, Deep cuts and Rediscover.
+3. The station. **Built** (1.6.0). Deep cuts and Rediscover: not yet.
 4. Measured on the owner's laptop (Radar's songs finished against
    skipped), and tuned.
+5. Later, the owner's ideas: one record for both laptops (a folder both
+   sync, as OneDrive), one record per account on one computer (the
+   owner's brother signing in there), and a page of the listener's own
+   numbers (plays, replays, skips, likes, by week and month: the record
+   already keeps them).
 
 ## Ideas for later
 

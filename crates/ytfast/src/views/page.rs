@@ -382,7 +382,7 @@ fn one_column(app: &App, ui: &mut egui::Ui, route: &Route, page: &Page) {
                 }
                 (None, route) if is_library(route) => library_header(app, ui, route, page),
                 (None, Route::History) => title(ui, "History"),
-                (None, Route::Radar) => radar_header(ui, page),
+                (None, Route::Radar) => radar_header(app, ui, page),
                 (None, Route::Home | Route::Explore) => {}
                 _ => ui.add_space(8.0),
             }
@@ -891,24 +891,53 @@ fn title(ui: &mut egui::Ui, text: &str) {
     ui.add_space(8.0);
 }
 
-/// What Radar is, under its title.
+/// What Radar is, under its title, until it can tell the listener's
+/// genres.
 pub const RADAR_WORDS: &str =
     "New music chosen by YTFast from what you play. It changes every day.";
 /// What it says while it has nothing to suggest yet.
 pub const RADAR_EMPTY: &str = "Play a few songs you like, and Radar fills up with music like them.";
+/// What its button does, beside it.
+pub const RADAR_PLAY_WORDS: &str =
+    "Play new songs picked for you. Like, dislike or skip them, and the next ones change.";
 
-/// Radar's top: its title, as History's, and a line saying what it is
-/// (in the page's words' size, quieter); with nothing to suggest yet, what
-/// fills it.
-fn radar_header(ui: &mut egui::Ui, page: &Page) {
+/// Radar's top: its title, as History's; a line telling the listener's
+/// genres ("This week you played mostly ...", in the page's words' size,
+/// quieter), else what Radar is, or with nothing to suggest yet, what
+/// fills it; then its button, which plays its station (named "Play
+/// Radar"), as an album's Play, with what it does beside it.
+fn radar_header(app: &App, ui: &mut egui::Ui, page: &Page) {
     title(ui, "Radar");
     let size = theme::text_size(ui);
-    let words = if page.sections.is_empty() {
-        RADAR_EMPTY
-    } else {
-        RADAR_WORDS
+    let words = match &app.radar_line {
+        Some(line) => line.as_str(),
+        None if page.sections.is_empty() => RADAR_EMPTY,
+        None => RADAR_WORDS,
     };
     theme::label(ui, words, theme::regular(size), PALETTE.secondary);
+    ui.add_space(16.0);
+    let play = if theme::premium() { 52.0 } else { 64.0 };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 16.0;
+        let button = theme::round_button(
+            ui,
+            Icon::Play,
+            play,
+            play / 2.0,
+            Round::Filled,
+            PALETTE.text,
+            "Play Radar",
+        );
+        if button.clicked() {
+            app.act(Action::PlayRadar);
+        }
+        theme::label(
+            ui,
+            RADAR_PLAY_WORDS,
+            theme::regular(size),
+            PALETTE.secondary,
+        );
+    });
     ui.add_space(8.0);
 }
 

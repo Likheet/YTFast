@@ -43,8 +43,13 @@ crates/ytfast-core/   the engine (no user interface)
   src/read/           reading YouTube's replies: the ONLY place that does
   src/playreport.rs   reporting plays (History, recommendations)
   src/radar.rs        Radar, YTFast's own recommendations: what the
-                      listener did (kept on the computer), YouTube's
-                      radios and pages gathered, and the choice
+                      listener did (kept on the computer, with dates and
+                      genres), YouTube's radios and pages gathered, and
+                      the choice
+  src/station.rs      Radar's station: one button, new songs chosen one
+                      at a time, steered by likes, dislikes and skips
+  src/genre.rs        a song's genre in plain words, from Musixmatch's
+  src/deezer.rs       Deezer's listeners, Radar's second opinion
   src/helpers.rs      downloading yt-dlp and Deno, checked by SHA-256
   src/ytdlp.rs        running yt-dlp (sign-in from browser, song audio)
   src/solver.rs       yt-dlp's challenge solver (EJS) kept running in Deno
@@ -61,7 +66,7 @@ crates/ytfast-core/   the engine (no user interface)
   src/lyrics.rs       LRCLIB's lyrics and LRC text; words' times
                       estimated from a line's
   src/musixmatch.rs   Musixmatch: lyrics timed word by word, people's
-                      translations and rōmaji
+                      translations and rōmaji, and songs' genres
   src/translate.rs    lyrics in English and in Latin letters (people's,
                       else Google Translate's)
   src/net.rs          HTTP clients
@@ -466,35 +471,65 @@ Paolino), as `audio.rs` does.
 - Radar (the left menu's fourth entry, under Library; G then R): YTFast's
   own recommendations, apart from YouTube's, which stay as they are (the
   owner's choice, 20 October 2026; `docs/plan.md`). YouTube finds the
-  songs; YTFast chooses (`ytfast-core/src/radar.rs`). Each play is noted
-  as it ends, where its listening report is finished
+  songs, Deezer's listeners give a second opinion, YTFast chooses
+  (`ytfast-core/src/radar.rs`, `station.rs`). Each play is noted as it
+  ends, where its listening report is finished
   (`App::listened_report_at`): finished (heard to 80%, or to its end),
   skipped (Next pressed in its first 30 s, or first half), or neither
-  (`Playback::ending`, set just before); likes and dislikes too. The
-  record (`radar::Listening`, at most 3000 songs, the least recently
-  played let go) stays on the computer, in `listening.json` in YtFast's
-  data folder (`radar_files.rs`; never in the demo), written at most
-  every 30 s and as YTFast quits; Settings' Forget (asked first) clears
-  it. Radar is made when opened, at most once a day by the clock
-  (`Request::Radar`, `radar::gather`): the account's History; Liked
-  Music's first page while fewer than 8 songs were finished; the radios
-  of 4 favourite songs and the pages of 4 favourite artists, drawn each
-  day from the best 12 (each as likely as the listener's liking), one
-  song per artist, filled from History when the record is thin; one
-  request at a time, 0.3 s apart. `radar::rank` then chooses: "New to
-  you" (radios' songs new to the listener: not noted, not in History or
-  Liked, not liked on YouTube; scored by the seed's weight and how early
-  in its radio; half again for each more radio suggesting it; fans'
-  uploads count 0.3, music videos 0.8), "Artists to try" ("Fans might
-  also like" on the favourites' pages, new to the listener) and "New
-  from your artists" (their albums, EPs and singles of this year or
-  last, not played from); at most two of one artist in a row, each row
-  saying why in its small words above its title. `Radar::page` draws it
-  as Home's shelves, leaving out what has since been played or marked
-  "Not interested" (a song's or card's menu on Radar; three songs of one
-  artist disliked or unwanted leave out the artist). The last Radar is
-  kept in `radar.json` and shown at once; a day old, it shows while the
-  next is made. Signing out lets it go (it was the account's).
+  (`Playback::ending`, set just before), with its date and how long it
+  was heard (the last 35 days kept, for "this week" and "this month");
+  likes and dislikes too. Each song's genre comes from Musixmatch (its
+  Apple genres, put in plain families by `genre::family`: J-Pop, J-Rock,
+  K-Pop, Hip-Hop, Rock...; a Japanese rock song is J-Rock), asked once
+  per song (`App::want_genre`), or with its lyrics; a song of no known
+  genre takes its artist's. `Listening::tastes` says which genres the
+  listener plays (this week's plays, else this month's, else the
+  record's songs by liking; early skips do not count), and the page
+  tells them ("This week you played mostly ..."). The record
+  (`radar::Listening`, at most 3000 songs, the least recently played let
+  go) stays on the computer, in `listening.json` in YtFast's data folder
+  (`radar_files.rs`; never in the demo, whose listener is made up:
+  `demo::listening`), written at most every 30 s and as YTFast quits;
+  Settings' Forget (asked first) clears it. Radar is made when opened, at
+  most once a day by the clock (`Request::Radar`, `radar::gather`): the
+  account's History; Liked Music's first page while fewer than 8 songs
+  were finished; the radios of 4 favourite songs and the pages of 4
+  favourite artists, each genre its share of them (`radar::eased`: the
+  shares' square roots, so 62%, 21% and 9% become about 51%, 30% and
+  19%), drawn each day from each genre's best, one song per artist,
+  filled from History when the record is thin; one request at a time,
+  0.3 s apart; then Deezer about the 4 artists (`deezer::Deezer::opinion`:
+  their related artists and their Deezer radios). `radar::rank` then
+  makes the station's pool (up to 200 songs new to the listener: not
+  noted, not in History or Liked, not liked on YouTube; scored by the
+  seed's weight and how early in its radio, half again for each more
+  radio suggesting it, 1.6 times when the song is in a Deezer radio and
+  1.25 when Deezer relates its artist to a favourite; fans' uploads count
+  0.3, music videos 0.8; each played for its strongest seed's genre; at
+  most 4 of one artist), "Artists to try" ("Fans might also like" on the
+  favourites' pages, new to the listener, half again for each favourite
+  Deezer relates them to; one row mixed by genre, taken in turn) and
+  "New from your artists" (one album, EP or single of each artist, of
+  this year or last, not played from; an album over an EP or single of
+  the same name). The page's Play button (named "Play Radar") plays the
+  station (`App::play_radar`, `station::Station`): each pick is first the
+  genre furthest behind its share, then that genre's best song, times
+  the session's leanings toward its artist and the songs whose radios
+  suggested it; an artist just played waits three songs; every fourth
+  pick is a surprise of any genre from further down. A like (1.6 times
+  its artist, 1.25 its genre, 1.3 its seeds) brings its song's radio
+  (`Request::StationRadio`), whose songs count as a favourite's; a
+  dislike (0.15, 0.75, 0.6) or an early skip (0.6, 0.9, 0.85) turns away,
+  and an artist leaned under 0.3 is left out; each of these chooses the
+  songs to come again (`App::steer_station`, `Queue::take_coming`), a
+  song heard to its end only leans (1.15, 1.05, 1.1). The station keeps
+  three songs coming in place of YouTube's Up next, "Playing from Radar";
+  another queue ends it. `Radar::page` draws the rows as Home's shelves,
+  leaving out what has since been marked "Not interested" (a card's menu
+  on Radar; three songs of one artist disliked or unwanted leave out the
+  artist). The last Radar is kept in `radar.json` and shown at once; a
+  day old (or made by an older YTFast, `RADAR_VERSION`), it shows while
+  the next is made. Signing out lets it go (it was the account's).
 - `--demo` replaces the account with made-up music and no network or
   sound, for trying the interface and for screenshots. It can be open
   beside YTFast in real use without disturbing it: it keeps a log of its
@@ -614,7 +649,21 @@ Paolino), as `audio.rs` does.
     at most ten requests (History, Liked Music's first page while the
     record is thin, four radios, four artists' pages), one at a time,
     0.3 s apart (`radar::gather`). Nothing of a song's audio is fetched
-    for it.
+    for it. Deezer is asked about the same four artists then: at most
+    three requests each (a search, kept by ID for the next day, their
+    related artists and their radio), 0.3 s apart.
+  - Radar's station asks YouTube for a song's radio only for a song
+    liked in it (once per song), and when it runs low (under 30 songs
+    left: the last song liked or heard to its end in it, at most once
+    every three songs) (`Station::wants_radio`). Its songs are made ready
+    one ahead, as any queue's; a like, dislike or early skip chooses the
+    songs to come again, so at most one song made ready ahead is let go
+    of each time.
+  - A song's genre is asked of Musixmatch once (`Request::Genre`, one
+    request): when it was heard 30 s or more and its genre is not known
+    (its lyrics, when shown, bring it with them). Each time Radar is
+    made, up to 12 songs played before have theirs asked, 1.5 s apart
+    (`Request::Genres`).
 - Every song played is reported twice: when it starts, and how long it
   played (`playreport.rs`). Without this, History and recommendations stop
   learning.
@@ -784,12 +833,14 @@ in `video.rs`) runs only when `YTFAST_TEST_VIDEO` names a YouTube H.264
 picture stream (720p, `yt-dlp -f 136`, as YouTube serves it); run it with
 `--release`. Such a file is never committed.
 
-Three tests ask the real services, and only when told to:
+Four tests ask the real services, and only when told to:
 `musixmatch_itself` when `YTFAST_TEST_MUSIXMATCH` names a folder for
 Musixmatch's session, `google_translate_itself` when
-`YTFAST_TEST_TRANSLATE` is set, and `discord_itself` (the Discord app on
-the computer says hello and takes the status away: nothing shows) when
-`YTFAST_TEST_DISCORD` is set. None sends anything of the owner's.
+`YTFAST_TEST_TRANSLATE` is set, `deezer_itself` (YOASOBI's related
+artists and radio) when `YTFAST_TEST_DEEZER` is set, and
+`discord_itself` (the Discord app on the computer says hello and takes
+the status away: nothing shows) when `YTFAST_TEST_DISCORD` is set. None
+sends anything of the owner's.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on macOS, Windows and
 Linux, and uploads the app (`YTFast-for-Mac`: YTFast.app, signed ad hoc, in
@@ -1435,6 +1486,36 @@ Radar's page in each look. Not yet tested: Radar with the owner's
 account (real radios, artists' pages and History), how good its
 suggestions are to the owner's ear, and the Mac.
 
+Then (27 October 2026, version 1.6.0), at the owner's word: Radar's
+station (above). The owner found rows of "songs like this song" dull and
+asked for genres, this week and this month, and one button that plays
+new songs and changes with each like and dislike; and for nothing that
+needs an account or a key. Radar's page now says which genres the
+listener plays and has one Play button; the record keeps each play's
+date and how long it was heard, and each song's genre from Musixmatch;
+"Artists to try" is one row mixed by genre; "New from your artists" has
+one release per artist (it had duplicates); Deezer's listeners give a
+second opinion (no key). Tested on the owner's Windows laptop: the unit
+tests (413, among them Musixmatch's genres of public songs put in
+families, dates kept 35 days, the genres of this week, else this month,
+else lately, the shares eased and split, seeds and artists drawn by
+genre, the pool new and agreed on by Deezer, one release of a title, the
+station's genre mix, a like leaning toward and a dislike away, a
+disliked artist left out, a liked song's radio coming next, a surprise
+every fourth song, a low station asking for one radio; in the app, the
+button playing the station and keeping songs coming without YouTube's
+Up next, likes, dislikes and early skips choosing again, a late radio
+for another station dropped, the button waiting for the first Radar,
+genres asked once and kept, and a few older songs' genres a day);
+Musixmatch and Deezer asked for real with public names (Lemon J-Pop,
+Kesariya Indian; YOASOBI's 20 related artists and 40 radio songs); and
+the demo off the screen: the page's line ("This week you played mostly
+Pop, Rock and Electronic"), the button, "Playing from Radar" in Up next,
+a like bringing the liked artist's song forward, a dislike moving on.
+Not yet tested: with the owner's account (real genres, real Deezer
+agreement with their artists, how good the picks are to their ear), and
+the Mac.
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account
@@ -1452,8 +1533,8 @@ Music's own full screen is the video's); Up next's rows show the open
 hand; a liked song shows its filled thumb in Up next too; a song's menu
 has Play next first and Start mix third; a click that would replace two
 or more songs lined up by hand asks first; the menu on the left has
-YTFast's own Radar under Library (G then R), whose songs' and cards'
-menus offer "Not interested".
+YTFast's own Radar under Library (G then R), with its station's Play
+button, whose cards' menus offer "Not interested".
 
 Tested earlier, in a cloud session: unit tests (cookie handling, request
 signature, page config, reading real saved replies, play reports, yt-dlp
