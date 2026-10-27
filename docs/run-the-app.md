@@ -292,6 +292,15 @@ whose listeners give a second opinion. Don't want an artist or a
 release? Its menu (the three dots) on Radar has **Not interested**.
 **Settings**, **Radar**, **Forget** starts it again.
 
+**Your stats** (the button beside Radar's first line): your own numbers,
+for this week, this month or all time: how many songs you played, for
+how long, how many songs and artists, how many you played again, skipped
+in their first seconds, liked and disliked; your genres; and your songs
+played most, artists played most, songs skipped most, liked and
+disliked. Click a song to play it, or an artist to open their page. It
+counts what you play in YTFast on this computer (all time: since 1.5.0,
+with no time for the older plays).
+
 **Discord status** (Settings, off at first): your Discord profile shows
 the song you are playing, its cover and how far into it you are, while
 the Discord app is open on the same computer (Discord in a browser

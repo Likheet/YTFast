@@ -170,10 +170,11 @@ made-up rows. AGENTS.md's list of request limits gets Radar's.
 4. Measured on the owner's laptop (Radar's songs finished against
    skipped), and tuned.
 5. Later, the owner's ideas: one record for both laptops (a folder both
-   sync, as OneDrive), one record per account on one computer (the
-   owner's brother signing in there), and a page of the listener's own
-   numbers (plays, replays, skips, likes, by week and month: the record
-   already keeps them).
+   sync, as OneDrive), and one record per account on one computer (the
+   owner's brother signing in there). A page of the listener's own
+   numbers, "Your stats" (plays, time, replays, skips, likes, genres,
+   songs and artists, by week, month and all time): **Built** (1.7.0,
+   27 October 2026).
 
 ## Ideas for later
 

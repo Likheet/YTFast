@@ -453,6 +453,8 @@ pub enum Action {
     NotInterested(radar::Unwanted),
     /// Radar's button: its station plays new songs, one after another.
     PlayRadar,
+    /// The period "Your stats" shows (its chips).
+    StatsPeriod(ytfast_core::stats::Period),
     /// Radar forgets what it noted (Settings, after asking).
     ForgetListening,
     JumpTo(u64),
@@ -609,6 +611,10 @@ const GENRE_AFTER: f64 = 30.0;
 const RADAR_NOTHING_NEW: &str =
     "Radar has no more new songs for now. Play more music, and it finds more.";
 
+/// What "Your stats" were counted from: the period, the record's plays
+/// (how many, the last one's time), ratings and songs, and the minute.
+type StatsKey = (ytfast_core::stats::Period, usize, u64, usize, usize, u64);
+
 /// Radar's station while its queue plays ([`App::play_radar`]).
 struct StationRun {
     station: Station,
@@ -736,6 +742,10 @@ pub struct App {
     /// What Radar's page says of the listener's genres ("This week you
     /// played mostly ..."), once enough is known.
     pub radar_line: Option<String>,
+    /// The period "Your stats" shows, and its numbers as last counted
+    /// (counted again when the record or the minute changes).
+    pub stats_period: ytfast_core::stats::Period,
+    stats_counted: RefCell<Option<(StatsKey, std::rc::Rc<ytfast_core::stats::Stats>)>>,
     /// Radar's station, while its queue plays, and how many there were.
     station: Option<StationRun>,
     stations: u64,
@@ -1100,6 +1110,8 @@ impl App {
             listening_changed: false,
             listening_written: None,
             radar_line: None,
+            stats_period: ytfast_core::stats::Period::default(),
+            stats_counted: RefCell::new(None),
             station: None,
             stations: 0,
             station_wanted: false,
@@ -2102,6 +2114,34 @@ impl App {
             generation: self.queue.generation(),
             number: self.stations,
         });
+    }
+
+    /// The listener's numbers for "Your stats", over the period chosen:
+    /// counted again only when the record changed, or a minute on.
+    pub fn stats(&self) -> std::rc::Rc<ytfast_core::stats::Stats> {
+        let now = radar::now();
+        let log = self.listening.log();
+        let key: StatsKey = (
+            self.stats_period,
+            log.len(),
+            log.last().map_or(0, |p| p.at),
+            self.listening.ratings().len(),
+            self.listening.songs().len(),
+            now / 60,
+        );
+        let mut counted = self.stats_counted.borrow_mut();
+        if let Some((kept, stats)) = counted.as_ref()
+            && *kept == key
+        {
+            return std::rc::Rc::clone(stats);
+        }
+        let stats = std::rc::Rc::new(ytfast_core::stats::stats(
+            &self.listening,
+            self.stats_period,
+            now,
+        ));
+        *counted = Some((key, std::rc::Rc::clone(&stats)));
+        stats
     }
 
     /// Radar's station, while its queue is the one playing.
@@ -3674,6 +3714,7 @@ impl App {
                 self.next();
             }
             Action::PlayRadar => self.play_radar(),
+            Action::StatsPeriod(period) => self.stats_period = period,
             Action::Previous => self.previous(),
             Action::Seek(to) if self.playback.state == PlayState::LeftOff => {
                 self.playback.start_at = to.max(0.0);
@@ -3832,7 +3873,7 @@ impl App {
                     LikeState::Neutral => ytfast_core::read::Rating::Indifferent,
                 };
                 let track = self.track_named(&video_id);
-                self.listening.rated(&track, rating);
+                self.listening.rated(&track, rating, radar::now());
                 self.listening_changed = true;
                 // A song of Radar's station: what comes next changes.
                 match like {
@@ -7108,6 +7149,50 @@ mod tests {
         let page = made.page(&listening);
         let titles: Vec<&str> = page.sections.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(titles, ["Artists to try", "New from your artists"]);
+    }
+
+    /// Radar's "Your stats" opens the listener's numbers, Radar still lit
+    /// in the menu: the period's chips, its numbers as tiles (read as a
+    /// screen reader reads them), and a song of its lists that plays.
+    #[test]
+    fn your_stats_shows_the_listeners_numbers() {
+        use crate::theme::Theme;
+        let mut w = Window::new(Theme::YouTubeMusic);
+        let a = by("a", "Artist A");
+        for _ in 0..2 {
+            w.h.app.listening.played(
+                &a,
+                200.0,
+                200.0,
+                radar::Ending::Finished,
+                radar::now() - 3600,
+            );
+        }
+        w.h.app
+            .listening
+            .rated(&a, ytfast_core::read::Rating::Like, radar::now() - 60);
+        w.h.act(Action::Navigate(Route::Radar));
+        let build = radar_asks(&w.h.requests())[0];
+        w.h.answer(Event::Radar {
+            build,
+            result: Ok(made_radar(&["n1"])),
+        });
+        w.settle();
+        let stats = w.find("Your stats", 0);
+        w.click(stats.center());
+        assert_eq!(w.h.app.route, Route::Stats);
+        w.settle();
+        w.find("Radar", 0);
+        for tile in ["Plays: 2", "Replays: 1", "Likes: 1", "Time listened: 7 min"] {
+            assert!(w.texts.iter().any(|t| t == tile), "{tile}: {:?}", w.texts);
+        }
+        let month = w.find("This month", 0);
+        w.click(month.center());
+        assert_eq!(w.h.app.stats_period, ytfast_core::stats::Period::Month);
+        w.settle();
+        let row = w.find("Play A", 0);
+        w.click(row.center());
+        assert_eq!(w.h.entry().1, "a");
     }
 
     /// Radar's button plays its station: its new songs, more chosen as the

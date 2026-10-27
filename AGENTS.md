@@ -50,6 +50,8 @@ crates/ytfast-core/   the engine (no user interface)
                       at a time, steered by likes, dislikes and skips
   src/genre.rs        a song's genre in plain words, from Musixmatch's
   src/deezer.rs       Deezer's listeners, Radar's second opinion
+  src/stats.rs        the listener's own numbers ("Your stats"), from
+                      Radar's record
   src/helpers.rs      downloading yt-dlp and Deno, checked by SHA-256
   src/ytdlp.rs        running yt-dlp (sign-in from browser, song audio)
   src/solver.rs       yt-dlp's challenge solver (EJS) kept running in Deno
@@ -106,7 +108,8 @@ crates/ytfast/        the app: an egui window on fastframe
                       page, player bar, player page (now_playing), the
                       video mode's switch and picture (video), the
                       lyrics' words lit as sung and Translate
-                      (lyric_lines), Up next, settings, dialogs, sign-in
+                      (lyric_lines), Up next, settings, the listener's
+                      numbers (stats), dialogs, sign-in
   assets/             icons (Google's Material Symbols, Apache 2.0), the
                       Roboto font (OFL) and the app's own mark
   build.rs            the icon and name in the Windows program
@@ -530,6 +533,19 @@ Paolino), as `audio.rs` does.
   artist). The last Radar is kept in `radar.json` and shown at once; a
   day old (or made by an older YTFast, `RADAR_VERSION`), it shows while
   the next is made. Signing out lets it go (it was the account's).
+  Radar's "Your stats" button opens the listener's own numbers
+  (`Route::Stats`, drawn as Settings is, by `views/stats.rs`, from
+  `stats::stats`): this week's, this month's (the plays kept with their
+  dates; likes and dislikes are kept with theirs too, `Listening::rated`)
+  or all time's (the record's counts since 1.5.0; older plays have no
+  time); plays, time listened, songs, artists, replays (a song's plays
+  after its first), early skips, likes and dislikes as tiles (each named
+  "Plays: 50" for screen readers), the genres as bars, and the songs
+  played most, artists played most, songs skipped most, liked and
+  disliked (a song's row plays it, an artist's opens their page). An
+  artist shows by the name most of their songs give them (by commas
+  only: "June & The Kites" is one artist). Counted again only when the
+  record changes, or a minute on (`App::stats`).
 - `--demo` replaces the account with made-up music and no network or
   sound, for trying the interface and for screenshots. It can be open
   beside YTFast in real use without disturbing it: it keeps a log of its
@@ -1527,6 +1543,19 @@ fmt, clippy and the unit tests from an empty `target/` (run with another
 chat's unfinished Radar work in the folder, which this change leaves
 out), which then held 3 GB; the app's test program's debug file went
 from 186 MB to 67 MB, `ytfast_core`'s from 110 MB to 51 MB.
+
+Then (27 October 2026, version 1.7.0), at the owner's word: "Your
+stats", the listener's own numbers (above), opened from Radar's page.
+Tested on the owner's Windows laptop: the unit tests (419, among them
+this week's, this month's and all time's numbers from a made-up record,
+a play noted by 1.6.0 counted by its ending, likes and dislikes by their
+dates, an artist shown by their songs' name, and in the app the page
+opened from Radar's button, its tiles read as a screen reader reads
+them, its chips, and a song of its lists played), and the demo off the
+screen: the page this week and all time, in a small window (960 by 600),
+and in each look (Premium's bars in its accent), and Radar's button
+beside its line. Not yet tested: with the owner's own record, and the
+Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

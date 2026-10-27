@@ -56,12 +56,15 @@ pub enum Route {
     /// YouTube's radios and pages once a day ([`Request::Radar`]), not
     /// loaded as a page.
     Radar,
+    /// The listener's own numbers ([`ytfast_core::stats`]), from Radar's
+    /// record (not loaded from YouTube).
+    Stats,
 }
 
 impl Route {
     /// Pages that are not loaded from YouTube.
     pub fn is_local(&self) -> bool {
-        matches!(self, Self::Settings)
+        matches!(self, Self::Settings | Self::Stats)
     }
 
     /// A page of shelves that YouTube Music loads more of as its end
@@ -1504,7 +1507,7 @@ async fn page(shared: &Shared, route: Route, load: u64, order: Option<String>) {
             .map(|p| (p, None)),
         Route::History => session.history_page().await.map(|p| (p, None)),
         // Not loaded as pages ([`Request::Radar`] makes Radar's).
-        Route::Settings | Route::Radar => return,
+        Route::Settings | Route::Radar | Route::Stats => return,
     };
     let more = match result {
         Ok((mut page, more)) => {

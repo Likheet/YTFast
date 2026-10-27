@@ -15,7 +15,7 @@
 //! - [`translate`]: lyrics in another language and in Latin letters.
 //! - [`radar`], [`station`] and [`deezer`]: Radar, YTFast's own
 //!   recommendations, its station, and Deezer's listeners as a second
-//!   opinion.
+//!   opinion; [`stats`], the listener's own numbers.
 //! - [`playreport`]: telling YouTube what was played (History, mixes).
 //! - [`direct`] and [`solver`]: finding a song's audio the website's way
 //!   (the fast way), with yt-dlp's challenge solver kept running in Deno.
@@ -49,6 +49,7 @@ pub mod read;
 pub mod redact;
 pub mod solver;
 pub mod station;
+pub mod stats;
 pub mod stream;
 pub mod translate;
 pub mod video;

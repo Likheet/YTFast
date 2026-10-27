@@ -567,7 +567,7 @@ fn unsorted(route: &Route) -> Page {
             )],
         },
         // Not pages from YouTube (Radar's is made: [`radar_found`]).
-        Route::Settings | Route::Radar => Page::default(),
+        Route::Settings | Route::Radar | Route::Stats => Page::default(),
     }
 }
 
@@ -650,6 +650,16 @@ pub fn listening(now: u64) -> ytfast_core::radar::Listening {
             listening.played(&track, length, length, Ending::Finished, when);
         }
         listening.set_genre(&track.video_id, genre);
+    }
+    // A few liked this week, one disliked.
+    for (i, rating) in [
+        (1, Rating::Like),
+        (7, Rating::Like),
+        (14, Rating::Like),
+        (12, Rating::Dislike),
+    ] {
+        let days = (i % 5) as u64;
+        listening.rated(&song(i), rating, now.saturating_sub(days * 86_400 + 1_800));
     }
     listening
 }

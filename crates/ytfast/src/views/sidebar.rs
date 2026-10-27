@@ -162,7 +162,10 @@ fn showing(app: &App, route: &Route) -> bool {
     // Library stays lit on all its tabs, as on YouTube Music; the page's
     // entry stays lit under the player page, which covers only the page.
     let library = |r: &Route| r.library_tab().is_some();
-    app.route == *route || (*route == Route::LibraryRecent && library(&app.route))
+    app.route == *route
+        || (*route == Route::LibraryRecent && library(&app.route))
+        // The listener's numbers are Radar's.
+        || (*route == Route::Radar && app.route == Route::Stats)
 }
 
 /// Home, Explore, Library: an icon and a name, 48 high.

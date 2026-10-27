@@ -15,6 +15,7 @@ mod selection_bar;
 mod settings;
 mod sidebar;
 mod signin;
+mod stats;
 mod topbar;
 mod video;
 mod widgets;

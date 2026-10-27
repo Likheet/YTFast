@@ -96,12 +96,16 @@ const CARD_GAP: f32 = 24.0;
 pub fn show(app: &App, ui: &mut egui::Ui) {
     let route = app.route.clone();
     let area = ui.max_rect();
-    if route == Route::Settings {
+    if route == Route::Settings || route == Route::Stats {
         app.page_scrolled.set(false);
         // Its column is centred in the whole page (its scroll bar at the
         // window's edge).
         let mut ui = ui.new_child(UiBuilder::new().max_rect(area));
-        crate::views::settings::show(app, &mut ui);
+        if route == Route::Settings {
+            crate::views::settings::show(app, &mut ui);
+        } else {
+            crate::views::stats::show(app, &mut ui);
+        }
         return;
     }
     match app.pages.get(&route) {
@@ -904,7 +908,8 @@ pub const RADAR_PLAY_WORDS: &str =
 /// Radar's top: its title, as History's; a line telling the listener's
 /// genres ("This week you played mostly ...", in the page's words' size,
 /// quieter), else what Radar is, or with nothing to suggest yet, what
-/// fills it; then its button, which plays its station (named "Play
+/// fills it, and beside it the button to the listener's numbers ("Your
+/// stats"); then its button, which plays its station (named "Play
 /// Radar"), as an album's Play, with what it does beside it.
 fn radar_header(app: &App, ui: &mut egui::Ui, page: &Page) {
     title(ui, "Radar");
@@ -914,7 +919,15 @@ fn radar_header(app: &App, ui: &mut egui::Ui, page: &Page) {
         None if page.sections.is_empty() => RADAR_EMPTY,
         None => RADAR_WORDS,
     };
-    theme::label(ui, words, theme::regular(size), PALETTE.secondary);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 16.0;
+        // As tall as the button, so the words stand on its middle line.
+        ui.set_min_height(36.0);
+        theme::label(ui, words, theme::regular(size), PALETTE.secondary);
+        if theme::pill_button(ui, "Your stats", false).clicked() {
+            app.act(Action::Navigate(Route::Stats));
+        }
+    });
     ui.add_space(16.0);
     let play = if theme::premium() { 52.0 } else { 64.0 };
     ui.horizontal(|ui| {

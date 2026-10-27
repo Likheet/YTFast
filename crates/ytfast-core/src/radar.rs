@@ -165,10 +165,39 @@ pub struct Play {
     pub ending: Ending,
     /// How long it was heard, in whole seconds.
     pub heard: u32,
+    /// How it counted (none for plays noted by 1.6.0: [`Play::outcome`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counted: Option<Outcome>,
+}
+
+impl Play {
+    /// How it counted: as noted, else (a play noted by 1.6.0) as its
+    /// ending and the time heard say.
+    pub fn outcome(&self) -> Outcome {
+        self.counted.unwrap_or(match self.ending {
+            Ending::Finished => Outcome::Finished,
+            Ending::Skipped if f64::from(self.heard) < EARLY => Outcome::Skipped,
+            _ => Outcome::Played,
+        })
+    }
+}
+
+/// A like or a dislike chosen in YTFast, with its date (for the listener's
+/// numbers: [`crate::stats`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rated {
+    /// When, in seconds since 1970.
+    pub at: u64,
+    /// The song (its video ID), its title and artists.
+    pub id: String,
+    pub title: String,
+    pub artists: String,
+    pub rating: Rating,
 }
 
 /// How a play counted ([`Listening::played`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Outcome {
     /// Heard to its end, or nearly.
     Finished,
@@ -311,12 +340,14 @@ pub struct Listening {
     unwanted_releases: BTreeSet<String>,
     /// The plays of the last [`LOG_DAYS`] days, oldest first.
     log: Vec<Play>,
+    /// The likes and dislikes of the last [`LOG_DAYS`] days, oldest first.
+    ratings: Vec<Rated>,
 }
 
 /// The keys an artist is known by: its page (`id:UC...`), and its name
 /// (`name:...`, the first artist's, in small letters), as some rows carry
 /// only one of them.
-fn artist_keys(id: Option<&str>, artists: &str) -> Vec<String> {
+pub(crate) fn artist_keys(id: Option<&str>, artists: &str) -> Vec<String> {
     let mut keys = Vec::new();
     if let Some(id) = id.filter(|id| !id.is_empty()) {
         keys.push(format!("id:{id}"));
@@ -386,6 +417,7 @@ impl Listening {
             id: track.video_id.clone(),
             ending,
             heard: heard.max(0.0).round() as u32,
+            counted: Some(outcome),
         });
         self.trim(now);
         Some(outcome)
@@ -398,6 +430,9 @@ impl Listening {
         self.log.retain(|play| play.at >= since);
         let over_log = self.log.len().saturating_sub(LOG_MOST);
         self.log.drain(..over_log);
+        self.ratings.retain(|rated| rated.at >= since);
+        let over_ratings = self.ratings.len().saturating_sub(LOG_MOST);
+        self.ratings.drain(..over_ratings);
         let over = self.songs.len().saturating_sub(MOST_SONGS);
         if over == 0 {
             return;
@@ -413,12 +448,28 @@ impl Listening {
         }
     }
 
-    /// The account's rating of a song changed in YTFast. Disliked, it is
-    /// never suggested (and, with others of its artist, nor is the
-    /// artist); liked or neither, it may be again.
-    pub fn rated(&mut self, track: &Track, rating: Rating) {
-        if let Some(song) = self.songs.get_mut(&track.video_id) {
+    /// The account's rating of a song changed in YTFast, at `now`
+    /// (seconds since 1970). Disliked, it is never suggested (and, with
+    /// others of its artist, nor is the artist); liked or neither, it may
+    /// be again.
+    pub fn rated(&mut self, track: &Track, rating: Rating, now: u64) {
+        let song = self.songs.get_mut(&track.video_id);
+        let (title, artists) = match &song {
+            Some(song) if track.title.is_empty() => (song.title.clone(), song.artists.clone()),
+            _ => (track.title.clone(), track.artists.clone()),
+        };
+        if let Some(song) = song {
             song.rating = Some(rating);
+        }
+        if !track.video_id.is_empty() {
+            self.ratings.push(Rated {
+                at: now,
+                id: track.video_id.clone(),
+                title,
+                artists,
+                rating,
+            });
+            self.trim(now);
         }
         match rating {
             Rating::Dislike => self.unwant_song(track),
@@ -475,11 +526,32 @@ impl Listening {
             && self.unwanted_artists.is_empty()
             && self.unwanted_releases.is_empty()
             && self.log.is_empty()
+            && self.ratings.is_empty()
     }
 
     /// The plays of the last [`LOG_DAYS`] days, oldest first.
     pub fn log(&self) -> &[Play] {
         &self.log
+    }
+
+    /// The likes and dislikes chosen in YTFast in the last [`LOG_DAYS`]
+    /// days, oldest first.
+    pub fn ratings(&self) -> &[Rated] {
+        &self.ratings
+    }
+
+    /// Each song's genre (its own, else its artist's), by its video ID:
+    /// the songs of the record whose genre is known.
+    pub fn song_genres(&self) -> HashMap<String, String> {
+        let artists = self.artist_genres();
+        self.songs
+            .iter()
+            .filter_map(|(id, song)| {
+                let genre =
+                    self.genre_with(&artists, id, song.artist_id.as_deref(), &song.artists)?;
+                Some((id.clone(), genre))
+            })
+            .collect()
     }
 
     /// A song's genre, as Musixmatch gave it (`None`: it has none). True
@@ -1806,7 +1878,7 @@ mod tests {
         let loved = song("loved", "A");
         let skipped = song("skipped", "B");
         finished(&mut listening, &loved, 3, NOW);
-        listening.rated(&loved, Rating::Like);
+        listening.rated(&loved, Rating::Like, NOW);
         listening.played(&skipped, 3.0, 200.0, Ending::Skipped, NOW);
         let songs = listening.songs();
         assert_eq!(songs["loved"].weight(NOW), 5.0);
@@ -1995,7 +2067,7 @@ mod tests {
         assert_eq!(radar.songs_left(&listening), 6, "its artist stays");
         // Three of one artist's songs disliked or unwanted: the artist goes.
         for n in 0..ARTIST_AFTER {
-            listening.rated(&song(&format!("old{n}"), "Y"), Rating::Dislike);
+            listening.rated(&song(&format!("old{n}"), "Y"), Rating::Dislike, NOW);
         }
         assert_eq!(radar.songs_left(&listening), 3);
         // A song played since is no longer new.
