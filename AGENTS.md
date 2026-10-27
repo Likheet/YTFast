@@ -1516,6 +1516,18 @@ Not yet tested: with the owner's account (real genres, real Deezer
 agreement with their artists, how good the picks are to their ear), and
 the Mac.
 
+Then (27 October 2026), at the owner's word: debug builds make
+dependencies without debug info (`debug = false` in
+`[profile.dev.package."*"]`). The owner's Windows laptop was out of
+disk space: YTFast's `target/` had reached 100 GB in three weeks, as
+cargo keeps every old build (`Cargo.lock` changed in 33 commits since
+6 October). YTFast's own crates keep their debug info, and release
+builds are unchanged, so this needs no release. Tested on that laptop:
+fmt, clippy and the unit tests from an empty `target/` (run with another
+chat's unfinished Radar work in the folder, which this change leaves
+out), which then held 3 GB; the app's test program's debug file went
+from 186 MB to 67 MB, `ytfast_core`'s from 110 MB to 51 MB.
+
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);
 there is no Comments tab; back and forward arrows sit beside the account

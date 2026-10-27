@@ -47,7 +47,10 @@ YTFAST_TEST_VIDEO=path/to/video.mp4 cargo test --release -p ytfast-core decodes_
 - CI builds with `--locked`, so a dependency change must come with its
   `Cargo.lock` change. It checks formatting on Linux only.
 - A debug build is fine to listen to: dependencies are built optimised even
-  in debug (`[profile.dev.package."*"]`).
+  in debug (`[profile.dev.package."*"]`), and without debug info, which
+  made each build much larger. Run `cargo clean` now and then all the
+  same: cargo keeps every old build until then (`target/` reached 100 GB
+  in three weeks).
 
 ## How one feature runs through the code
 

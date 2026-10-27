@@ -23,8 +23,11 @@ strip = true
 
 # Audio decoding is too slow at opt-level 0 to listen to while developing.
 # Dependencies stay optimized; our own crates stay quick to rebuild.
+# Dependencies get no debug info: we rarely step into their code, and their
+# debug info made the .pdb and .rlib files in target/ very large.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 # The egui and winit forks Spotifast and the other fastframe apps build
 # with (fixes waiting for upstream releases, including egui's busy-loop fix
