@@ -2128,20 +2128,18 @@ async fn related(shared: &Shared, video_id: String) {
 async fn radar(
     shared: &Shared,
     build: u64,
-    listening: ytfast_core::radar::Listening,
+    mut listening: ytfast_core::radar::Listening,
     deezer_ids: BTreeMap<String, u64>,
 ) {
     use ytfast_core::radar;
     let now = radar::now();
     let result = if shared.demo {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        Ok(radar::rank(
-            &listening,
-            &demo::radar_found(&listening, now),
-            now,
-        ))
+        let found = demo::radar_found(&listening, now);
+        listening.take_account(&found.account, now);
+        Ok(radar::rank(&listening, &found, now))
     } else if let Some(p) = shared.preparer().await {
-        match radar::gather(&p.session, &listening, now).await {
+        match radar::gather(&p.session, &mut listening, now).await {
             Ok(mut found) => {
                 // Deezer's listeners on the same favourite artists: a
                 // second opinion, when it answers.

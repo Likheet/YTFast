@@ -3484,7 +3484,13 @@ impl App {
         }
         self.radar_making = false;
         match result {
-            Ok(made) => {
+            Ok(mut made) => {
+                // What the account said of the listening on every device
+                // (the phone too) goes into the record, as it went into
+                // the one this Radar was made from.
+                let account = std::mem::take(&mut made.account);
+                self.listening.take_account(&account, radar::now());
+                self.listening_changed = true;
                 if let Some(files) = &self.radar_files {
                     files.save_radar(Some(&made));
                 }
@@ -4767,6 +4773,9 @@ fn words(event: &Event) -> Vec<&str> {
         } => {
             for pick in &made.pool {
                 track(&pick.track, &mut words);
+            }
+            for t in made.account.tracks() {
+                track(t, &mut words);
             }
             words.extend(made.artists.iter().map(|a| a.name.as_str()));
             words.extend(made.releases.iter().map(|r| r.title.as_str()));
@@ -7136,12 +7145,19 @@ mod tests {
         assert_eq!(w.h.entry().1, "n1");
 
         let now = radar::now();
-        let listening = crate::demo::listening(now);
+        let mut listening = crate::demo::listening(now);
         assert_eq!(
             listening.tastes(now).map(|t| t.line()).as_deref(),
             Some("This week you played mostly Pop, Rock and Electronic")
         );
-        let made = radar::rank(&listening, &crate::demo::radar_found(&listening, now), now);
+        // As the backend makes it: the made-up account first, which agrees
+        // with the made-up listener (its dislike stays), then the choice.
+        let found = crate::demo::radar_found(&listening, now);
+        listening.take_account(&found.account, now);
+        let all = ytfast_core::stats::stats(&listening, ytfast_core::stats::Period::All, now);
+        assert!(all.elsewhere > 0);
+        assert_eq!(all.dislikes, 1);
+        let made = radar::rank(&listening, &found, now);
         assert!(made.pool.len() >= 8, "{} songs", made.pool.len());
         assert!(made.pool.iter().all(|p| p.genre.is_some()));
         assert!(made.artists.len() >= 4, "{} artists", made.artists.len());
@@ -7183,7 +7199,12 @@ mod tests {
         assert_eq!(w.h.app.route, Route::Stats);
         w.settle();
         w.find("Radar", 0);
-        for tile in ["Plays: 2", "Replays: 1", "Likes: 1", "Time listened: 7 min"] {
+        for tile in [
+            "Plays: 2",
+            "Replays: 1",
+            "Likes: 1",
+            "Time in YTFast: 7 min",
+        ] {
             assert!(w.texts.iter().any(|t| t == tile), "{tile}: {:?}", w.texts);
         }
         let month = w.find("This month", 0);
@@ -7405,6 +7426,42 @@ mod tests {
             result: Ok(made_radar(&["n1"])),
         });
         assert_eq!(genres_asked(h.requests()), [20 - GENRES_A_DAY]);
+    }
+
+    /// What the account says of the listening on every device comes with
+    /// a new Radar into the record: History's songs as plays on other
+    /// devices, Liked Music's as liked. The Radar kept holds none of it,
+    /// and a late Radar brings nothing.
+    #[test]
+    fn a_new_radar_brings_the_accounts_plays() {
+        let account = radar::AccountPlays {
+            history: vec![(by("phone", "ArtistP"), radar::Ago::Today)],
+            liked: vec![by("loved", "ArtistL")],
+            often: Vec::new(),
+        };
+        let mut h = Harness::new();
+        h.act(Action::Navigate(Route::Radar));
+        let build = radar_asks(&h.requests())[0];
+        let mut late = made_radar(&["n1"]);
+        late.account = account.clone();
+        h.answer(Event::Radar {
+            build: build + 1,
+            result: Ok(late),
+        });
+        assert!(!h.app.listening.knows("phone"));
+        let mut made = made_radar(&["n1"]);
+        made.account = account;
+        h.answer(Event::Radar {
+            build,
+            result: Ok(made),
+        });
+        let songs = h.app.listening.songs();
+        assert_eq!((songs["phone"].plays, songs["phone"].elsewhere), (1, 1));
+        assert_eq!(songs["loved"].rating, Some(ytfast_core::read::Rating::Like));
+        assert_eq!(
+            h.app.radar.as_ref().map(|r| r.account.clone()),
+            Some(radar::AccountPlays::default())
+        );
     }
 
     /// The equalizer's switch and bands reach the player, its bands kept

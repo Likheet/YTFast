@@ -14,9 +14,18 @@ use crate::backend::Route;
 use crate::theme::{self, PALETTE};
 
 /// What the page is, under its title.
-pub const STATS_WORDS: &str = "Counted on this computer, from what you play in YTFast.";
+pub const STATS_WORDS: &str = "From what you play in YTFast and on your other devices.";
 /// Under the chips, for all time.
 pub const ALL_TIME_WORDS: &str = "Since Radar began noting your plays. Older plays have no time.";
+/// Under the chips, when some plays were on other devices.
+fn elsewhere_words(plays: u32) -> String {
+    let these = if plays == 1 {
+        "1 of these plays was".to_string()
+    } else {
+        format!("{plays} of these plays were")
+    };
+    format!("{these} on your other devices, from your YouTube history.")
+}
 /// With nothing played in the period.
 pub const NOTHING_YET: &str =
     "Nothing played in this time yet. Play some music, and your numbers show here.";
@@ -75,8 +84,17 @@ fn contents(app: &App, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         theme::label(ui, ALL_TIME_WORDS, theme::regular(13.0), PALETTE.secondary);
     }
-    ui.add_space(24.0);
     let stats = app.stats();
+    if stats.elsewhere > 0 {
+        ui.add_space(10.0);
+        theme::label(
+            ui,
+            &elsewhere_words(stats.elsewhere),
+            theme::regular(13.0),
+            PALETTE.secondary,
+        );
+    }
+    ui.add_space(24.0);
     if stats.plays == 0 {
         theme::label(ui, NOTHING_YET, theme::regular(16.0), PALETTE.secondary);
         return;
@@ -125,7 +143,7 @@ fn heading(ui: &mut egui::Ui, text: &str) {
 fn tiles(ui: &mut egui::Ui, stats: &Stats) {
     let mut numbers: Vec<(&str, String)> = vec![("Plays", stats.plays.to_string())];
     if let Some(seconds) = stats.seconds {
-        numbers.push(("Time listened", time_heard(seconds)));
+        numbers.push(("Time in YTFast", time_heard(seconds)));
     }
     numbers.extend([
         ("Songs", stats.songs.to_string()),

@@ -802,7 +802,7 @@ fn privacy_menu(ui: &mut egui::Ui, privacy: &mut Privacy) {
 /// 14 `#aaa`, then Cancel and `main` as blue words at the right (8 8 8 24
 /// around them). `Some(true)` when confirmed, `Some(false)` when cancelled.
 /// What Radar's Forget does (Settings).
-const FORGET_WORDS: &str = "Radar forgets the songs you finished, skipped and marked Not interested on this computer, and starts again. Your YouTube history stays.";
+const FORGET_WORDS: &str = "Radar forgets the songs you finished, skipped and marked Not interested on this computer, and starts again from your YouTube history and likes.";
 
 /// Why a Mac's YTFast opened from its disk image moves to Applications.
 const MOVE_WORDS: &str = "YTFast is running from its disk image. In Applications it stays when the disk image closes, updates itself, and can start with your Mac.";

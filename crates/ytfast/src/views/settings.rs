@@ -306,7 +306,7 @@ fn looks(app: &App, ui: &mut egui::Ui) {
 }
 
 /// What Radar learns from, beside its Forget button.
-const RADAR_ABOUT: &str = "Radar learns from what you play, on this computer only.";
+const RADAR_ABOUT: &str = "Radar learns from what you play on all your devices.";
 /// What the Discord status does.
 const DISCORD_ABOUT: &str = "Your Discord profile shows the song playing, while Discord is open.";
 /// What the crossfade does.

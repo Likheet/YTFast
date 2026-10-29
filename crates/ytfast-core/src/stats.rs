@@ -66,8 +66,11 @@ pub struct ArtistCount {
 /// The listener's numbers over a [`Period`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stats {
-    /// Every play noted (a play shorter than two seconds is not one).
+    /// Every play noted (a play shorter than two seconds is not one), and
+    /// of them those on the listener's other devices (from YouTube's
+    /// History: no time or skips known for those).
     pub plays: u32,
+    pub elsewhere: u32,
     /// Seconds heard; `None` for all time (older plays were not timed).
     pub seconds: Option<u64>,
     /// Songs and artists played.
@@ -118,6 +121,7 @@ pub fn stats(listening: &Listening, period: Period, now: u64) -> Stats {
                 .filter(|p| p.at >= since && p.at <= now)
             {
                 stats.plays += 1;
+                stats.elsewhere += u32::from(play.elsewhere);
                 seconds += u64::from(play.heard);
                 let tally = tallies.entry(play.id.clone()).or_default();
                 tally.last = tally.last.max(play.at);
@@ -161,7 +165,13 @@ pub fn stats(listening: &Listening, period: Period, now: u64) -> Stats {
         }
         None => {
             for (id, song) in listening.songs() {
+                if song.plays == 0 {
+                    // Known from the account only (liked, or "Listen
+                    // again"): never played.
+                    continue;
+                }
                 stats.plays += song.plays;
+                stats.elsewhere += song.elsewhere;
                 stats.finished += song.finished;
                 stats.skips += song.skipped;
                 tallies.insert(
@@ -445,6 +455,32 @@ mod tests {
         let stats = stats(&listening, Period::Week, NOW);
         assert_eq!(stats.top_artists[0].name, "Simon & Garfunkel");
         assert_eq!(stats.top_artists[0].plays, 2);
+    }
+
+    /// Plays on other devices (from YouTube's History) count as plays,
+    /// with no time heard; songs the account only likes are no plays.
+    #[test]
+    fn plays_on_other_devices_count() {
+        let mut listening = Listening::default();
+        let here = song("here", "A");
+        listening.played(&here, 200.0, 200.0, Ending::Finished, NOW - 3 * DAY);
+        let account = crate::radar::AccountPlays {
+            history: vec![
+                (here.clone(), crate::radar::Ago::Today),
+                (song("phone", "B"), crate::radar::Ago::Today),
+            ],
+            liked: vec![song("liked", "C")],
+            often: vec![song("often", "D")],
+        };
+        listening.take_account(&account, NOW);
+        for period in Period::ALL {
+            let stats = stats(&listening, period, NOW);
+            assert_eq!((stats.plays, stats.elsewhere), (3, 2), "{period:?}");
+            assert_eq!((stats.songs, stats.artists), (2, 2), "{period:?}");
+            assert_eq!(stats.replays, 1, "{period:?}");
+        }
+        assert_eq!(stats(&listening, Period::Week, NOW).seconds, Some(200));
+        assert_eq!(stats(&listening, Period::All, NOW).likes, 1);
     }
 
     #[test]

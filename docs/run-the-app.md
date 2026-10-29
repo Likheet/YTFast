@@ -285,8 +285,11 @@ more like it come next; dislike it, or skip it in its first seconds, and
 the station turns away from it (an artist you dislike does not come back
 that time). **Artists to try** mixes new artists from your genres; **New
 from your artists** has one new album or single from each artist you
-play. Radar changes every day. What you play, finish, skip, like and
-dislike stays on your computer. To learn genres, each new song's name
+play. Radar changes every day. It learns from your phone and other
+devices too: each day it reads your YouTube history, your newest liked
+songs and Home's "Listen again" from your account. What you play,
+finish, skip, like and dislike stays on your computer. To learn genres,
+each new song's name
 goes to Musixmatch once; your favourite artists' names go to Deezer,
 whose listeners give a second opinion. Don't want an artist or a
 release? Its menu (the three dots) on Radar has **Not interested**.
@@ -298,8 +301,10 @@ how long, how many songs and artists, how many you played again, skipped
 in their first seconds, liked and disliked; your genres; and your songs
 played most, artists played most, songs skipped most, liked and
 disliked. Click a song to play it, or an artist to open their page. It
-counts what you play in YTFast on this computer (all time: since 1.5.0,
-with no time for the older plays).
+counts what you play in YTFast on this computer, and the plays your
+YouTube history shows from your other devices (a line under the period
+says how many; their time and skips are not known). All time: since
+1.5.0, with no time for the older plays.
 
 **Discord status** (Settings, off at first): your Discord profile shows
 the song you are playing, its cover and how far into it you are, while

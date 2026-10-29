@@ -225,7 +225,12 @@ there, not in `App::ui`.
   request. Plays are noted in one place, `App::listened_report_at` (once
   per play, as its report is finished); whatever ends a song in a new way
   sets `Playback::ending` first (`Finished`, `Skipped`), or it counts as
-  stopped. Radar's limits on requests are in AGENTS.md's list: keep them.
+  stopped. Plays on the listener's other devices come only from the
+  account, when Radar is made (`Listening::take_account`): the backend
+  takes them into its copy of the record and the window into its own, so
+  taking the same account in again must add nothing (a play already
+  noted in its History group's time is skipped). Radar's limits on
+  requests are in AGENTS.md's list: keep them.
 - **Radar's station owns its queue.** While the queue playing is the one
   `App::play_radar` made (`StationRun::generation`), `App::ask_for_more`
   asks the station, never YouTube's Up next, and a reaction steers it

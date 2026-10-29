@@ -43,8 +43,10 @@ crates/ytfast-core/   the engine (no user interface)
   src/read/           reading YouTube's replies: the ONLY place that does
   src/playreport.rs   reporting plays (History, recommendations)
   src/radar.rs        Radar, YTFast's own recommendations: what the
-                      listener did (kept on the computer, with dates and
-                      genres), YouTube's radios and pages gathered, and
+                      listener did, in YTFast and (from the account's
+                      History, likes and "Listen again") on every
+                      device, kept on the computer with dates and
+                      genres; YouTube's radios and pages gathered; and
                       the choice
   src/station.rs      Radar's station: one button, new songs chosen one
                       at a time, steered by likes, dislikes and skips
@@ -494,14 +496,31 @@ Paolino), as `audio.rs` does.
   (`radar_files.rs`; never in the demo, whose listener is made up:
   `demo::listening`), written at most every 30 s and as YTFast quits;
   Settings' Forget (asked first) clears it. Radar is made when opened, at
-  most once a day by the clock (`Request::Radar`, `radar::gather`): the
-  account's History; Liked Music's first page while fewer than 8 songs
-  were finished; the radios of 4 favourite songs and the pages of 4
+  most once a day by the clock (`Request::Radar`, `radar::gather`): first
+  what the account says of the listener's playing on every device (the
+  owner listens mostly on their phone): History, Liked Music's first page
+  and Home's first shelves, whose "Listen again" lists songs played
+  often (`radar::AccountPlays`). `Listening::take_account` takes them into
+  the record: each History song not yet noted in its group's time
+  (Today, Yesterday, This week, Last week: `radar::Ago`, with a day's
+  leeway either way) becomes a play on another device (`Heard::elsewhere`,
+  worth 0.7 of a song finished in YTFast, with no time heard). Reading
+  the same History again adds nothing, nor does a song YTFast played
+  (History lists those too); History lists a song once, at its latest
+  play, so a song played on the phone counts at most once a day. A like
+  is dated (for the listener's numbers) only when it is new at the top of
+  Liked Music, from its second reading on (`likes_read`); a like on a
+  History row is noted undated (liked songs are played again and again),
+  a dislike there dated. A song of "Listen again" weighs 1.5, fading as
+  plays do. The backend takes the account into its copy of the record
+  before choosing, and the window into its own when the Radar arrives
+  (`Radar::account`, never saved), so taking it in twice must add
+  nothing. Then the radios of 4 favourite songs and the pages of 3
   favourite artists, each genre its share of them (`radar::eased`: the
   shares' square roots, so 62%, 21% and 9% become about 51%, 30% and
   19%), drawn each day from each genre's best, one song per artist,
   filled from History when the record is thin; one request at a time,
-  0.3 s apart; then Deezer about the 4 artists (`deezer::Deezer::opinion`:
+  0.3 s apart; then Deezer about the 3 artists (`deezer::Deezer::opinion`:
   their related artists and their Deezer radios). `radar::rank` then
   makes the station's pool (up to 200 songs new to the listener: not
   noted, not in History or Liked, not liked on YouTube; scored by the
@@ -538,7 +557,9 @@ Paolino), as `audio.rs` does.
   `stats::stats`): this week's, this month's (the plays kept with their
   dates; likes and dislikes are kept with theirs too, `Listening::rated`)
   or all time's (the record's counts since 1.5.0; older plays have no
-  time); plays, time listened, songs, artists, replays (a song's plays
+  time); plays (a line under the chips says how many were on other
+  devices), time in YTFast (none is known of the others), songs,
+  artists, replays (a song's plays
   after its first), early skips, likes and dislikes as tiles (each named
   "Plays: 50" for screen readers), the genres as bars, and the songs
   played most, artists played most, songs skipped most, liked and
@@ -662,12 +683,12 @@ Paolino), as `audio.rs` does.
     Translate per song. Refused, Musixmatch is left alone for 15 minutes
     (`REST` in `musixmatch.rs`).
   - Radar is made at most once a day, and only when its page is opened:
-    at most ten requests (History, Liked Music's first page while the
-    record is thin, four radios, four artists' pages), one at a time,
-    0.3 s apart (`radar::gather`). Nothing of a song's audio is fetched
-    for it. Deezer is asked about the same four artists then: at most
-    three requests each (a search, kept by ID for the next day, their
-    related artists and their radio), 0.3 s apart.
+    at most ten requests (History, Liked Music's first page, Home's first
+    shelves, four radios, three artists' pages), one at a time, 0.3 s
+    apart (`radar::gather`). Nothing of a song's audio is fetched for it.
+    Deezer is asked about the same three artists then: at most three
+    requests each (a search, kept by ID for the next day, their related
+    artists and their radio), 0.3 s apart.
   - Radar's station asks YouTube for a song's radio only for a song
     liked in it (once per song), and when it runs low (under 30 songs
     left: the last song liked or heard to its end in it, at most once
@@ -678,7 +699,8 @@ Paolino), as `audio.rs` does.
   - A song's genre is asked of Musixmatch once (`Request::Genre`, one
     request): when it was heard 30 s or more and its genre is not known
     (its lyrics, when shown, bring it with them). Each time Radar is
-    made, up to 12 songs played before have theirs asked, 1.5 s apart
+    made, up to 12 songs played before (or on other devices) have theirs
+    asked, one of each artist whose genre is not known, 1.5 s apart
     (`Request::Genres`).
 - Every song played is reported twice: when it starts, and how long it
   played (`playreport.rs`). Without this, History and recommendations stop
@@ -1556,6 +1578,40 @@ screen: the page this week and all time, in a small window (960 by 600),
 and in each look (Premium's bars in its accent), and Radar's button
 beside its line. Not yet tested: with the owner's own record, and the
 Mac.
+
+Then (29 October 2026, version 1.8.0), at the owner's word: Radar
+learns from the owner's phone too. The owner listens mostly on their
+phone, so YTFast's own record held little, and they wanted nothing to
+export or import: everything from the sign-in. So Radar reads the
+account each time it is made (above, Radar): History (about two weeks,
+each song once, by its group; podcasts' episodes left out), Liked
+Music's first page (now always) and
+Home's first shelves for "Listen again" (in place of the fourth artist's
+page, so still ten requests). Read on the owner's account first (only
+counts printed; nothing changed or played): History held 200 songs (26
+today, 32 yesterday, 91 this week, 51 last week), each with its artist's
+page; Liked Music's first page 100 songs; Home's first shelves "Listen
+again", 20 songs. YouTube's Replay Mix, which would tell how often each
+song was played, comes only in Home's fourth batch, so it was left out.
+Your stats counts the plays on other devices (a line says how many) and
+names its time "Time in YTFast"; Settings' words for Radar and for its
+Forget say so too. `RADAR_VERSION` 3 makes the first Radar after the
+update read the account at once. Tested on the owner's Windows laptop:
+the unit tests (427, among them History's songs taken in once however
+often it is read, and as its groups move on, and a song played again
+two days on counted again; a song YTFast played not counted twice;
+likes dated only when new at the top of Liked Music, a dislike on a
+History row dated; nothing noted when nothing was read; plays elsewhere
+and "Listen again" weighed; History and "Listen again" read from saved
+pages; genres asked one per artist; the numbers with plays on other
+devices; and in the app, a Radar bringing the account into the record,
+a late one nothing, and the demo's made-up account agreeing with its
+listener), and the demo off the screen (its screen asleep, so the
+pictures came from the app itself, with a hook not committed): Radar's
+page, Your stats this week and all time ("12 of these plays were on
+your other devices, from your YouTube history"), and Settings. Not yet
+tested: YTFast with the owner's account (their phone's History taken
+in, the genres and picks that follow), and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

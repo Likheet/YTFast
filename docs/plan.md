@@ -101,7 +101,7 @@ sound upgrade (1.4.0: gapless, crossfade, the equalizer, the Discord
 status). Still to do: performance measured on the real apps (startup
 time, memory, including the helper programs).
 
-## Radar: YTFast's own recommendations (steps 1 and 2 built, 1.5.0; the station, 1.6.0)
+## Radar: YTFast's own recommendations (steps 1 and 2 built, 1.5.0; the station, 1.6.0; every device, 1.8.0)
 
 The owner finds YouTube Music's recommendations poor, and wants better
 ones without changing what YouTube Music's users know: Home, Explore and
@@ -149,6 +149,18 @@ owner wanted only sources that need nothing from them: no API keys, no
 accounts; Last.fm and ListenBrainz's radios need one, Spotify's are
 closed). How the station chooses is in AGENTS.md.
 
+**Every device (29 October 2026, at the owner's word).** The owner
+listens mostly on their phone, so what YTFast noted itself was little.
+They wanted nothing to export or import (Google Takeout was offered and
+turned down): everything from the sign-in. Built in 1.8.0: when Radar is
+made it reads the account's History (about two weeks, each song once),
+Liked Music's newest songs and Home's "Listen again", and takes them into
+the record as plays and likes on other devices. History says a song was
+played, not how much or how often, so a play there counts less than a
+song finished in YTFast, and skips stay YTFast's own. YouTube's Replay
+Mix would say more, but it comes only in Home's fourth batch of shelves,
+three requests more each day; left out for now.
+
 **Later:** an endless Radar station (new songs, a familiar one now and
 then), Deep cuts (album songs the user has not heard from artists they
 play), Rediscover (songs once finished often, not played for months).
@@ -170,8 +182,10 @@ made-up rows. AGENTS.md's list of request limits gets Radar's.
 4. Measured on the owner's laptop (Radar's songs finished against
    skipped), and tuned.
 5. Later, the owner's ideas: one record for both laptops (a folder both
-   sync, as OneDrive), and one record per account on one computer (the
-   owner's brother signing in there). A page of the listener's own
+   sync, as OneDrive; since 1.8.0 each laptop takes in the account's
+   History, so both learn every device's plays, but each keeps its own
+   skips), and one record per account on one computer (the owner's
+   brother signing in there). A page of the listener's own
    numbers, "Your stats" (plays, time, replays, skips, likes, genres,
    songs and artists, by week, month and all time): **Built** (1.7.0,
    27 October 2026).

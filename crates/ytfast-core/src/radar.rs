@@ -5,7 +5,10 @@
 //! artists an artist's page calls similar ("Fans might also like"), and an
 //! artist's new albums and singles. Deezer's listeners give a second
 //! opinion ([`crate::deezer`]). YTFast chooses among them by what the
-//! listener does, noted on the computer only ([`Listening`]): a song
+//! listener does, on every device: what YouTube's account says of it
+//! (History, Liked Music and Home's "Listen again", [`AccountPlays`]: the
+//! listener's phone too) and what YTFast notes itself, on the computer
+//! only ([`Listening`]): a song
 //! finished, played again or liked counts for it and its artist; one
 //! skipped in its first seconds, or disliked, counts against. Each song's
 //! genre (Musixmatch's, [`crate::genre`]) says which genres the listener
@@ -34,14 +37,18 @@ use crate::read::{
 
 /// Songs whose radios are asked for.
 const SEEDS: usize = 4;
-/// Artists whose pages are asked for.
-const ARTISTS: usize = 4;
+/// Artists whose pages are asked for: with History, Liked Music, Home and
+/// the radios, ten requests at most.
+const ARTISTS: usize = 3;
 /// Seeds and artists are drawn from this many of the best, so that Radar
 /// changes from day to day.
 const DRAWN_FROM: usize = 12;
-/// Below this many songs finished, YouTube's Liked Music helps say what
-/// the listener likes.
-const THIN: usize = 8;
+/// What a play on another device counts for (one heard to its end in
+/// YTFast counts 1): History says it was played, not how much.
+const ELSEWHERE: f64 = 0.7;
+/// What a song of Home's "Listen again" counts for, fading by half in
+/// [`HALF_LIFE_DAYS`] from when it was last listed there.
+const OFTEN: f64 = 1.5;
 /// The most songs the record keeps: the least recently played go first.
 const MOST_SONGS: usize = 3000;
 /// A play shorter than this (in seconds), neither finished nor skipped,
@@ -84,7 +91,7 @@ const KNOWN_ENOUGH: usize = 6;
 /// Genres the page names, and the mixes follow, at most.
 const TOP_GENRES: usize = 4;
 /// What [`Radar`] is made by: one made by an older YTFast is made again.
-pub const RADAR_VERSION: u32 = 2;
+pub const RADAR_VERSION: u32 = 3;
 /// Songs of one artist disliked or marked Not interested that leave the
 /// artist out too.
 const ARTIST_AFTER: usize = 3;
@@ -132,6 +139,12 @@ pub struct Heard {
     /// Its genre's family ([`crate::genre::family`]): empty when Musixmatch
     /// has none for it, `None` until asked.
     pub genre: Option<String>,
+    /// Of its plays: those YouTube's History showed from the listener's
+    /// other devices (their phone), heard for an unknown time.
+    pub elsewhere: u32,
+    /// When YouTube's Home last listed it under "Listen again" (a song the
+    /// listener plays often, on any device).
+    pub often: Option<u64>,
 }
 
 impl Heard {
@@ -142,16 +155,24 @@ impl Heard {
         if self.rating == Some(Rating::Dislike) {
             return 0.0;
         }
-        let other = self.plays.saturating_sub(self.finished + self.skipped);
+        let other = self
+            .plays
+            .saturating_sub(self.finished + self.skipped + self.elsewhere);
         let liked = if self.rating == Some(Rating::Like) {
             2.0
         } else {
             0.0
         };
-        let base = f64::from(self.finished) + 0.3 * f64::from(other) + liked
+        let base = f64::from(self.finished)
+            + ELSEWHERE * f64::from(self.elsewhere)
+            + 0.3 * f64::from(other)
+            + liked
             - 1.5 * f64::from(self.skipped);
-        let days = now.saturating_sub(self.last) as f64 / 86_400.0;
-        base.max(0.0) * 0.5f64.powf(days / HALF_LIFE_DAYS)
+        let fade = |since: u64| {
+            let days = now.saturating_sub(since) as f64 / 86_400.0;
+            0.5f64.powf(days / HALF_LIFE_DAYS)
+        };
+        base.max(0.0) * fade(self.last) + self.often.map_or(0.0, |at| OFTEN * fade(at))
     }
 }
 
@@ -168,6 +189,10 @@ pub struct Play {
     /// How it counted (none for plays noted by 1.6.0: [`Play::outcome`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counted: Option<Outcome>,
+    /// Played on another device (YouTube's History showed it), so heard
+    /// for an unknown time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub elsewhere: bool,
 }
 
 impl Play {
@@ -342,6 +367,9 @@ pub struct Listening {
     log: Vec<Play>,
     /// The likes and dislikes of the last [`LOG_DAYS`] days, oldest first.
     ratings: Vec<Rated>,
+    /// When YouTube's Liked Music was last read
+    /// ([`Listening::take_account`]): a like found there since is new.
+    likes_read: Option<u64>,
 }
 
 /// The keys an artist is known by: its page (`id:UC...`), and its name
@@ -418,6 +446,7 @@ impl Listening {
             ending,
             heard: heard.max(0.0).round() as u32,
             counted: Some(outcome),
+            elsewhere: false,
         });
         self.trim(now);
         Some(outcome)
@@ -470,6 +499,116 @@ impl Listening {
                 rating,
             });
             self.trim(now);
+        }
+        match rating {
+            Rating::Dislike => self.unwant_song(track),
+            Rating::Like | Rating::Indifferent => {
+                self.unwanted_songs.remove(&track.video_id);
+            }
+        }
+    }
+
+    /// Takes in what YouTube's account says of the listener's playing on
+    /// every device ([`AccountPlays`]), at `now`. Each song of History not
+    /// yet noted in its group's time becomes a play from another device:
+    /// so reading the same History again adds nothing, nor does a song
+    /// YTFast played then (History lists those too). Likes and dislikes
+    /// are noted; a like is dated (for the listener's numbers) only when
+    /// it is new at the top of Liked Music, a dislike when History shows
+    /// it (a song disliked as it played, most likely). A song of "Listen
+    /// again" counts as one played often.
+    pub fn take_account(&mut self, account: &AccountPlays, now: u64) {
+        if account.tracks().next().is_none() {
+            // Nothing read (every request failed): nothing to note, and
+            // Liked Music still to be read for the first time.
+            return;
+        }
+        // Liked Music's first reading holds old likes, not new ones.
+        let likes_dated = self.likes_read.is_some();
+        for track in &account.liked {
+            self.account_rating(track, Rating::Like, now, likes_dated);
+        }
+        if !account.liked.is_empty() {
+            self.likes_read = Some(now);
+        }
+        for (track, ago) in &account.history {
+            let (newest, oldest, taken) = ago.hours();
+            let since = now.saturating_sub(oldest * 3600);
+            let until = now.saturating_sub(newest * 3600);
+            let noted = self
+                .log
+                .iter()
+                .any(|p| p.id == track.video_id && p.at >= since && p.at <= until);
+            if !noted {
+                let at = now.saturating_sub(taken * 3600);
+                let song = self.heard_from(track, at);
+                song.plays += 1;
+                song.elsewhere += 1;
+                song.last = song.last.max(at);
+                self.log.push(Play {
+                    at,
+                    id: track.video_id.clone(),
+                    ending: Ending::Stopped,
+                    heard: 0,
+                    counted: Some(Outcome::Played),
+                    elsewhere: true,
+                });
+            }
+            match track.like {
+                // Liked songs are played again and again: when one was
+                // liked, History cannot say.
+                Some(Rating::Like) => self.account_rating(track, Rating::Like, now, false),
+                Some(Rating::Dislike) => self.account_rating(track, Rating::Dislike, now, true),
+                _ => {}
+            }
+        }
+        for track in &account.often {
+            self.heard_from(track, now).often = Some(now);
+        }
+        // The plays from History went in at their own times.
+        self.log.sort_by_key(|play| play.at);
+        self.trim(now);
+    }
+
+    /// The record's entry for a song the account names (made when new, as
+    /// last played `at`), with what it lacks of its name filled in.
+    fn heard_from(&mut self, track: &Track, at: u64) -> &mut Heard {
+        let song = self
+            .songs
+            .entry(track.video_id.clone())
+            .or_insert_with(|| Heard {
+                last: at,
+                ..Heard::default()
+            });
+        if song.title.is_empty() {
+            song.title.clone_from(&track.title);
+        }
+        if song.artists.is_empty() {
+            song.artists.clone_from(&track.artists);
+        }
+        if song.artist_id.is_none() {
+            song.artist_id.clone_from(&track.artist_id);
+        }
+        if song.album_id.is_none() {
+            song.album_id.clone_from(&track.album_id);
+        }
+        song
+    }
+
+    /// A like or dislike the account holds, unless the record has it
+    /// already: `dated` as new at `now` (for the listener's numbers), or
+    /// only noted.
+    fn account_rating(&mut self, track: &Track, rating: Rating, now: u64, dated: bool) {
+        if self.songs.get(&track.video_id).and_then(|s| s.rating) == Some(rating) {
+            return;
+        }
+        self.heard_from(track, now);
+        if dated {
+            self.rated(track, rating, now);
+            return;
+        }
+        if let Some(song) = self.songs.get_mut(&track.video_id) {
+            song.rating = Some(rating);
         }
         match rating {
             Rating::Dislike => self.unwant_song(track),
@@ -576,8 +715,11 @@ impl Listening {
     }
 
     /// The songs liked best whose genre is still to be asked for, at most
-    /// `count` (for songs played before YTFast asked for genres).
+    /// `count` (for songs played before YTFast asked for genres, and on the
+    /// listener's other devices): one of each artist, and none of an
+    /// artist whose genre is known (their songs take it).
     pub fn missing_genres(&self, count: usize, now: u64) -> Vec<Track> {
+        let known = self.artist_genres();
         let mut missing: Vec<(f64, &String, &Heard)> = self
             .songs
             .iter()
@@ -586,8 +728,17 @@ impl Listening {
             .filter(|(weight, _, _)| *weight > 0.0)
             .collect();
         missing.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
+        let mut chosen: HashSet<String> = HashSet::new();
         missing
             .into_iter()
+            .filter(|(_, _, song)| {
+                let keys = artist_keys(song.artist_id.as_deref(), &song.artists);
+                let taken = keys
+                    .iter()
+                    .any(|k| known.contains_key(k) || chosen.contains(k));
+                chosen.extend(keys);
+                !taken
+            })
             .take(count)
             .map(|(_, id, song)| Track {
                 video_id: id.clone(),
@@ -723,11 +874,6 @@ impl Listening {
         artist_keys(id, name)
             .iter()
             .any(|key| self.unwanted_artists.contains(key))
-    }
-
-    /// Too few songs finished to say much yet: YouTube's Liked Music helps.
-    fn is_thin(&self) -> bool {
-        self.songs.values().filter(|s| s.finished > 0).count() < THIN
     }
 
     /// The songs whose radios are asked for, drawn from the listener's
@@ -997,13 +1143,114 @@ pub struct ArtistSeed {
     pub genre: Option<String>,
 }
 
+/// What the listener's YouTube account says of their listening on every
+/// device (their phone too), read when Radar is made ([`gather`]):
+/// History's songs, each with when it was last played (History's groups:
+/// it lists a song once, at its latest play), the newest of Liked Music,
+/// and Home's "Listen again" (songs played often).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AccountPlays {
+    pub history: Vec<(Track, Ago)>,
+    pub liked: Vec<Track>,
+    pub often: Vec<Track>,
+}
+
+impl AccountPlays {
+    /// History's songs from its page, each with its group; songs of older
+    /// groups, and podcasts' episodes, are left out.
+    pub fn history_of(page: &Page) -> Vec<(Track, Ago)> {
+        let episode = |track: &Track| matches!(&track.kind, TrackKind::Other(kind) if kind.contains("PODCAST"));
+        page.sections
+            .iter()
+            .filter_map(|section| Some((Ago::of(&section.title)?, section)))
+            .flat_map(|(ago, section)| {
+                section.items.iter().filter_map(move |item| match item {
+                    Item::Track(track) if !track.video_id.is_empty() && !episode(track) => {
+                        Some((track.clone(), ago))
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+
+    /// The songs of Home's "Listen again" (its albums, artists and
+    /// podcasts left out).
+    pub fn often_of(home: &Page) -> Vec<Track> {
+        home.sections
+            .iter()
+            .filter(|section| section.title.eq_ignore_ascii_case("Listen again"))
+            .flat_map(|section| &section.items)
+            .filter_map(|item| match item {
+                Item::Card(Card {
+                    open:
+                        Some(Target::Browse {
+                            kind: PageKind::Episode | PageKind::Podcast,
+                            ..
+                        }),
+                    ..
+                }) => None,
+                Item::Card(card) => card.song(),
+                Item::Track(track) => Some(track.clone()),
+            })
+            .collect()
+    }
+
+    /// Every song it names, for their names' fonts.
+    pub fn tracks(&self) -> impl Iterator<Item = &Track> {
+        self.history
+            .iter()
+            .map(|(track, _)| track)
+            .chain(&self.liked)
+            .chain(&self.often)
+    }
+}
+
+/// When History says a song was last played: its group, by the account's
+/// own clock (which may be a day off this computer's).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ago {
+    Today,
+    Yesterday,
+    ThisWeek,
+    LastWeek,
+}
+
+impl Ago {
+    /// The group a History section's title names (English, as every
+    /// request asks for it).
+    pub fn of(title: &str) -> Option<Self> {
+        match title.trim().to_lowercase().as_str() {
+            "today" => Some(Self::Today),
+            "yesterday" => Some(Self::Yesterday),
+            "this week" => Some(Self::ThisWeek),
+            "last week" => Some(Self::LastWeek),
+            _ => None,
+        }
+    }
+
+    /// Hours ago: the newest and the oldest the play may be (a day's
+    /// leeway either way), and when it is taken to have been.
+    fn hours(self) -> (u64, u64, u64) {
+        match self {
+            Self::Today => (0, 30, 2),
+            Self::Yesterday => (18, 54, 24),
+            Self::ThisWeek => (36, 180, 96),
+            Self::LastWeek => (156, 348, 240),
+        }
+    }
+}
+
 /// What YouTube said, for [`rank`].
 #[derive(Clone, Debug, Default)]
 pub struct Found {
-    /// The account's History, newest first, and (while the record is thin)
-    /// its Liked Music's first page.
+    /// The account's History, newest first, and its Liked Music's first
+    /// page.
     pub history: Vec<Track>,
     pub liked: Vec<Track>,
+    /// What the account says of the listener's playing on every device,
+    /// taken into the record ([`Listening::take_account`]).
+    pub account: AccountPlays,
     /// The songs whose radios were asked for, each with its radio (empty
     /// when it did not load).
     pub radios: Vec<(Seed, Vec<Track>)>,
@@ -1014,12 +1261,17 @@ pub struct Found {
     pub opinion: Opinion,
 }
 
-/// Asks YouTube for what Radar chooses from: the account's History (and,
-/// while the record is thin, Liked Music), the radios of a few favourite
-/// songs and the pages of a few favourite artists. At most ten requests,
-/// one at a time. A part that does not load is left out; only when nothing
-/// does is it an error.
-pub async fn gather(session: &Session, listening: &Listening, now: u64) -> Result<Found, ApiError> {
+/// Asks YouTube for what Radar chooses from: the account's History, Liked
+/// Music and Home (what the listener plays on every device, taken into
+/// `listening` first, [`Listening::take_account`]), then the radios of a
+/// few favourite songs and the pages of a few favourite artists. At most
+/// ten requests, one at a time. A part that does not load is left out;
+/// only when nothing does is it an error.
+pub async fn gather(
+    session: &Session,
+    listening: &mut Listening,
+    now: u64,
+) -> Result<Found, ApiError> {
     let mut found = Found::default();
     let mut failed: Option<ApiError> = None;
     let mut loaded = false;
@@ -1030,21 +1282,24 @@ pub async fn gather(session: &Session, listening: &Listening, now: u64) -> Resul
             failed.get_or_insert(e);
         }
     };
+    note(session.history_page().await.map(|page| {
+        found.account.history = AccountPlays::history_of(&page);
+        found.history = page.tracks();
+    }));
+    tokio::time::sleep(PAUSE).await;
+    note(session.liked_songs().await.map(|page| {
+        found.account.liked.clone_from(&page.tracks);
+        found.liked = page.tracks;
+    }));
+    tokio::time::sleep(PAUSE).await;
     note(
         session
-            .history()
+            .home()
             .await
-            .map(|page| found.history = page.tracks),
+            .map(|page| found.account.often = AccountPlays::often_of(&page)),
     );
-    if listening.is_thin() {
-        tokio::time::sleep(PAUSE).await;
-        note(
-            session
-                .liked_songs()
-                .await
-                .map(|page| found.liked = page.tracks),
-        );
-    }
+    // What the listener plays on every device, before choosing from it.
+    listening.take_account(&found.account, now);
     for seed in listening.seeds(&found.history, &found.liked, now) {
         tokio::time::sleep(PAUSE).await;
         let radio = session.up_next(&seed.video_id, None).await;
@@ -1139,6 +1394,10 @@ pub struct Radar {
     /// Deezer's IDs of favourite artists (by [`deezer::name_key`]), kept
     /// for the next Radar.
     pub deezer_ids: BTreeMap<String, u64>,
+    /// What the account said of the listener's playing on every device
+    /// when it was made, for the window's own record (not kept).
+    #[serde(skip)]
+    pub account: AccountPlays,
 }
 
 /// What the listener knows already: the songs and artists noted, and
@@ -1211,6 +1470,7 @@ pub fn rank(listening: &Listening, found: &Found, now: u64) -> Radar {
         like,
         releases,
         deezer_ids: found.opinion.ids.clone(),
+        account: found.account.clone(),
     }
 }
 
@@ -2430,7 +2690,8 @@ mod tests {
             .iter()
             .filter(|a| a.genre.as_deref() == Some("Rock"))
             .count();
-        assert_eq!((artists.len(), rock), (ARTISTS, 2));
+        // Of three artists, two J-Pop and one Rock.
+        assert_eq!((artists.len(), rock), (ARTISTS, 1));
     }
 
     #[test]
@@ -2506,5 +2767,274 @@ mod tests {
         assert!(empty.is_empty());
         listening.forget();
         assert!(listening.is_empty());
+    }
+
+    /// History's songs become plays on other devices, each once: reading
+    /// the same History again adds nothing, nor does a song YTFast played
+    /// then (History lists those too), nor History a day on, its groups
+    /// moved on.
+    #[test]
+    fn the_account_adds_plays_from_other_devices_once() {
+        let mut listening = Listening::default();
+        let here = song("here", "A");
+        let phone = song("phone", "B");
+        let older = song("older", "C");
+        finished(&mut listening, &here, 1, NOW - 3 * 3600);
+        let account = AccountPlays {
+            history: vec![
+                (here.clone(), Ago::Today),
+                (phone.clone(), Ago::Today),
+                (older.clone(), Ago::ThisWeek),
+            ],
+            ..AccountPlays::default()
+        };
+        listening.take_account(&account, NOW);
+        let songs = listening.songs();
+        assert_eq!((songs["here"].plays, songs["here"].elsewhere), (1, 0));
+        assert_eq!((songs["phone"].plays, songs["phone"].elsewhere), (1, 1));
+        assert_eq!(songs["phone"].last, NOW - 2 * 3600);
+        assert_eq!(songs["phone"].title, "PHONE");
+        assert_eq!(songs["older"].last, NOW - 4 * DAY);
+        // The record's plays stay oldest first.
+        let log: Vec<(u64, bool)> = listening
+            .log()
+            .iter()
+            .map(|p| (p.at, p.elsewhere))
+            .collect();
+        assert_eq!(
+            log,
+            [
+                (NOW - 4 * DAY, true),
+                (NOW - 3 * 3600, false),
+                (NOW - 2 * 3600, true)
+            ]
+        );
+        let before = listening.clone();
+        listening.take_account(&account, NOW + 3600);
+        let next_day = AccountPlays {
+            history: vec![
+                (here.clone(), Ago::Yesterday),
+                (phone.clone(), Ago::Yesterday),
+                (older.clone(), Ago::ThisWeek),
+            ],
+            ..AccountPlays::default()
+        };
+        listening.take_account(&next_day, NOW + DAY);
+        assert_eq!(listening.log(), before.log());
+        assert_eq!(listening.songs(), before.songs());
+        // Played again two days on: one play more.
+        let again = AccountPlays {
+            history: vec![(phone.clone(), Ago::Today)],
+            ..AccountPlays::default()
+        };
+        listening.take_account(&again, NOW + 2 * DAY);
+        let phone = &listening.songs()["phone"];
+        assert_eq!((phone.plays, phone.elsewhere), (2, 2));
+    }
+
+    /// Likes and dislikes the account holds are noted. A like is dated
+    /// (for the listener's numbers) only when new at the top of Liked
+    /// Music: its first reading holds old likes, and History cannot say
+    /// when a song played again was liked. A dislike History shows is.
+    #[test]
+    fn the_accounts_likes_are_dated_only_when_new() {
+        let mut listening = Listening::default();
+        let rated = |id: &str, artist: &str, like: Rating| Track {
+            like: Some(like),
+            ..song(id, artist)
+        };
+        let first = AccountPlays {
+            history: vec![
+                (rated("old", "A", Rating::Like), Ago::Today),
+                (rated("bad", "B", Rating::Dislike), Ago::Today),
+            ],
+            liked: vec![song("a", "C"), song("b", "D")],
+            often: Vec::new(),
+        };
+        listening.take_account(&first, NOW);
+        let rating = |l: &Listening, id: &str| l.songs()[id].rating;
+        for id in ["old", "a", "b"] {
+            assert_eq!(rating(&listening, id), Some(Rating::Like), "{id}");
+        }
+        assert_eq!(rating(&listening, "bad"), Some(Rating::Dislike));
+        assert!(listening.unwanted(&song("bad", "B")));
+        let dated = |l: &Listening| -> Vec<(String, Rating)> {
+            l.ratings()
+                .iter()
+                .map(|r| (r.id.clone(), r.rating))
+                .collect()
+        };
+        assert_eq!(dated(&listening), [("bad".to_string(), Rating::Dislike)]);
+        // The next day: a song newly liked (on the phone, and played
+        // there), and an old like played again.
+        let next = AccountPlays {
+            history: vec![
+                (rated("new", "F", Rating::Like), Ago::Today),
+                (rated("again", "E", Rating::Like), Ago::Today),
+            ],
+            liked: vec![song("new", "F"), song("a", "C"), song("b", "D")],
+            often: Vec::new(),
+        };
+        listening.take_account(&next, NOW + DAY);
+        listening.take_account(&next, NOW + DAY + 3600);
+        assert_eq!(
+            dated(&listening),
+            [
+                ("bad".to_string(), Rating::Dislike),
+                ("new".to_string(), Rating::Like)
+            ]
+        );
+        assert_eq!(rating(&listening, "again"), Some(Rating::Like));
+    }
+
+    /// When nothing could be read, nothing is noted, and Liked Music's
+    /// first reading (of old likes) is still to come.
+    #[test]
+    fn an_account_not_read_changes_nothing() {
+        let mut listening = Listening::default();
+        listening.take_account(&AccountPlays::default(), NOW);
+        assert_eq!(listening, Listening::default());
+        let liked = AccountPlays {
+            liked: vec![song("a", "A")],
+            ..AccountPlays::default()
+        };
+        listening.take_account(&liked, NOW + DAY);
+        assert!(listening.ratings().is_empty());
+        assert_eq!(listening.songs()["a"].rating, Some(Rating::Like));
+    }
+
+    /// A play on another device counts less than one heard to its end in
+    /// YTFast (History says it was played, not how much), and a song of
+    /// "Listen again" as one played often, fading as songs do.
+    #[test]
+    fn plays_elsewhere_and_listen_again_count() {
+        let mut listening = Listening::default();
+        finished(&mut listening, &song("here", "A"), 1, NOW);
+        let account = AccountPlays {
+            history: vec![(song("phone", "B"), Ago::Today)],
+            often: vec![song("often", "C")],
+            ..AccountPlays::default()
+        };
+        listening.take_account(&account, NOW);
+        let weight = |id: &str, at: u64| listening.songs()[id].weight(at);
+        assert!((weight("here", NOW) - 1.0).abs() < 1e-9);
+        assert!(weight("phone", NOW) > 0.6 && weight("phone", NOW) < 0.7);
+        assert!((weight("often", NOW) - OFTEN).abs() < 1e-9);
+        assert!((weight("often", NOW + 45 * DAY) - OFTEN / 2.0).abs() < 1e-9);
+        // Known, so never suggested as new.
+        assert!(listening.knows("phone") && listening.knows("often"));
+    }
+
+    /// History's songs by its groups (only songs; older groups left out),
+    /// and Home's "Listen again" (only songs).
+    #[test]
+    fn the_account_is_read_from_history_and_home() {
+        let reply =
+            serde_json::from_str(include_str!("../tests/fixtures/history_synthetic.json")).unwrap();
+        let history = AccountPlays::history_of(&crate::read::page(&reply));
+        let read: Vec<(&str, Ago)> = history
+            .iter()
+            .map(|(t, ago)| (t.video_id.as_str(), *ago))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("histSong001", Ago::Today),
+                ("histSong002", Ago::Today),
+                ("histSong003", Ago::Yesterday)
+            ]
+        );
+        assert_eq!(Ago::of("This week"), Some(Ago::ThisWeek));
+        assert_eq!(Ago::of("Last week"), Some(Ago::LastWeek));
+        assert_eq!(Ago::of("March 2026"), None);
+        // A podcast's episode is no song.
+        let episode = Track {
+            kind: TrackKind::Other("MUSIC_VIDEO_TYPE_PODCAST_EPISODE".into()),
+            ..song("episode", "Show")
+        };
+        let today = Page {
+            sections: vec![Section {
+                title: "Today".into(),
+                items: vec![Item::Track(episode), Item::Track(song("tune", "A"))],
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        let ids: Vec<String> = AccountPlays::history_of(&today)
+            .into_iter()
+            .map(|(t, _)| t.video_id)
+            .collect();
+        assert_eq!(ids, ["tune"]);
+        // Home's "Listen again" there holds an album and an artist.
+        let home =
+            serde_json::from_str(include_str!("../tests/fixtures/home_synthetic.json")).unwrap();
+        assert!(AccountPlays::often_of(&crate::read::page(&home)).is_empty());
+        let song_tile = Item::Card(Card {
+            title: "Lemon".into(),
+            subtitle: "Song \u{2022} Kenshi Yonezu".into(),
+            thumbnail: None,
+            round: false,
+            open: Some(Target::Watch {
+                video_id: Some("lemon".into()),
+                playlist_id: Some("RDAMVMlemon".into()),
+            }),
+            play: None,
+            podcast: None,
+            look: CardLook::default(),
+        });
+        let episode_tile = Item::Card(Card {
+            title: "Episode 12".into(),
+            subtitle: "2d ago \u{2022} 15 min".into(),
+            thumbnail: None,
+            round: false,
+            open: Some(Target::Browse {
+                id: "MPEDepisode".into(),
+                kind: PageKind::Episode,
+                params: None,
+            }),
+            play: Some(Target::Watch {
+                video_id: Some("episode".into()),
+                playlist_id: None,
+            }),
+            podcast: Some("A Show".into()),
+            look: CardLook::default(),
+        });
+        let shelf = |title: &str| Section {
+            title: title.into(),
+            items: vec![
+                song_tile.clone(),
+                artist_card("Kenshi"),
+                episode_tile.clone(),
+            ],
+            ..Section::default()
+        };
+        let home = Page {
+            sections: vec![shelf("Quick picks"), shelf("Listen again")],
+            ..Page::default()
+        };
+        let often: Vec<String> = AccountPlays::often_of(&home)
+            .into_iter()
+            .map(|t| t.video_id)
+            .collect();
+        assert_eq!(often, ["lemon"]);
+    }
+
+    /// Genres still to ask for: one song of each artist, and none of an
+    /// artist whose genre is known (their songs take it).
+    #[test]
+    fn missing_genres_are_one_per_artist() {
+        let mut listening = Listening::default();
+        finished(&mut listening, &song("a1", "A"), 3, NOW);
+        finished(&mut listening, &song("a2", "A"), 2, NOW);
+        finished(&mut listening, &song("b1", "B"), 1, NOW);
+        finished(&mut listening, &song("c1", "C"), 2, NOW);
+        finished(&mut listening, &song("c2", "C"), 1, NOW);
+        listening.set_genre("c1", Some("Rock".into()));
+        let missing: Vec<String> = listening
+            .missing_genres(5, NOW)
+            .into_iter()
+            .map(|t| t.video_id)
+            .collect();
+        assert_eq!(missing, ["a1", "b1"]);
     }
 }

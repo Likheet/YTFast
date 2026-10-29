@@ -651,12 +651,12 @@ pub fn listening(now: u64) -> ytfast_core::radar::Listening {
         }
         listening.set_genre(&track.video_id, genre);
     }
-    // A few liked this week, one disliked.
+    // A few liked this week (songs of its Liked Music), one disliked.
     for (i, rating) in [
-        (1, Rating::Like),
-        (7, Rating::Like),
+        (2, Rating::Like),
+        (8, Rating::Like),
         (14, Rating::Like),
-        (12, Rating::Dislike),
+        (13, Rating::Dislike),
     ] {
         let days = (i % 5) as u64;
         listening.rated(&song(i), rating, now.saturating_sub(days * 86_400 + 1_800));
@@ -745,6 +745,22 @@ pub fn radar_found(
             (artist, page)
         })
         .collect();
+    // The made-up account's History over its four groups (the made-up
+    // listener's other devices), a few songs liked, and its favourites
+    // under "Listen again".
+    use ytfast_core::radar::{AccountPlays, Ago};
+    let groups = [Ago::Today, Ago::Yesterday, Ago::ThisWeek, Ago::LastWeek];
+    let account = AccountPlays {
+        history: (0..SONGS.len())
+            .map(|i| (song(i), groups[(i % 6).min(3)]))
+            .collect(),
+        liked: (0..SONGS.len())
+            .filter(|&i| liked_song(i))
+            .take(8)
+            .map(song)
+            .collect(),
+        often: (0..5).map(song).collect(),
+    };
     // Deezer's made-up listeners agree on a song and an artist.
     use ytfast_core::deezer::{name_key, song_key};
     let opinion = ytfast_core::deezer::Opinion {
@@ -757,6 +773,7 @@ pub fn radar_found(
     ytfast_core::radar::Found {
         history,
         liked: Vec::new(),
+        account,
         radios,
         artists,
         opinion,
