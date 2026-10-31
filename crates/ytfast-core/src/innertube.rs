@@ -578,6 +578,13 @@ impl Session {
         Ok((read::up_next(&reply), read::queue_title(&reply)))
     }
 
+    /// A song's radio as Radar takes it: the same request as its Up next,
+    /// songs only ([`read::radio_songs`]).
+    pub async fn radio_songs(&self, video_id: &str) -> Result<Vec<Track>, ApiError> {
+        let reply = self.call("next", next_body(video_id, None)).await?;
+        Ok(read::radio_songs(&reply))
+    }
+
     /// The songs of a playlist or album to play, by its playlist ID
     /// (`OLAK5uy_...`, `PL...`, `RDCLAK...`). YouTube sends a long one in
     /// batches; up to `MAX_QUEUE_BATCHES` more are asked for, as

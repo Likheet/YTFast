@@ -6944,11 +6944,13 @@ mod tests {
         }
     }
 
-    /// A song by `artist`.
+    /// A song by `artist`, as a radio's rows mark songs (Radar takes no
+    /// other kind).
     fn by(id: &str, artist: &str) -> Track {
         Track {
             artists: artist.into(),
             artist_id: Some(format!("UC{artist}")),
+            kind: TrackKind::Song,
             ..song(id)
         }
     }

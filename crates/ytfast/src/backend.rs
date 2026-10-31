@@ -2194,17 +2194,20 @@ async fn genre(shared: &Shared, track: Track) {
     });
 }
 
-/// The radio of a song played in Radar's station: its Up next, as a radio.
+/// The radio of a song played in Radar's station: its songs only.
 async fn station_radio(shared: &Shared, station: u64, video_id: String) {
     let result = if shared.demo {
-        Ok(demo::up_next(&video_id).0)
+        Ok(demo::up_next(&video_id)
+            .0
+            .into_iter()
+            .filter(|t| t.kind == ytfast_core::read::TrackKind::Song)
+            .collect())
     } else {
         match shared.preparer().await {
             Some(p) => p
                 .session
-                .up_next(&video_id, None)
+                .radio_songs(&video_id)
                 .await
-                .map(|(tracks, _)| tracks)
                 .map_err(|e| api_error(shared, e)),
             None => Err("Not signed in.".into()),
         }

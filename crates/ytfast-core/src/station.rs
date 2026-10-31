@@ -19,8 +19,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::radar::{Listening, Pick, Radar, Random, eased, kind_factor, track_keys};
-use crate::read::{Rating, Track};
+use crate::radar::{Listening, Pick, Radar, Random, eased, knows_song, track_keys};
+use crate::read::{Rating, Track, TrackKind};
 
 /// How the listener took a song the station played.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,20 +366,25 @@ impl Station {
             .find(|p| p.track.video_id == seed.video_id)
             .and_then(|p| p.genre.clone())
             .or_else(|| listening.genre_for(seed));
+        let names = listening.song_keys();
         let mut added = 0;
         for (place, track) in radio.iter().enumerate() {
             let id = &track.video_id;
             let new = !id.is_empty()
                 && *id != seed.video_id
-                && !self.known.contains(id)
-                && !listening.knows(id);
-            let wanted = track.playable
+                && !knows_song(
+                    track,
+                    |id| self.known.contains(id) || listening.knows(id),
+                    &names,
+                );
+            let wanted = track.kind == TrackKind::Song
+                && track.playable
                 && track.like.is_none_or(|r| r == Rating::Indifferent)
                 && !listening.unwanted(track);
             if !new || !wanted {
                 continue;
             }
-            let gain = LIKED_WEIGHT * kind_factor(&track.kind) / (1.0 + place as f64 / 10.0);
+            let gain = LIKED_WEIGHT / (1.0 + place as f64 / 10.0);
             match self.pool.iter_mut().find(|p| p.track.video_id == *id) {
                 Some(pick) => {
                     pick.score += gain;

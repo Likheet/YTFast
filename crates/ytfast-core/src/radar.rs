@@ -91,7 +91,7 @@ const KNOWN_ENOUGH: usize = 6;
 /// Genres the page names, and the mixes follow, at most.
 const TOP_GENRES: usize = 4;
 /// What [`Radar`] is made by: one made by an older YTFast is made again.
-pub const RADAR_VERSION: u32 = 3;
+pub const RADAR_VERSION: u32 = 4;
 /// Songs of one artist disliked or marked Not interested that leave the
 /// artist out too.
 const ARTIST_AFTER: usize = 3;
@@ -862,6 +862,16 @@ impl Listening {
         self.songs.contains_key(video_id)
     }
 
+    /// Every song the record holds, by its name and first artist
+    /// ([`deezer::song_key`]): another version of one is no new song.
+    pub fn song_keys(&self) -> HashSet<String> {
+        self.songs
+            .values()
+            .filter(|song| !song.title.is_empty())
+            .map(|song| deezer::song_key(&song.title, &song.artists))
+            .collect()
+    }
+
     /// The song, or its artist, is never to be suggested.
     pub fn unwanted(&self, track: &Track) -> bool {
         self.unwanted_songs.contains_key(&track.video_id)
@@ -1302,9 +1312,9 @@ pub async fn gather(
     listening.take_account(&found.account, now);
     for seed in listening.seeds(&found.history, &found.liked, now) {
         tokio::time::sleep(PAUSE).await;
-        let radio = session.up_next(&seed.video_id, None).await;
+        let radio = session.radio_songs(&seed.video_id).await;
         let (tracks, result) = match radio {
-            Ok((tracks, _)) => (tracks, Ok(())),
+            Ok(tracks) => (tracks, Ok(())),
             Err(e) => (Vec::new(), Err(e)),
         };
         note(result);
@@ -1401,24 +1411,38 @@ pub struct Radar {
 }
 
 /// What the listener knows already: the songs and artists noted, and
-/// those of YouTube's History and Liked Music.
+/// those of YouTube's History and Liked Music, the songs by their names
+/// too.
 struct Known {
     songs: HashSet<String>,
+    names: HashSet<String>,
     artists: HashSet<String>,
 }
 
 impl Known {
     fn of(listening: &Listening, found: &Found) -> Self {
         let mut songs: HashSet<String> = listening.songs.keys().cloned().collect();
+        let mut names = listening.song_keys();
         let mut artists: HashSet<String> = HashSet::new();
         for song in listening.songs.values() {
             artists.extend(artist_keys(song.artist_id.as_deref(), &song.artists));
         }
         for track in found.history.iter().chain(&found.liked) {
             songs.insert(track.video_id.clone());
+            if !track.title.is_empty() {
+                names.insert(deezer::song_key(&track.title, &track.artists));
+            }
             artists.extend(track_keys(track));
         }
-        Self { songs, artists }
+        Self {
+            songs,
+            names,
+            artists,
+        }
+    }
+
+    fn song(&self, track: &Track) -> bool {
+        knows_song(track, |id| self.songs.contains(id), &self.names)
     }
 
     fn artist(&self, id: Option<&str>, name: &str) -> bool {
@@ -1428,15 +1452,20 @@ impl Known {
     }
 }
 
-/// How much a kind of row counts: official songs first, then music
-/// videos, fans' uploads (covers, "slowed + reverb") last.
-pub(crate) fn kind_factor(kind: &TrackKind) -> f64 {
-    match kind {
-        TrackKind::Song => 1.0,
-        TrackKind::MusicVideo => 0.8,
-        TrackKind::Unknown => 0.7,
-        TrackKind::Other(_) => 0.3,
-    }
+/// Whether `track` is a song the listener knows: by its ID (`ids`), by
+/// its pair's (the music video of a song known, or the song of a video
+/// known), or by its name and first artist among `names`
+/// ([`Listening::song_keys`]: another version of a song known, as a
+/// single's copy on an album).
+pub(crate) fn knows_song(
+    track: &Track,
+    ids: impl Fn(&str) -> bool,
+    names: &HashSet<String>,
+) -> bool {
+    ids(&track.video_id)
+        || track.video().is_some_and(&ids)
+        || (!track.title.is_empty()
+            && names.contains(&deezer::song_key(&track.title, &track.artists)))
 }
 
 /// How much more a song counts when Deezer's listeners agree: the song
@@ -1474,9 +1503,9 @@ pub fn rank(listening: &Listening, found: &Found, now: u64) -> Radar {
     }
 }
 
-/// The station's pool: the songs the seeds' radios suggest, new to the
-/// listener, each scored by its seed's weight and how near the radio's
-/// start it stands; a song several radios suggest gains half again for
+/// The station's pool: the songs the seeds' radios suggest (songs only:
+/// no music videos or fans' uploads), new to the listener, each scored by
+/// its seed's weight and how near the radio's start it stands; a song several radios suggest gains half again for
 /// each more, and more again when Deezer's listeners agree. Each is
 /// played for the genre of the seed that suggested it most.
 fn new_songs(listening: &Listening, found: &Found, known: &Known) -> Vec<Pick> {
@@ -1490,8 +1519,9 @@ fn new_songs(listening: &Listening, found: &Found, known: &Known) -> Vec<Pick> {
     let mut candidates: HashMap<String, Candidate> = HashMap::new();
     for (index, (seed, radio)) in found.radios.iter().enumerate() {
         for (place, track) in radio.iter().enumerate() {
-            let new = track.video_id != seed.video_id && !known.songs.contains(&track.video_id);
-            let wanted = track.playable
+            let new = track.video_id != seed.video_id && !known.song(track);
+            let wanted = track.kind == TrackKind::Song
+                && track.playable
                 && track
                     .like
                     .is_none_or(|rating| rating == Rating::Indifferent)
@@ -1499,7 +1529,7 @@ fn new_songs(listening: &Listening, found: &Found, known: &Known) -> Vec<Pick> {
             if !new || !wanted || track.video_id.is_empty() {
                 continue;
             }
-            let gain = seed.weight * kind_factor(&track.kind) / (1.0 + place as f64 / 10.0);
+            let gain = seed.weight / (1.0 + place as f64 / 10.0);
             let candidate = candidates
                 .entry(track.video_id.clone())
                 .or_insert_with(|| Candidate {
@@ -2222,6 +2252,21 @@ mod tests {
         finished(&mut listening, &known, 1, NOW);
         let mut fan = song("fan", "F");
         fan.kind = TrackKind::Other("MUSIC_VIDEO_TYPE_UGC".into());
+        let mut video = song("video", "V");
+        video.kind = TrackKind::MusicVideo;
+        // The song of a music video the listener played (on their phone).
+        let seen = song("seenmv", "K");
+        finished(&mut listening, &seen, 1, NOW);
+        let mut its_song = song("seen", "K");
+        its_song.more = Some(Box::new(crate::read::TrackMore {
+            counterpart: Some("seenmv".into()),
+            ..crate::read::TrackMore::default()
+        }));
+        // A known song's copy on another release: the same name and artist.
+        let copy = Track {
+            video_id: "knowncopy".into(),
+            ..known.clone()
+        };
         let mut liked = song("liked", "L");
         liked.like = Some(Rating::Like);
         let mut gone = song("gone", "G");
@@ -2239,6 +2284,9 @@ mod tests {
                         known.clone(),
                         song("history", "H"),
                         fan.clone(),
+                        video.clone(),
+                        its_song.clone(),
+                        copy.clone(),
                         liked.clone(),
                         gone.clone(),
                         song("both", "Y"),
@@ -2260,11 +2308,20 @@ mod tests {
         // Suggested by both radios: first, though late in the first.
         assert_eq!(ids[0], "both", "{ids:?}");
         assert_eq!(radar.pool[0].seeds, ["s1", "s2"]);
-        for left_out in ["s1", "known", "history", "liked", "gone"] {
+        // Songs only, and none the listener knows in another version.
+        for left_out in [
+            "s1",
+            "known",
+            "history",
+            "fan",
+            "video",
+            "seen",
+            "knowncopy",
+            "liked",
+            "gone",
+        ] {
             assert!(!ids.contains(&left_out), "{left_out}: {ids:?}");
         }
-        // A fan's upload last.
-        assert_eq!(ids.last(), Some(&"fan"), "{ids:?}");
         // Each is played for its seed's genre.
         let only1 = radar.pool.iter().find(|p| p.track.video_id == "only1");
         assert_eq!(only1.unwrap().genre.as_deref(), Some("J-Pop"));

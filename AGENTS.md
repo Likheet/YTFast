@@ -523,12 +523,16 @@ Paolino), as `audio.rs` does.
   0.3 s apart; then Deezer about the 3 artists (`deezer::Deezer::opinion`:
   their related artists and their Deezer radios). `radar::rank` then
   makes the station's pool (up to 200 songs new to the listener: not
-  noted, not in History or Liked, not liked on YouTube; scored by the
+  noted, not in History or Liked, not liked on YouTube, nor another
+  version of one (its music video or song by YouTube's pair, or the same
+  title and first artist, `radar::knows_song`); songs only, never a
+  video: a radio's music video whose song exists is taken as its song,
+  and videos with no song, fans' uploads among them, are left out
+  (`read::radio_songs`, the owner's word, 31 October 2026); scored by the
   seed's weight and how early in its radio, half again for each more
   radio suggesting it, 1.6 times when the song is in a Deezer radio and
-  1.25 when Deezer relates its artist to a favourite; fans' uploads count
-  0.3, music videos 0.8; each played for its strongest seed's genre; at
-  most 4 of one artist), "Artists to try" ("Fans might also like" on the
+  1.25 when Deezer relates its artist to a favourite; each played for its
+  strongest seed's genre; at most 4 of one artist), "Artists to try" ("Fans might also like" on the
   favourites' pages, new to the listener, half again for each favourite
   Deezer relates them to; one row mixed by genre, taken in turn) and
   "New from your artists" (one album, EP or single of each artist, of

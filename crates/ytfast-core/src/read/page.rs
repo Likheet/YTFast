@@ -1189,79 +1189,119 @@ pub fn queue_continuation(reply: &Value) -> Option<String> {
 }
 
 /// The songs of an Up next or radio list (the `next` reply, or a reply
-/// with more of it). Unplayable rows are left out; where a song also
-/// exists as a video, the song is kept.
+/// with more of it), each as YouTube gives it, with its pair (its music
+/// video, or its song). Unplayable rows are left out.
 pub fn up_next(reply: &Value) -> Vec<Track> {
-    let panels = queue_panels(reply);
-    let rows = panels
+    panel_rows(reply)
+        .into_iter()
+        .filter_map(|(primary, pair)| panel_track(primary, pair, false))
+        .collect()
+}
+
+/// A song's radio as Radar takes it (the `next` reply): songs only. Where
+/// YouTube gives a music video whose song exists too, the song, its video
+/// its pair; videos with no song (fans' uploads among them) are left out.
+pub fn radio_songs(reply: &Value) -> Vec<Track> {
+    panel_rows(reply)
+        .into_iter()
+        .filter_map(|(primary, pair)| panel_track(primary, pair, true))
+        .filter(|track| track.kind == TrackKind::Song)
+        .collect()
+}
+
+/// The rows of an Up next list: each row as YouTube gives it (its
+/// "primary"), and its pair's entry (`counterpart`: the same song's other
+/// version, and where the song's music is in the video).
+fn panel_rows(reply: &Value) -> Vec<(&Value, Option<&Value>)> {
+    queue_panels(reply)
         .into_iter()
         .filter_map(|p| p.get("contents").and_then(Value::as_array))
-        .flatten();
-    rows.filter_map(|row| {
-        let video = row
-            .pointer(
-                "/playlistPanelVideoWrapperRenderer/primaryRenderer/playlistPanelVideoRenderer",
-            )
-            .or_else(|| row.get("playlistPanelVideoRenderer"))?;
-        if video.get("unplayableText").is_some() {
-            return None;
-        }
-        let byline = Byline::parse(
-            &video
-                .get("longBylineText")
-                .and_then(text)
-                .unwrap_or_default(),
-        );
-        let mut links = Links::default();
-        for part in ["longBylineText", "menu"] {
-            if let Some(node) = video.get(part) {
-                links.add(node);
-            }
-        }
-        // The same song's other version (its music video, or its song), and
-        // where the song's music is in the video.
-        let pair = row.pointer("/playlistPanelVideoWrapperRenderer/counterpart/0");
-        let counterpart = pair
-            .and_then(|p| p.pointer("/counterpartRenderer/playlistPanelVideoRenderer/videoId"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let kind = TrackKind::from_music_video_type(
-            find_key(video, "watchEndpointMusicConfig")
-                .and_then(|c| c.get("musicVideoType"))
-                .and_then(Value::as_str),
-        );
-        let primary_is_song = !matches!(kind, TrackKind::MusicVideo | TrackKind::Other(_));
-        let segments = pair.map_or_else(Vec::new, |p| super::pair_segments(p, primary_is_song));
-        Some(Track {
-            video_id: video.get("videoId")?.as_str()?.to_string(),
-            set_video_id: video
-                .get("playlistSetVideoId")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            title: video.get("title").and_then(text).unwrap_or_default(),
-            artists: byline.artists,
-            album: byline.album.or(links.album),
-            duration_seconds: video
-                .get("lengthText")
-                .and_then(text)
-                .and_then(|l| parse_duration(&l))
-                .or(byline.duration_seconds),
-            kind,
-            thumbnail: video.get("thumbnail").and_then(Thumb::best),
-            artist_id: links.artist_id,
-            album_id: links.album_id,
-            playable: true,
-            like: super::song::row_rating(video),
-            more: counterpart.map(|counterpart| {
-                Box::new(super::TrackMore {
-                    counterpart: Some(counterpart),
-                    segments,
-                    ..super::TrackMore::default()
-                })
-            }),
+        .flatten()
+        .filter_map(|row| {
+            let primary = row
+                .pointer(
+                    "/playlistPanelVideoWrapperRenderer/primaryRenderer/playlistPanelVideoRenderer",
+                )
+                .or_else(|| row.get("playlistPanelVideoRenderer"))?;
+            Some((
+                primary,
+                row.pointer("/playlistPanelVideoWrapperRenderer/counterpart/0"),
+            ))
         })
+        .collect()
+}
+
+/// What kind of row an Up next row is (song, music video...).
+fn panel_kind(video: &Value) -> TrackKind {
+    TrackKind::from_music_video_type(
+        find_key(video, "watchEndpointMusicConfig")
+            .and_then(|c| c.get("musicVideoType"))
+            .and_then(Value::as_str),
+    )
+}
+
+/// One row of Up next: as YouTube gives it, or, `as_song`, the song of a
+/// music video whose pair is its song.
+fn panel_track(primary: &Value, pair: Option<&Value>, as_song: bool) -> Option<Track> {
+    let other = pair.and_then(|p| p.pointer("/counterpartRenderer/playlistPanelVideoRenderer"));
+    let primary_kind = panel_kind(primary);
+    let primary_is_song = !matches!(primary_kind, TrackKind::MusicVideo | TrackKind::Other(_));
+    // Where the song's music is in the video, read by which one YouTube
+    // gave first.
+    let segments = pair.map_or_else(Vec::new, |p| super::pair_segments(p, primary_is_song));
+    let (video, partner, kind) = match other {
+        Some(other) if as_song && !primary_is_song && panel_kind(other) == TrackKind::Song => {
+            (other, Some(primary), TrackKind::Song)
+        }
+        _ => (primary, other, primary_kind),
+    };
+    if video.get("unplayableText").is_some() {
+        return None;
+    }
+    let byline = Byline::parse(
+        &video
+            .get("longBylineText")
+            .and_then(text)
+            .unwrap_or_default(),
+    );
+    let mut links = Links::default();
+    for part in ["longBylineText", "menu"] {
+        if let Some(node) = video.get(part) {
+            links.add(node);
+        }
+    }
+    let counterpart = partner
+        .and_then(|p| p.get("videoId"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(Track {
+        video_id: video.get("videoId")?.as_str()?.to_string(),
+        set_video_id: primary
+            .get("playlistSetVideoId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        title: video.get("title").and_then(text).unwrap_or_default(),
+        artists: byline.artists,
+        album: byline.album.or(links.album),
+        duration_seconds: video
+            .get("lengthText")
+            .and_then(text)
+            .and_then(|l| parse_duration(&l))
+            .or(byline.duration_seconds),
+        kind,
+        thumbnail: video.get("thumbnail").and_then(Thumb::best),
+        artist_id: links.artist_id,
+        album_id: links.album_id,
+        playable: true,
+        like: super::song::row_rating(video),
+        more: counterpart.map(|counterpart| {
+            Box::new(super::TrackMore {
+                counterpart: Some(counterpart),
+                segments,
+                ..super::TrackMore::default()
+            })
+        }),
     })
-    .collect()
 }
 
 #[cfg(test)]
@@ -1722,6 +1762,64 @@ mod tests {
                 "Coldplay - A Head Full Of Dreams",
             ]
         );
+    }
+
+    /// A radio as Radar takes it: songs only. A row YouTube gives as a
+    /// music video whose song exists too becomes the song, the video its
+    /// pair with the same map; a fan's upload and a video with no song are
+    /// left out. Up next itself keeps every row as YouTube gives it.
+    #[test]
+    fn radio_songs_are_songs_only() {
+        let row = |id: &str, title: &str, kind: &str| {
+            serde_json::json!({
+                "videoId": id,
+                "title": {"runs": [{"text": title}]},
+                "longBylineText": {"runs": [{"text": "Artist Two"}]},
+                "navigationEndpoint": {"watchEndpoint": {
+                    "videoId": id,
+                    "watchEndpointMusicSupportedConfigs": {
+                        "watchEndpointMusicConfig": {"musicVideoType": kind}
+                    }
+                }}
+            })
+        };
+        let reply = serde_json::json!({"contents": {"playlistPanelRenderer": {"contents": [
+            {"playlistPanelVideoWrapperRenderer": {
+                "primaryRenderer": {
+                    "playlistPanelVideoRenderer":
+                        row("video2", "Second (Official Video)", "MUSIC_VIDEO_TYPE_OMV")
+                },
+                "counterpart": [{
+                    "counterpartRenderer": {
+                        "playlistPanelVideoRenderer": row("song2", "Second", "MUSIC_VIDEO_TYPE_ATV")
+                    },
+                    "segmentMap": {"segment": [{
+                        "primaryVideoStartTimeMilliseconds": "3385",
+                        "counterpartVideoStartTimeMilliseconds": "0",
+                        "durationMilliseconds": "169615"
+                    }]}
+                }]
+            }},
+            {"playlistPanelVideoRenderer": row("fan3", "Third (slowed)", "MUSIC_VIDEO_TYPE_UGC")},
+            {"playlistPanelVideoRenderer": row("video4", "Fourth (Official Video)", "MUSIC_VIDEO_TYPE_OMV")},
+            {"playlistPanelVideoRenderer": row("song5", "Fifth", "MUSIC_VIDEO_TYPE_ATV")}
+        ]}}});
+        let songs = radio_songs(&reply);
+        let ids: Vec<&str> = songs.iter().map(|t| t.video_id.as_str()).collect();
+        assert_eq!(ids, ["song2", "song5"]);
+        assert_eq!(songs[0].title, "Second");
+        assert_eq!(songs[0].kind, TrackKind::Song);
+        assert_eq!(songs[0].video(), Some("video2"));
+        assert_eq!(
+            songs[0].more.as_ref().unwrap().segments,
+            [crate::read::Segment {
+                song_ms: 0,
+                video_ms: 3_385,
+                length_ms: 169_615
+            }]
+        );
+        let shown: Vec<String> = up_next(&reply).into_iter().map(|t| t.video_id).collect();
+        assert_eq!(shown, ["video2", "fan3", "video4", "song5"]);
     }
 
     #[test]
