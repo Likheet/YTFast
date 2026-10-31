@@ -91,7 +91,7 @@ const KNOWN_ENOUGH: usize = 6;
 /// Genres the page names, and the mixes follow, at most.
 const TOP_GENRES: usize = 4;
 /// What [`Radar`] is made by: one made by an older YTFast is made again.
-pub const RADAR_VERSION: u32 = 4;
+pub const RADAR_VERSION: u32 = 5;
 /// Songs of one artist disliked or marked Not interested that leave the
 /// artist out too.
 const ARTIST_AFTER: usize = 3;
@@ -1348,6 +1348,10 @@ pub struct ArtistPick {
     pub thumbnail: Option<Thumb>,
     /// The genre of the favourites it is like.
     pub genre: Option<String>,
+    /// Its "Shuffle play" and "Start mix", YouTube's own lists, as the card
+    /// it came from offered them.
+    pub shuffle: Option<String>,
+    pub mix: Option<String>,
 }
 
 /// A new song for the station ([`crate::station`]), and why.
@@ -1689,6 +1693,8 @@ fn artists_to_try(
                     subtitle: card.subtitle.clone(),
                     thumbnail: card.thumbnail.clone(),
                     genre: None,
+                    shuffle: card.menu.as_ref().and_then(|m| m.shuffle.clone()),
+                    mix: card.menu.as_ref().and_then(|m| m.mix.clone()),
                 },
                 score: 0.0,
                 from: Vec::new(),
@@ -1958,7 +1964,14 @@ impl Radar {
                 .into_iter()
                 .map(|a| {
                     Item::Card(Card {
-                        menu: None,
+                        // Its Shuffle play and Start mix, kept from its card.
+                        menu: (a.shuffle.is_some() || a.mix.is_some()).then(|| {
+                            Box::new(crate::read::Menu {
+                                shuffle: a.shuffle.clone(),
+                                mix: a.mix.clone(),
+                                ..crate::read::Menu::default()
+                            })
+                        }),
                         title: a.name.clone(),
                         subtitle: a.subtitle.clone(),
                         thumbnail: a.thumbnail.clone(),
@@ -2560,6 +2573,57 @@ mod tests {
             .collect();
         // The EP of the same name stands for its single.
         assert_eq!(shown, [("Same Song (Deluxe)", "EP"), ("Other", "Single")]);
+    }
+
+    /// An artist to try keeps its card's Shuffle play and Start mix lists,
+    /// and Radar's page offers them again.
+    #[test]
+    fn artists_to_try_keep_their_lists() {
+        let listening = listener(&[("J-Pop", 2)]);
+        let mut card = match artist_card("New") {
+            Item::Card(card) => card,
+            Item::Track(_) => unreachable!(),
+        };
+        card.menu = Some(Box::new(crate::read::Menu {
+            shuffle: Some("RDAONew".into()),
+            mix: Some("RDEMNew".into()),
+            ..crate::read::Menu::default()
+        }));
+        let favourite = Page {
+            sections: vec![Section {
+                title: "Fans might also like".into(),
+                items: vec![Item::Card(card)],
+                shape: Shape::Carousel,
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        let seed = ArtistSeed {
+            id: "UCJ-Pop0".into(),
+            name: "J-Pop0".into(),
+            weight: 1.0,
+            genre: Some("J-Pop".into()),
+        };
+        let found = Found {
+            artists: vec![(seed, favourite)],
+            ..Found::default()
+        };
+        let radar = rank(&listening, &found, NOW);
+        let new = radar.artists.iter().find(|a| a.id == "UCNew").unwrap();
+        assert_eq!(new.shuffle.as_deref(), Some("RDAONew"));
+        assert_eq!(new.mix.as_deref(), Some("RDEMNew"));
+        let shown = radar.page(&listening);
+        let menu = shown
+            .sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .find_map(|item| match item {
+                Item::Card(card) if card.title == "New" => card.menu.as_deref(),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(menu.shuffle.as_deref(), Some("RDAONew"));
+        assert_eq!(menu.mix.as_deref(), Some("RDEMNew"));
     }
 
     #[test]

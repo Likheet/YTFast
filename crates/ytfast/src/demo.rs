@@ -302,8 +302,17 @@ fn card(title: &str, subtitle: &str, kind: PageKind) -> Item {
         (page, id)
     };
     let playable = matches!(kind, PageKind::Album | PageKind::Playlist);
+    // An artist's Shuffle play and Start mix: its made-up page's songs.
+    let menu = (kind == PageKind::Artist).then(|| {
+        let songs = id_for(title, kind);
+        Box::new(Menu {
+            shuffle: Some(songs.clone()),
+            mix: Some(songs),
+            ..Menu::default()
+        })
+    });
     Item::Card(Card {
-        menu: None,
+        menu,
         title: title.into(),
         subtitle: subtitle.into(),
         // Moods and genres are buttons, without a picture.

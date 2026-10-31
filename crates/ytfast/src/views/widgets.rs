@@ -1781,7 +1781,7 @@ pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text
 /// artist, Share, Pin to Listen again, Not interested, Don't recommend
 /// artist. A playlist: the same, with Edit playlist and Delete playlist on
 /// the account's own (which are not saved to the library). An artist:
-/// Subscribe, Share, Pin to Listen again.
+/// Shuffle play, Start mix, Subscribe, Share, Pin to Listen again.
 pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
     if matches!(
         card.open,
@@ -1887,6 +1887,26 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
                 source: Some(id.clone()),
             }),
         );
+    }
+    // An artist's: YouTube's own lists, as its menu gives them (its page's
+    // Shuffle and Mix are the same), first as in YouTube Music's menu.
+    // Shuffle play shuffles the list here, as an album's does.
+    if playlist.is_none() {
+        if let Some(list) = menu.and_then(|m| m.shuffle.clone()) {
+            item(
+                ui,
+                Icon::Shuffle,
+                "Shuffle play",
+                Action::QueuePlaylist(list, QueueMode::Shuffle),
+            );
+        }
+        if let Some(list) = menu.and_then(|m| m.mix.clone()) {
+            let mix = Target::Watch {
+                video_id: None,
+                playlist_id: Some(list),
+            };
+            item(ui, Icon::Mix, "Start mix", Action::Play(mix, None));
+        }
     }
     // An album's artist, from its menu (the card names none).
     if album && let Some(artist) = menu.and_then(|m| m.artist.clone()) {

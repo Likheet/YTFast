@@ -347,7 +347,11 @@ Paolino), as `audio.rs` does.
   playlist: Shuffle play, Start mix, Edit playlist (own), Play next, Add
   to queue, Save to library, Save to playlist (the whole list, YouTube's
   `ACTION_ADD_PLAYLIST`), Go to artist, Share, Delete playlist (own),
-  Pin, Not interested. An artist: Subscribe, Share, Pin. The entries
+  Pin, Not interested. An artist: Shuffle play and Start mix (YouTube's
+  own lists from its menu, `Menu::shuffle` and `Menu::mix`, the same as
+  its page's Shuffle and Mix; Shuffle play shuffles here, as an album's
+  does; Radar's artists keep them from their cards, `ArtistPick`),
+  Subscribe, Share, Pin. The entries
   YouTube carries out by its own tokens (pin, a song in the library,
   Remove from history, Not interested, Don't recommend artist) send the
   token the row's menu holds (`read::Menu`, read with each row and card,
@@ -1666,6 +1670,25 @@ app itself, with a hook not committed): History's song menu with every
 new entry in order, and the credits dialog. Not yet tested: any of it
 with the owner's account (YouTube taking the tokens: the pin showing on
 Home's Listen again, a song saved to the library), and the Mac.
+
+Then (31 October 2026, version 1.9.1), at the owner's word: an
+artist's card offers Shuffle play and Start mix, first, as YouTube
+Music's does (above, Menus). Read on the owner's account first (Library
+> Artists, only the entries' names, icons and lists' first letters
+printed): Shuffle play (`RDAO...`), Start mix (`RDEM...`), Share, Pin.
+The lists are YouTube's own, from each card's menu (not made from the
+artist's ID: the saved artist page shows they are not). Radar's artists
+to try keep them from the cards they came from (`RADAR_VERSION` 5 makes
+the next Radar at once, so they show). Tested on the owner's Windows
+laptop: the unit tests (441, among them an artist's lists read from its
+menu and a song's Start mix not taken for one, Radar's artists keeping
+them, and the menu drawn with Shuffle play and Start mix before Share,
+each asking for its own list, Shuffle play shuffled), and the demo off
+the screen (its screen asleep: the pictures and clicks came from the
+app itself, with a hook not committed): Library > Artists, a card's
+menu, and Shuffle play starting a song of that artist with Shuffle lit.
+Not yet tested: with the owner's account (YouTube's real lists), and
+the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

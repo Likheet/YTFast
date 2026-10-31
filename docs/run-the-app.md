@@ -204,7 +204,9 @@ once a song plays.
   next, Add to queue, Save album (or playlist) to library, Save to
   playlist (the whole album or playlist), Go to artist, Share, Pin to
   Listen again; on your own playlists, Edit playlist and Delete playlist.
-  **Right-click an artist**: Subscribe, Share, Pin to Listen again.
+  **Right-click an artist**: Shuffle play (their songs, shuffled), Start
+  mix (their songs and others like them), Subscribe, Share, Pin to
+  Listen again.
 - **Right-click a song in Up next**: Play next, Start mix, ..., Remove
   from queue (drag a row to move it), and **Dismiss queue**, which empties
   the queue and stops the music.

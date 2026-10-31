@@ -9047,6 +9047,88 @@ mod tests {
         assert!(w.shows("Pin to Listen again"));
     }
 
+    /// An artist's card offers Shuffle play and Start mix first, as
+    /// YouTube Music's does, each playing YouTube's own list: Shuffle play
+    /// shuffled here, as an album's is.
+    #[test]
+    fn an_artist_cards_menu_shuffles_and_mixes() {
+        use ytfast_core::read::{CardLook, Menu, PageKind, Shape, Thumb};
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        let route = Route::browse("FEmusic_shelves".into(), None);
+        w.h.act(Action::Navigate(route.clone()));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("the page is asked for");
+        let artist = Card {
+            title: "Some Artist".into(),
+            subtitle: "Artist".into(),
+            thumbnail: Some(Thumb {
+                url: "https://example.com/artist.jpg".into(),
+                width: 226,
+                height: 226,
+            }),
+            round: true,
+            open: Some(Target::Browse {
+                id: "UCartist".into(),
+                kind: PageKind::Artist,
+                params: None,
+            }),
+            play: None,
+            podcast: None,
+            look: CardLook::default(),
+            menu: Some(Box::new(Menu {
+                shuffle: Some("RDAOartist".into()),
+                mix: Some("RDEMartist".into()),
+                ..Menu::default()
+            })),
+        };
+        let page = Page {
+            sections: vec![Section {
+                title: "Fans might also like".into(),
+                items: vec![Item::Card(artist)],
+                shape: Shape::Carousel,
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(route, load, Ok(page)));
+        w.point(egui::pos2(5.0, 5.0));
+        w.settle();
+        let asked = |w: &mut Window| -> Vec<(String, QueueMode)> {
+            w.h.requests()
+                .into_iter()
+                .filter_map(|r| match r {
+                    Request::PlaylistQueue {
+                        playlist_id, mode, ..
+                    } => Some((playlist_id, mode)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let card = w.find("Some Artist", 0);
+        w.right_click(card.center());
+        let shuffle = w.find("Shuffle play", 0);
+        let mix = w.find("Start mix", 0);
+        let share = w.find("Share", 0);
+        assert!(shuffle.top() < mix.top() && mix.top() < share.top());
+        w.click(shuffle.center());
+        assert_eq!(
+            asked(&mut w),
+            [("RDAOartist".to_string(), QueueMode::Shuffle)]
+        );
+        w.settle();
+        let card = w.find("Some Artist", 0);
+        w.right_click(card.center());
+        let mix = w.find("Start mix", 0);
+        w.click(mix.center());
+        assert_eq!(asked(&mut w), [("RDEMartist".to_string(), QueueMode::Play)]);
+    }
+
     /// A song's menu offers Play next first, and Start mix after Add to
     /// queue. With two or more songs lined up by hand, a click that would
     /// put a new queue in their place asks first: Cancel (or Esc) keeps

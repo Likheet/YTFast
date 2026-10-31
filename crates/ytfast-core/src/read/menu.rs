@@ -68,6 +68,11 @@ pub struct Menu {
     pub like: Option<super::Rating>,
     /// An artist's "Subscribe" or "Unsubscribe": whether subscribed now.
     pub subscribed: Option<bool>,
+    /// A card's "Shuffle play" and "Start mix", as YouTube's own lists
+    /// (an artist's `RDAO...` and `RDEM...`, the same as its page's
+    /// Shuffle and Mix).
+    pub shuffle: Option<String>,
+    pub mix: Option<String>,
 }
 
 /// Reads [`Menu`] from a row or card (`node` holds its `menu`); `None`
@@ -151,10 +156,17 @@ pub fn menu_of(node: &Value) -> Option<Box<Menu>> {
                 .pointer("/navigationEndpoint/browseEndpoint/browseId")
                 .and_then(Value::as_str)
                 .map(str::to_string);
+            // A list to play (a song's "Start mix" names its song instead).
+            let list = entry
+                .pointer("/navigationEndpoint/watchPlaylistEndpoint/playlistId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             match icon(entry, "icon").as_str() {
                 "PEOPLE_GROUP" => menu.credits = page,
                 "ARTIST" => menu.artist = page,
                 "ALBUM" => menu.album = page,
+                "MUSIC_SHUFFLE" if list.is_some() => menu.shuffle = list,
+                "MIX" if list.is_some() => menu.mix = list,
                 _ => {}
             }
         }
@@ -303,6 +315,36 @@ mod tests {
             None
         );
         assert_eq!(menu_of(&json!({})), None);
+    }
+
+    /// An artist's card (Library > Artists): its Shuffle play and Start mix
+    /// lists, as read on the owner's account (the order, icons and
+    /// endpoints; the lists made up). A song's Start mix names its song,
+    /// not a list: none.
+    #[test]
+    fn an_artists_lists_are_read() {
+        let entry = |words: &str, icon: &str, endpoint: Value| {
+            json!({"menuNavigationItemRenderer": {
+                "text": {"runs": [{"text": words}]},
+                "icon": {"iconType": icon},
+                "navigationEndpoint": endpoint
+            }})
+        };
+        let artist = json!({"menu": {"menuRenderer": {"items": [
+            entry("Shuffle play", "MUSIC_SHUFFLE",
+                json!({"watchPlaylistEndpoint": {"playlistId": "RDAOartist", "params": "p"}})),
+            entry("Start mix", "MIX",
+                json!({"watchPlaylistEndpoint": {"playlistId": "RDEMartist", "params": "p"}})),
+            entry("Share", "SHARE", json!({"shareEntityEndpoint": {}}))
+        ]}}});
+        let menu = menu_of(&artist).unwrap();
+        assert_eq!(menu.shuffle.as_deref(), Some("RDAOartist"));
+        assert_eq!(menu.mix.as_deref(), Some("RDEMartist"));
+        let song = json!({"menu": {"menuRenderer": {"items": [
+            entry("Start mix", "MIX",
+                json!({"watchEndpoint": {"videoId": "v", "playlistId": "RDAMVMv"}}))
+        ]}}});
+        assert_eq!(menu_of(&song), None);
     }
 
     #[test]
