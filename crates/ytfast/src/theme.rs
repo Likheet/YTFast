@@ -499,6 +499,18 @@ fastframe_icons::icons! {
         Sort => "sort",
         /// Radar's "Not interested" (YouTube's NOT_INTERESTED).
         NotInterested => "block",
+        /// "Unpin from Listen again" (KEEP_OFF; "Pin" is KEEP, `Pin`).
+        Unpin => "keep-off",
+        /// "View song credits" (PEOPLE_GROUP).
+        Credits => "group",
+        /// "Remove from history" (REMOVE_FROM_HISTORY).
+        RemoveFromHistory => "delete-history",
+        /// "Don't recommend artist" (REMOVE_CIRCLE).
+        NotRecommended => "do-not-disturb-on",
+        /// Up next's "Dismiss queue" (DISMISS_QUEUE).
+        DismissQueue => "clear-all",
+        /// An artist's "Subscribe" and "Unsubscribe" (SUBSCRIBE).
+        Subscribe => "subscriptions",
     }
 }
 

@@ -39,6 +39,9 @@ pub struct SongDetails {
     /// Its video for the video mode: itself when it is a video, else its
     /// music video when it has one; with where the song's music is in it.
     pub video: Option<super::VideoPair>,
+    /// What its menu offers that needs YouTube's own tokens (pin, the
+    /// library, credits), from its row in the queue.
+    pub menu: Option<Box<super::Menu>>,
 }
 
 /// Reads [`SongDetails`] from a `next` reply. The rating comes from the
@@ -50,6 +53,11 @@ pub fn song_details(reply: &Value) -> SongDetails {
         lyrics_id: tab(reply, "MUSIC_PAGE_TYPE_TRACK_LYRICS", "MPLYt"),
         related_id: tab(reply, "MUSIC_PAGE_TYPE_TRACK_RELATED", "MPTRt"),
         video: video_version(reply),
+        menu: reply
+            .pointer("/currentVideoEndpoint/watchEndpoint/videoId")
+            .and_then(Value::as_str)
+            .and_then(|playing| playing_row(reply, Some(playing)))
+            .and_then(super::menu_of),
     }
 }
 
@@ -373,6 +381,12 @@ mod tests {
         assert_eq!(
             details,
             SongDetails {
+                // The queue row's menu: its like entry (its pin has no
+                // second token, so it is no entry to use).
+                menu: Some(Box::new(crate::read::Menu {
+                    like: Some(Rating::Like),
+                    ..crate::read::Menu::default()
+                })),
                 like: Some(Rating::Dislike),
                 lyrics_id: Some("MPLYt_lyrics1".into()),
                 related_id: Some("MPTRt_related1".into()),

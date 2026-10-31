@@ -70,14 +70,18 @@ pub fn show(app: &App, ui: &egui::Ui) {
             }
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             match current {
-                Dialog::SaveToPlaylist { video_ids } => {
-                    close = save_to_playlist(app, ui, video_ids);
+                Dialog::SaveToPlaylist { video_ids, source } => {
+                    close = save_to_playlist(app, ui, video_ids, source.as_deref());
+                }
+                Dialog::Credits { credits, .. } => {
+                    close = credits_dialog(ui, window, credits.as_ref());
                 }
                 Dialog::NewPlaylist {
                     name,
                     description,
                     privacy,
                     songs,
+                    source,
                 } => {
                     let done = form(
                         ui,
@@ -92,6 +96,7 @@ pub fn show(app: &App, ui: &egui::Ui) {
                             description: description.trim().to_string(),
                             privacy: *privacy,
                             video_ids: songs.clone(),
+                            source: source.clone(),
                         }));
                     }
                     close = done.is_some();
@@ -987,7 +992,78 @@ fn not_again(ui: &mut egui::Ui, ticked: bool) -> egui::Response {
 /// a bar with the title and ×, then "All playlists" and the account's
 /// playlists, which scroll, and "New playlist" at the bottom right. True
 /// when it is done.
-fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_ids: &[String]) -> bool {
+/// A song's credits ("View song credits"), as YouTube Music's
+/// (`ytmusic-dismissable-dialog-renderer`): the song and its artists, then
+/// each role ("Performed by", "Written by"...) with its people, one to a
+/// line; Close. True when closed.
+fn credits_dialog(
+    ui: &mut egui::Ui,
+    window: f32,
+    credits: Option<&Result<ytfast_core::read::Credits, String>>,
+) -> bool {
+    let mut close = false;
+    ui.set_width(dialog_width(window));
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(24))
+        .show(ui, |ui| {
+            theme::label(ui, "Song credits", theme::bold(24.0), PALETTE.text);
+            ui.add_space(16.0);
+            match credits {
+                None => {
+                    theme::label(
+                        ui,
+                        "Loading\u{2026}",
+                        theme::regular(14.0),
+                        PALETTE.secondary,
+                    );
+                }
+                Some(Err(message)) => {
+                    theme::label(ui, message, theme::regular(14.0), PALETTE.secondary);
+                }
+                Some(Ok(credits)) => {
+                    theme::label(ui, &credits.title, theme::medium(16.0), PALETTE.text);
+                    theme::label(
+                        ui,
+                        &credits.artists,
+                        theme::regular(14.0),
+                        PALETTE.secondary,
+                    );
+                    ui.add_space(16.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(ui.ctx().content_rect().height() * 0.5)
+                        .show(ui, |ui| {
+                            for (role, people) in &credits.roles {
+                                theme::label(ui, role, theme::medium(14.0), PALETTE.text);
+                                ui.add_space(4.0);
+                                for person in people {
+                                    theme::label(
+                                        ui,
+                                        person,
+                                        theme::regular(14.0),
+                                        PALETTE.secondary,
+                                    );
+                                }
+                                ui.add_space(16.0);
+                            }
+                        });
+                }
+            }
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::pill(ui, None, "Close", theme::Pill::Filled).clicked() {
+                    close = true;
+                }
+            });
+        });
+    close
+}
+
+fn save_to_playlist(
+    app: &App,
+    ui: &mut egui::Ui,
+    video_ids: &[String],
+    source: Option<&str>,
+) -> bool {
     use egui::{Align2, Rect, Sense, pos2, vec2};
     let width = 382.0; // 384 with the border
     ui.set_width(width);
@@ -1062,6 +1138,7 @@ fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_ids: &[String]) -> bool 
                         playlist_id,
                         title: card.title.clone(),
                         video_ids: video_ids.to_vec(),
+                        source: source.map(str::to_string),
                     });
                     done = true;
                 }
@@ -1093,6 +1170,7 @@ fn save_to_playlist(app: &App, ui: &mut egui::Ui, video_ids: &[String]) -> bool 
             description: String::new(),
             privacy: Privacy::default(),
             songs: video_ids.to_vec(),
+            source: source.map(str::to_string),
         }));
         done = true;
     }

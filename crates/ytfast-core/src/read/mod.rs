@@ -12,6 +12,7 @@ use serde_json::Value;
 
 mod edit;
 mod formats;
+mod menu;
 mod page;
 mod search;
 mod song;
@@ -21,6 +22,7 @@ pub use edit::{created_playlist_id, edit_status, feedback_processed};
 pub use formats::{
     StreamFormat, VideoFormat, best_stream, best_video, stream_formats, video_formats,
 };
+pub use menu::{Credits, Feedback, Menu, Toggle, credits, menu_of};
 pub use page::{
     Card, CardButton, CardLook, Header, HeaderButtons, Item, Page, PageKind, Section, Shape,
     Target, Thumb, TopResult, more_items, page, queue_continuation, queue_title, radio_songs,
@@ -172,6 +174,10 @@ pub struct TrackMore {
     pub counterpart: Option<String>,
     /// Where the song's music is in the video ([`Segment`]).
     pub segments: Vec<Segment>,
+    /// What its menu offers that needs YouTube's own tokens ([`Menu`]):
+    /// read with the row, never saved (they are YouTube's to change).
+    #[serde(skip)]
+    pub menu: Option<Box<Menu>>,
 }
 
 /// One stretch of a song and the same music in its music video, as YouTube
@@ -306,6 +312,12 @@ impl Track {
     /// not a song.
     pub fn is_video(&self) -> bool {
         matches!(self.kind, TrackKind::MusicVideo | TrackKind::Other(_))
+    }
+
+    /// What its menu offers that needs YouTube's own tokens, when its row
+    /// said ([`Menu`]).
+    pub fn menu(&self) -> Option<&Menu> {
+        self.more.as_ref()?.menu.as_deref()
     }
 
     /// The video to show for it in the video mode, when known: itself for
@@ -452,13 +464,15 @@ pub(crate) fn track(row: &Value) -> Option<Track> {
         .find(|part| is_count(part))
         .map(str::to_string);
     let explicit = row.get("badges").is_some_and(is_explicit);
-    let more = (rank.is_some() || count.is_some() || explicit).then(|| {
+    let menu = menu_of(row);
+    let more = (rank.is_some() || count.is_some() || explicit || menu.is_some()).then(|| {
         Box::new(TrackMore {
             rank,
             count,
             explicit,
             counterpart: None,
             segments: Vec::new(),
+            menu,
         })
     });
     Some(Track {

@@ -185,10 +185,14 @@ once a song plays.
 
 - Menus look and read as YouTube Music's.
 - **Right-click a song**, or click the three dots that show at its right
-  when the pointer is on it: Play next, Add to queue, Start mix, Add to
-  liked songs, Save to playlist, Go to album, Go to artist, Share. On
-  your own playlists, also **Remove from playlist**. The three dots in the
-  middle of the player bar give the same for the song playing.
+  when the pointer is on it: Play next, Add to queue, Start mix, Save to
+  library, Add to liked songs, Save to playlist, Go to album, Go to
+  artist, View song credits, Share, and **Pin to Listen again** (it then
+  shows in Home's Listen again; the same entry unpins it). On your own
+  playlists, also **Remove from playlist**; in History, **Remove from
+  history**; on Home, **Not interested** and **Don't recommend artist**.
+  The three dots in the middle of the player bar give the same for the
+  song playing.
 - With two or more songs lined up (Play next, Add to queue) and not yet
   played, clicking something that would start a new queue asks **Replace
   your queue?** first: **Cancel** (or Esc) keeps your songs, **Play
@@ -197,9 +201,13 @@ once a song plays.
   add the song) and a **New playlist** button.
 - **Share** copies the song's link.
 - **Right-click an album or playlist**: Shuffle play, Start mix, Play
-  next, Add to queue, Save album (or playlist) to library, Share.
+  next, Add to queue, Save album (or playlist) to library, Save to
+  playlist (the whole album or playlist), Go to artist, Share, Pin to
+  Listen again; on your own playlists, Edit playlist and Delete playlist.
+  **Right-click an artist**: Subscribe, Share, Pin to Listen again.
 - **Right-click a song in Up next**: Play next, Start mix, ..., Remove
-  from queue (drag a row to move it).
+  from queue (drag a row to move it), and **Dismiss queue**, which empties
+  the queue and stops the music.
 
 **Your music**
 

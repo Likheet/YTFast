@@ -135,6 +135,13 @@ there, not in `App::ui`.
 - **Give every new button a name** (`response.widget_info`). Screen
   readers need it, and it is how the demo is driven on the owner's laptop
   (see AGENTS.md, "Where things can be tested").
+- **A menu's YouTube entries need its row's tokens.** Pin to Listen
+  again, a song's Save to library, Remove from history, Not interested
+  and Don't recommend artist are carried out by YouTube with tokens each
+  row's or card's menu holds (`read::Menu`, `TrackMore::menu`,
+  `Card::menu`): never make one up, never save one (`#[serde(skip)]`),
+  and show an entry only where its token came. A new reader of rows or
+  cards calls `read::menu_of` too.
 - **Long lists draw only the rows on screen** (`widgets::rows`). Each row
   must add exactly one widget of its own, as `track_row_in` does: the rows
   not drawn are counted as one each, which keeps every row's ID (its open

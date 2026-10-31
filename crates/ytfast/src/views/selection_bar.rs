@@ -61,7 +61,10 @@ pub fn show(app: &App, ui: &egui::Ui) {
             x += 89.0 + 70.0 - 40.0;
             let video_ids: Vec<String> = app.selected.iter().map(|t| t.video_id.clone()).collect();
             if button(ui, spot(x), Icon::SaveToPlaylist, "Save to playlist") {
-                app.act(Action::OpenDialog(Dialog::SaveToPlaylist { video_ids }));
+                app.act(Action::OpenDialog(Dialog::SaveToPlaylist {
+                    video_ids,
+                    source: None,
+                }));
                 app.act(Action::ClearSelected);
             }
             x += 40.0;

@@ -275,6 +275,7 @@ fn new_playlist(app: &App, ui: &mut egui::Ui) {
             description: String::new(),
             privacy: Default::default(),
             songs: Vec::new(),
+            source: None,
         }));
     }
 }

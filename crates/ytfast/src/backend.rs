@@ -234,6 +234,8 @@ pub enum Request {
     Related(String),
     /// A song started playing: read what the account thinks of it.
     Details(String),
+    /// A song's credits ("View song credits"), from their page.
+    Credits(String),
     /// A change to the account: likes, playlists, the library.
     Edit(Edit),
     /// A History report (see `playreport`).
@@ -277,7 +279,7 @@ impl Edit {
             | Self::Save { playlist_id, .. } => playlist_id,
             Self::CreatePlaylist { title, .. } => title,
             Self::Subscribe { channel_id, .. } => channel_id,
-            Self::ForgetSearch { token, .. } => token,
+            Self::ForgetSearch { token, .. } | Self::Feedback { token, .. } => token,
         }
     }
 }
@@ -289,9 +291,12 @@ pub enum Edit {
         video_id: String,
         like: crate::app::LikeState,
     },
+    /// Songs added to a playlist, and every song of `source` (an album's
+    /// or playlist's "Save to playlist").
     AddToPlaylist {
         playlist_id: String,
         video_ids: Vec<String>,
+        source: Option<String>,
     },
     /// Songs taken out of a playlist: each its song ID and its row's own
     /// (`set_video_id`).
@@ -304,6 +309,7 @@ pub enum Edit {
         description: String,
         privacy: Privacy,
         video_ids: Vec<String>,
+        source: Option<String>,
     },
     RenamePlaylist {
         playlist_id: String,
@@ -328,6 +334,25 @@ pub enum Edit {
         words: String,
         token: String,
     },
+    /// One of the tokens a menu carries ([`ytfast_core::read::Menu`]), sent
+    /// as it is; `change` says what it does.
+    Feedback {
+        token: String,
+        change: Change,
+    },
+}
+
+/// What a menu's token does to the account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// Pins a song, album, playlist or artist (`key`: its ID) to Listen
+    /// again, or unpins it.
+    Pin { key: String, pin: bool },
+    /// Saves a song to the library, or removes it.
+    SaveSong { video_id: String, save: bool },
+    /// Takes a song or card (`key`) off a page: History's "Remove from
+    /// history", Home's "Not interested" and "Don't recommend artist".
+    Hide { route: Route, key: String },
 }
 
 /// A song ready to play.
@@ -451,6 +476,11 @@ pub enum Event {
     /// of the song in it), `None` when it has none; an error when the
     /// details did not load.
     SongVideo(String, Result<Option<VideoPair>, String>),
+    /// What a playing song's menu offers (pin, the library, credits), from
+    /// its details: for the player's menu, when the song came without it.
+    SongMenu(String, Box<ytfast_core::read::Menu>),
+    /// A song's credits, from their page (`Request::Credits`).
+    Credits(String, Result<ytfast_core::read::Credits, String>),
     /// A picture not fetched, because it was no longer wanted (it scrolled
     /// past): it is asked for again when it next shows.
     ImageSkipped(String),
@@ -935,6 +965,7 @@ async fn serve(
                     station_radio(&shared, station, video_id).await;
                 }
                 Request::Details(video_id) => song_started(&shared, video_id).await,
+                Request::Credits(page) => credits(&shared, page).await,
                 Request::Video { entry, video_id } => video(&shared, entry, video_id).await,
                 // Queued above, in order.
                 Request::Edit(_) => {}
@@ -1021,6 +1052,7 @@ fn failure_for(request: &Request) -> Option<Event> {
             result: Err(failed()),
         },
         Request::Details(video_id) => Event::SongVideo(video_id.clone(), Err(failed())),
+        Request::Credits(page) => Event::Credits(page.clone(), Err(failed())),
         Request::Edit(change) => Event::EditFailed(change.clone(), failed()),
         // No more, rather than asking again while the end is in view.
         Request::MoreResults { route, load } if route.shelves().is_some() => Event::MoreSections {
@@ -1834,6 +1866,9 @@ async fn song_started(shared: &Shared, video_id: String) {
     match details(shared, &p.session, &video_id).await {
         Ok(found) => {
             shared.send(Event::SongVideo(video_id.clone(), Ok(found.video.clone())));
+            if let Some(menu) = found.menu.clone() {
+                shared.send(Event::SongMenu(video_id.clone(), menu));
+            }
             if let Some(rating) = found.like {
                 shared.send(Event::Liked(video_id, like_state(rating)));
             }
@@ -1843,6 +1878,23 @@ async fn song_started(shared: &Shared, video_id: String) {
             shared.send(Event::SongVideo(video_id, Err(e.to_string())));
         }
     }
+}
+
+/// A song's credits ("View song credits"), from their page.
+async fn credits(shared: &Shared, page: String) {
+    let result = if shared.demo {
+        Ok(demo::credits(&page))
+    } else {
+        match shared.preparer().await {
+            Some(p) => p
+                .session
+                .credits(&page)
+                .await
+                .map_err(|e| api_error(shared, e)),
+            None => Err("Not signed in.".into()),
+        }
+    };
+    shared.send(Event::Credits(page, result));
 }
 
 /// The picture of a video playing in the video mode: found the fast way
@@ -2236,7 +2288,12 @@ async fn edit(shared: &Shared, change: Edit) {
         Edit::AddToPlaylist {
             playlist_id,
             video_ids,
-        } => session.add_to_playlist(playlist_id, video_ids).await,
+            source,
+        } => {
+            session
+                .add_to_playlist(playlist_id, video_ids, source.as_deref())
+                .await
+        }
         Edit::RemoveFromPlaylist { playlist_id, songs } => {
             session.remove_from_playlist(playlist_id, songs).await
         }
@@ -2245,8 +2302,9 @@ async fn edit(shared: &Shared, change: Edit) {
             description,
             privacy,
             video_ids,
+            source,
         } => session
-            .create_playlist(title, description, *privacy, video_ids)
+            .create_playlist(title, description, *privacy, video_ids, source.as_deref())
             .await
             .map(|_| ()),
         Edit::RenamePlaylist {
@@ -2266,6 +2324,7 @@ async fn edit(shared: &Shared, change: Edit) {
             subscribe,
         } => session.subscribe(channel_id, *subscribe).await,
         Edit::ForgetSearch { token, .. } => session.forget_search(token).await,
+        Edit::Feedback { token, .. } => session.feedback(token).await,
     };
     match result {
         Ok(()) => shared.send(Event::Edited(change)),

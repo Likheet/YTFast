@@ -213,6 +213,8 @@ pub struct Card {
     pub podcast: Option<String>,
     /// How it is drawn, beyond a cover and words.
     pub look: CardLook,
+    /// What its menu offers that needs YouTube's own tokens ([`Menu`]).
+    pub menu: Option<Box<super::Menu>>,
 }
 
 /// How a card is drawn beyond a cover and words: a button's icon and a
@@ -267,6 +269,8 @@ impl Card {
         } else {
             (byline.artists, byline.album, byline.duration_seconds)
         };
+        // Its pages and like, and what its menu offers, from its menu.
+        let menu = self.menu.as_deref();
         Some(Track {
             video_id,
             title: self.title.clone(),
@@ -274,6 +278,15 @@ impl Card {
             album,
             duration_seconds,
             thumbnail: self.thumbnail.clone(),
+            artist_id: menu.and_then(|m| m.artist.clone()),
+            album_id: menu.and_then(|m| m.album.clone()),
+            like: menu.and_then(|m| m.like),
+            more: self.menu.clone().map(|menu| {
+                Box::new(super::TrackMore {
+                    menu: Some(menu),
+                    ..super::TrackMore::default()
+                })
+            }),
             ..Track::default()
         })
     }
@@ -557,6 +570,7 @@ fn chips(reply: &Value) -> Option<Section> {
                 }
             };
             Some(Item::Card(Card {
+                menu: None,
                 title,
                 subtitle: String::new(),
                 thumbnail: None,
@@ -788,6 +802,7 @@ fn any_item(row: &Value) -> Option<Item> {
             .and_then(Value::as_str)
             .map(str::to_string);
         return Some(Item::Card(Card {
+            menu: None,
             title: button.get("buttonText").and_then(text)?,
             subtitle: String::new(),
             thumbnail: None,
@@ -817,6 +832,7 @@ fn any_item(row: &Value) -> Option<Item> {
                 .and_then(text)
                 .filter(|p| !p.trim().is_empty()),
             look: CardLook::default(),
+            menu: super::menu_of(episode),
         }));
     }
     None
@@ -876,6 +892,7 @@ fn two_row_card(row: &Value) -> Option<Card> {
             explicit: row.get("subtitleBadges").is_some_and(super::is_explicit),
             ..CardLook::default()
         },
+        menu: super::menu_of(row),
     })
 }
 
@@ -904,6 +921,7 @@ fn list_row_card(row: &Value) -> Option<Card> {
         play: row.get("overlay").and_then(play_button),
         podcast: None,
         look: CardLook::default(),
+        menu: super::menu_of(row),
     })
 }
 
@@ -952,7 +970,12 @@ fn top_result(shelf: &Value) -> Option<Item> {
             playable: true,
             // Its own menu: the card holds other songs' rows too.
             like: shelf.get("menu").and_then(super::song::menu_rating),
-            more: None,
+            more: super::menu_of(shelf).map(|menu| {
+                Box::new(super::TrackMore {
+                    menu: Some(menu),
+                    ..super::TrackMore::default()
+                })
+            }),
         }));
     }
     Some(Item::Card(Card {
@@ -964,6 +987,7 @@ fn top_result(shelf: &Value) -> Option<Item> {
         play: play_button(shelf),
         podcast: None,
         look: CardLook::default(),
+        menu: super::menu_of(shelf),
     }))
 }
 
@@ -1274,6 +1298,7 @@ fn panel_track(primary: &Value, pair: Option<&Value>, as_song: bool) -> Option<T
         .and_then(|p| p.get("videoId"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let menu = super::menu_of(video);
     Some(Track {
         video_id: video.get("videoId")?.as_str()?.to_string(),
         set_video_id: primary
@@ -1294,10 +1319,11 @@ fn panel_track(primary: &Value, pair: Option<&Value>, as_song: bool) -> Option<T
         album_id: links.album_id,
         playable: true,
         like: super::song::row_rating(video),
-        more: counterpart.map(|counterpart| {
+        more: (counterpart.is_some() || menu.is_some()).then(|| {
             Box::new(super::TrackMore {
-                counterpart: Some(counterpart),
+                counterpart,
                 segments,
+                menu,
                 ..super::TrackMore::default()
             })
         }),

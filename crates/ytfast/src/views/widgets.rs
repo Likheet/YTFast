@@ -1257,11 +1257,15 @@ fn described(track: &Track, under: Under) -> String {
 }
 
 /// What a right-click on a song (or its ⋮ button) offers, in YouTube
-/// Music's words (measured): Play next, Add to queue, Start mix, Add to
-/// liked songs, Save to playlist, Remove from queue, Go to album, Go to
-/// artist, Share. (Download, Report and Stats for nerds are left out.)
-/// YouTube Music puts Start mix first; the owner wanted Play next there,
-/// and Start mix, which replaces the queue, below the queue's items.
+/// Music's words and order (read on the owner's account, 31 October
+/// 2026): Play next, Add to queue, Start mix, Save to library, Add to
+/// liked songs, Save to playlist, Remove from queue (or playlist), Go to
+/// album, Go to artist, View song credits, Share, Remove from history,
+/// Pin to Listen again, Not interested, Don't recommend artist, Dismiss
+/// queue. (Download and Report are left out.) YouTube Music puts Start mix
+/// first; the owner wanted Play next there, and Start mix, which replaces
+/// the queue, below the queue's items. The entries that need YouTube's own
+/// tokens show where the row brought them ([`App::menu_for`]).
 pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
     theme::menu(ui);
     let item = |ui: &mut egui::Ui, icon: Icon, text: &str, action: Action| {
@@ -1270,6 +1274,7 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
             ui.close();
         }
     };
+    let menu = app.menu_for(track);
     // A song YouTube no longer offers can only be taken out of a playlist
     // (and unliked, or added elsewhere).
     match place {
@@ -1305,6 +1310,28 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
             Action::Play(mix, Some(track.clone())),
         );
     }
+    if let Some(library) = menu.and_then(|m| m.library.as_ref()) {
+        let saved = app
+            .songs_saved
+            .get(&track.video_id)
+            .copied()
+            .unwrap_or(library.on);
+        let (icon, words) = if saved {
+            (Icon::SavedToLibrary, "Remove from library")
+        } else {
+            (Icon::Library, "Save to library")
+        };
+        item(
+            ui,
+            icon,
+            words,
+            Action::SaveSong {
+                video_id: track.video_id.clone(),
+                token: library.token(!saved).to_string(),
+                save: !saved,
+            },
+        );
+    }
     let liked = shown_like(app, track, place) == crate::app::LikeState::Liked;
     if liked {
         item(
@@ -1327,6 +1354,7 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
         "Save to playlist",
         Action::OpenDialog(crate::app::Dialog::SaveToPlaylist {
             video_ids: vec![track.video_id.clone()],
+            source: None,
         }),
     );
     if let Place::Queue(id) = place {
@@ -1369,14 +1397,12 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
             Action::Navigate(crate::backend::Route::browse(artist.clone(), None)),
         );
     }
-    // On Radar's page (not the player page over it): never suggested
-    // again.
-    if place == Place::Page && on_radar(app) {
+    if let Some(page) = menu.and_then(|m| m.credits.clone()) {
         item(
             ui,
-            Icon::NotInterested,
-            "Not interested",
-            Action::NotInterested(ytfast_core::radar::Unwanted::Song(track.clone())),
+            Icon::Credits,
+            "View song credits",
+            Action::ShowCredits(page),
         );
     }
     share(
@@ -1384,6 +1410,107 @@ pub fn song_menu(app: &App, ui: &mut egui::Ui, track: &Track, place: Place) {
         ui,
         format!("https://music.youtube.com/watch?v={}", track.video_id),
     );
+    // On History's own page: out of the account's history.
+    if place == Place::Page
+        && app.route == crate::backend::Route::History
+        && let Some(forget) = menu.and_then(|m| m.forget.as_ref())
+    {
+        item(
+            ui,
+            Icon::RemoveFromHistory,
+            "Remove from history",
+            Action::Hide {
+                key: track.video_id.clone(),
+                token: forget.token.clone(),
+                said: forget
+                    .said
+                    .clone()
+                    .unwrap_or_else(|| "Removed from history".into()),
+            },
+        );
+    }
+    if let Some(pin) = menu.and_then(|m| m.pin.as_ref()) {
+        pin_item(app, ui, &track.video_id, pin);
+    }
+    if place == Place::Page {
+        let unwanted = on_radar(app).then(|| ytfast_core::radar::Unwanted::Song(track.clone()));
+        dont_suggest(app, ui, track.video_id.clone(), menu, unwanted);
+    }
+    if let Place::Queue(_) = place {
+        item(
+            ui,
+            Icon::DismissQueue,
+            "Dismiss queue",
+            Action::DismissQueue,
+        );
+    }
+}
+
+/// "Pin to Listen again", or "Unpin from Listen again" for what is pinned
+/// (as chosen in this run, else as its menu said); `key` is what it is.
+fn pin_item(app: &App, ui: &mut egui::Ui, key: &str, pin: &ytfast_core::read::Toggle) {
+    let pinned = app.pinned.get(key).copied().unwrap_or(pin.on);
+    let (icon, words) = if pinned {
+        (Icon::Unpin, "Unpin from Listen again")
+    } else {
+        (Icon::Pin, "Pin to Listen again")
+    };
+    if theme::menu_item(ui, icon, words).clicked() {
+        app.act(Action::Pin {
+            key: key.to_string(),
+            token: pin.token(!pinned).to_string(),
+            pin: !pinned,
+        });
+        ui.close();
+    }
+}
+
+/// "Not interested" and "Don't recommend artist": on Radar's page,
+/// Radar's own (`unwanted`: what it never suggests again); elsewhere
+/// YouTube's, by the tokens its menu carries (Home's), which take `key`
+/// off the page.
+fn dont_suggest(
+    app: &App,
+    ui: &mut egui::Ui,
+    key: String,
+    menu: Option<&ytfast_core::read::Menu>,
+    unwanted: Option<ytfast_core::radar::Unwanted>,
+) {
+    let mut item = |icon: Icon, words: &str, action: Action| {
+        if theme::menu_item(ui, icon, words).clicked() {
+            app.act(action);
+            ui.close();
+        }
+    };
+    if on_radar(app) {
+        if let Some(what) = unwanted {
+            item(
+                Icon::NotInterested,
+                "Not interested",
+                Action::NotInterested(what),
+            );
+        }
+        return;
+    }
+    let hide = |feedback: &ytfast_core::read::Feedback, said: &str| Action::Hide {
+        key: key.clone(),
+        token: feedback.token.clone(),
+        said: feedback.said.clone().unwrap_or_else(|| said.to_string()),
+    };
+    if let Some(feedback) = menu.and_then(|m| m.not_interested.as_ref()) {
+        item(
+            Icon::NotInterested,
+            "Not interested",
+            hide(feedback, "Removed from your suggestions"),
+        );
+    }
+    if let Some(feedback) = menu.and_then(|m| m.not_artist.as_ref()) {
+        item(
+            Icon::NotRecommended,
+            "Don't recommend artist",
+            hide(feedback, "This artist won't be recommended"),
+        );
+    }
 }
 
 /// The Radar page is showing (not the player page over it).
@@ -1647,13 +1774,30 @@ pub fn card_with_text(app: &App, ui: &mut egui::Ui, card: &Card, size: f32, text
     }
 }
 
-/// What a right-click on an album or playlist offers, in YouTube Music's
-/// order and words (measured): Shuffle play, Start mix, Play next, Add to
-/// queue, Save album (or playlist) to library, Go to artist, Share. (Save
-/// to playlist, for a whole album, and Not interested are left out.)
+/// What a right-click on a card (or its ⋮) offers, in YouTube Music's
+/// words and order (read on the owner's account, 31 October 2026). A
+/// song's card: a song's menu. An album: Shuffle play, Start mix, Play
+/// next, Add to queue, Save album to library, Save to playlist, Go to
+/// artist, Share, Pin to Listen again, Not interested, Don't recommend
+/// artist. A playlist: the same, with Edit playlist and Delete playlist on
+/// the account's own (which are not saved to the library). An artist:
+/// Subscribe, Share, Pin to Listen again.
 pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
+    if matches!(
+        card.open,
+        Some(Target::Watch {
+            video_id: Some(_),
+            ..
+        })
+    ) && let Some(song) = card.song()
+    {
+        song_menu(app, ui, &song, Place::Page);
+        return;
+    }
     use crate::app::QueueMode;
     theme::menu(ui);
+    let menu = card.menu.as_deref();
+    let key = crate::app::card_key(card);
     let item = |ui: &mut egui::Ui, icon: Icon, text: &str, action: Action| {
         if theme::menu_item(ui, icon, text).clicked() {
             app.act(action);
@@ -1674,6 +1818,9 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
             ..
         })
     );
+    let own = playlist
+        .as_ref()
+        .is_some_and(|id| app.own_playlists().iter().any(|(own, _)| own == id));
     if let Some(id) = &playlist {
         item(
             ui,
@@ -1686,6 +1833,14 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
             playlist_id: Some(format!("RDAMPL{id}")),
         };
         item(ui, Icon::Mix, "Start mix", Action::Play(mix, None));
+        if own {
+            item(
+                ui,
+                Icon::Edit,
+                "Edit playlist",
+                Action::EditPlaylist(id.clone()),
+            );
+        }
         item(
             ui,
             Icon::PlayNext,
@@ -1700,7 +1855,6 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
         );
         // Mixes, Liked Music and the account's own playlists are not
         // saved to the library.
-        let own = app.own_playlists().iter().any(|(own, _)| own == id);
         if !own && !id.starts_with("RD") && id != "LM" && id != "SE" {
             // As chosen in this run; else what the Library shows is saved.
             let in_library = matches!(
@@ -1724,6 +1878,50 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
                 },
             );
         }
+        item(
+            ui,
+            Icon::SaveToPlaylist,
+            "Save to playlist",
+            Action::OpenDialog(crate::app::Dialog::SaveToPlaylist {
+                video_ids: Vec::new(),
+                source: Some(id.clone()),
+            }),
+        );
+    }
+    // An album's artist, from its menu (the card names none).
+    if album && let Some(artist) = menu.and_then(|m| m.artist.clone()) {
+        item(
+            ui,
+            Icon::Artist,
+            "Go to artist",
+            Action::Navigate(crate::backend::Route::browse(artist, None)),
+        );
+    }
+    // An artist's: subscribe or unsubscribe (as chosen in this run, else
+    // as its menu said).
+    if let (
+        Some(Target::Browse {
+            id,
+            kind: ytfast_core::read::PageKind::Artist,
+            ..
+        }),
+        Some(said),
+    ) = (&card.open, menu.and_then(|m| m.subscribed))
+    {
+        let subscribed = app.subscribed.get(id).copied().unwrap_or(said);
+        item(
+            ui,
+            Icon::Subscribe,
+            if subscribed {
+                "Unsubscribe"
+            } else {
+                "Subscribe"
+            },
+            Action::ToggleSubscribe {
+                channel_id: id.clone(),
+                subscribe: !subscribed,
+            },
+        );
     }
     let link = match &card.open {
         Some(Target::Browse { id, .. }) if id.starts_with("VL") => Some(format!(
@@ -1736,36 +1934,44 @@ pub fn card_menu(app: &App, ui: &mut egui::Ui, card: &Card) {
         Some(Target::Browse {
             id, params: None, ..
         }) => Some(format!("https://music.youtube.com/browse/{id}")),
-        _ => playlist.map(|id| format!("https://music.youtube.com/playlist?list={id}")),
+        _ => playlist
+            .as_ref()
+            .map(|id| format!("https://music.youtube.com/playlist?list={id}")),
     };
-    // On Radar's page: the artist, or the album or single, never
-    // suggested again.
-    if on_radar(app) {
-        use ytfast_core::radar::Unwanted;
-        let unwanted = match &card.open {
-            Some(Target::Browse {
-                id,
-                kind: ytfast_core::read::PageKind::Artist,
-                ..
-            }) => Some(Unwanted::Artist {
-                id: Some(id.clone()),
-                name: card.title.clone(),
-            }),
-            Some(Target::Browse { id, .. }) if album => Some(Unwanted::Release(id.clone())),
-            _ => None,
-        };
-        if let Some(what) = unwanted {
-            item(
-                ui,
-                Icon::NotInterested,
-                "Not interested",
-                Action::NotInterested(what),
-            );
-        }
-    }
     if let Some(link) = link {
         share(app, ui, link);
     }
+    if own && let Some(id) = &playlist {
+        item(
+            ui,
+            Icon::Delete,
+            "Delete playlist",
+            Action::OpenDialog(crate::app::Dialog::Delete {
+                playlist_id: id.clone(),
+                title: card.title.clone(),
+            }),
+        );
+    }
+    if let (Some(pin), Some(key)) = (menu.and_then(|m| m.pin.as_ref()), &key) {
+        pin_item(app, ui, key, pin);
+    }
+    // On Radar's page: the artist, or the album or single, never
+    // suggested again (Radar's own); elsewhere YouTube's, where its menu
+    // offers them (Home).
+    use ytfast_core::radar::Unwanted;
+    let unwanted = match &card.open {
+        Some(Target::Browse {
+            id,
+            kind: ytfast_core::read::PageKind::Artist,
+            ..
+        }) => Some(Unwanted::Artist {
+            id: Some(id.clone()),
+            name: card.title.clone(),
+        }),
+        Some(Target::Browse { id, .. }) if album => Some(Unwanted::Release(id.clone())),
+        _ => None,
+    };
+    dont_suggest(app, ui, key.unwrap_or_default(), menu, unwanted);
 }
 
 /// A card as a row (an album or artist in search results): a cover, the

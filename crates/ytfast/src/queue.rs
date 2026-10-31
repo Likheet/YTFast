@@ -32,7 +32,12 @@ pub fn fill_in(to: &mut Track, from: &Track) -> bool {
     if to.kind == TrackKind::Unknown {
         to.kind = from.kind.clone();
     }
-    to.more = to.more.take().or_else(|| from.more.clone());
+    match (&mut to.more, &from.more) {
+        // What its menu offers (YouTube's tokens), when its row brings it.
+        (Some(more), Some(from)) if more.menu.is_none() => more.menu.clone_from(&from.menu),
+        (None, Some(_)) => to.more.clone_from(&from.more),
+        _ => {}
+    }
     *to != before
 }
 

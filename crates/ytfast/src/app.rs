@@ -12,13 +12,13 @@ use ytfast_core::library::Privacy;
 use ytfast_core::playreport::PlayReport;
 use ytfast_core::radar;
 use ytfast_core::read::{
-    Item, Page, PlayerInfo, Section, SortOrder, Target, Track, TrackKind, VideoPair,
+    Card, Item, Page, PlayerInfo, Section, SortOrder, Target, Track, TrackKind, VideoPair,
 };
 use ytfast_core::station::{Reaction, Station};
 use ytfast_core::ytdlp::Browser;
 
 use crate::audio_thread::{Audio, Command, Status};
-use crate::backend::{Backend, Edit, Event, Request, Route};
+use crate::backend::{Backend, Change, Edit, Event, Request, Route};
 use crate::images::Images;
 use crate::queue::{Entry, Queue};
 use crate::views;
@@ -353,6 +353,8 @@ pub enum Dialog {
         description: String,
         privacy: Privacy,
         songs: Vec<String>,
+        /// Every song of this album or playlist goes in too.
+        source: Option<String>,
     },
     /// Editing one of the account's own playlists (YouTube Music's Edit
     /// playlist).
@@ -366,10 +368,18 @@ pub enum Dialog {
         playlist_id: String,
         title: String,
     },
-    /// "Save to playlist": the account's playlists, to add songs to one,
-    /// or a new playlist.
+    /// "Save to playlist": the account's playlists, to add songs to one
+    /// (and every song of `source`, an album or playlist), or a new
+    /// playlist.
     SaveToPlaylist {
         video_ids: Vec<String>,
+        source: Option<String>,
+    },
+    /// A song's credits ("View song credits"): their page, and them once
+    /// they arrive.
+    Credits {
+        page: String,
+        credits: Option<Result<ytfast_core::read::Credits, String>>,
     },
     /// An album's or playlist's whole description.
     Description {
@@ -480,9 +490,38 @@ pub enum Action {
         playlist_id: String,
         title: String,
         video_ids: Vec<String>,
+        source: Option<String>,
     },
     /// Any other change to the account.
     Edit(Edit),
+    /// Pins a song, album, playlist or artist (`key`: its ID) to Listen
+    /// again, or unpins it, by its menu's token.
+    Pin {
+        key: String,
+        token: String,
+        pin: bool,
+    },
+    /// Saves a song to the library, or removes it, by its menu's token.
+    SaveSong {
+        video_id: String,
+        token: String,
+        save: bool,
+    },
+    /// Takes a song or card (`key`) off the page showing, by its menu's
+    /// token (History's "Remove from history", Home's "Not interested"),
+    /// saying `said`.
+    Hide {
+        key: String,
+        token: String,
+        said: String,
+    },
+    /// "View song credits": the credits' page.
+    ShowCredits(String),
+    /// Up next's "Dismiss queue": the queue emptied, the music stopped.
+    DismissQueue,
+    /// A playlist card's "Edit playlist": its page opens, and the form with
+    /// it once loaded.
+    EditPlaylist(String),
     /// Ask for search suggestions (with nothing typed, the past searches).
     Suggest(String),
     /// The end of a search of one kind is in view: its next results.
@@ -605,6 +644,37 @@ const STATION_AHEAD: usize = 3;
 /// Songs played before YTFast asked for genres whose genre is asked for
 /// each time Radar is made (a day), the best liked first.
 const GENRES_A_DAY: usize = 12;
+/// The playing songs' menus kept ([`App::song_menus`]).
+const SONG_MENUS: usize = 32;
+
+/// What a card is known by, for its pin and for taking it off a page: the
+/// page it opens (an album, a playlist, an artist), else the song it plays.
+pub fn card_key(card: &Card) -> Option<String> {
+    match (&card.open, &card.play) {
+        (Some(Target::Browse { id, .. }), _) => Some(id.clone()),
+        (
+            Some(Target::Watch {
+                video_id: Some(id), ..
+            }),
+            _,
+        )
+        | (
+            _,
+            Some(Target::Watch {
+                video_id: Some(id), ..
+            }),
+        ) => Some(id.clone()),
+        _ => None,
+    }
+}
+
+/// What an item of a page is known by ([`card_key`], a song's ID).
+fn item_key(item: &Item) -> Option<String> {
+    match item {
+        Item::Track(track) => Some(track.video_id.clone()),
+        Item::Card(card) => card_key(card),
+    }
+}
 /// Heard this long (in seconds), a song is worth asking its genre for.
 const GENRE_AFTER: f64 = 30.0;
 /// What Radar says when its station has nothing new left.
@@ -836,6 +906,16 @@ pub struct App {
     /// Library saves and subscriptions changed in this run.
     pub saved: HashMap<String, bool>,
     pub subscribed: HashMap<String, bool>,
+    /// Pins to Listen again (by song or list) and songs saved to the
+    /// library, changed in this run: over what their menus said.
+    pub pinned: HashMap<String, bool>,
+    pub songs_saved: HashMap<String, bool>,
+    /// The playing songs' menus, from their details, for the player's menu
+    /// when the song came without one (at most [`SONG_MENUS`]).
+    pub song_menus: HashMap<String, Box<ytfast_core::read::Menu>>,
+    /// The playlist whose "Edit playlist" was chosen on its card: its form
+    /// opens once its page has loaded.
+    edit_on_open: Option<String>,
     pub dialog: RefCell<Option<Dialog>>,
     /// Search suggestions, for the text they were asked for.
     pub suggestions: (String, ytfast_core::read::Suggestions),
@@ -1159,6 +1239,10 @@ impl App {
             likes: HashMap::new(),
             saved: HashMap::new(),
             subscribed: HashMap::new(),
+            pinned: HashMap::new(),
+            songs_saved: HashMap::new(),
+            song_menus: HashMap::new(),
+            edit_on_open: None,
             dialog: RefCell::new(None),
             suggestions: (String::new(), Default::default()),
             selected: Vec::new(),
@@ -1343,6 +1427,45 @@ impl App {
             })) if header.editable => Some(id.trim_start_matches("VL").to_string()),
             _ => None,
         }
+    }
+
+    /// "Edit playlist" chosen on a playlist's card: once its page shows,
+    /// its form opens with its name, description and privacy (a card has
+    /// only its name). Another page shown first lets it go.
+    fn edit_when_open(&mut self) {
+        let Some(wanted) = self.edit_on_open.clone() else {
+            return;
+        };
+        if self.route != Route::browse(format!("VL{wanted}"), None) {
+            self.edit_on_open = None;
+            return;
+        }
+        let Some(Loadable::Ready(Page {
+            header: Some(header),
+            ..
+        })) = self.pages.get(&self.route)
+        else {
+            return;
+        };
+        self.edit_on_open = None;
+        if !header.editable {
+            return;
+        }
+        *self.dialog.get_mut() = Some(Dialog::Rename {
+            playlist_id: wanted,
+            name: header.title.clone(),
+            description: header.description.clone(),
+            privacy: Privacy::from_subtitle(&header.subtitle).unwrap_or_default(),
+        });
+        self.dialog_fresh.set(true);
+    }
+
+    /// What a song's menu offers that needs YouTube's tokens: its row's,
+    /// else what its details said while it played.
+    pub fn menu_for<'a>(&'a self, track: &'a Track) -> Option<&'a ytfast_core::read::Menu> {
+        track
+            .menu()
+            .or_else(|| self.song_menus.get(&track.video_id).map(|m| &**m))
     }
 
     /// Loads a playlist again, as YouTube now has it.
@@ -1876,6 +1999,22 @@ impl App {
                     // What the user just chose wins over a late answer.
                     self.likes.entry(video_id).or_insert(like);
                 }
+                Event::SongMenu(video_id, menu) => {
+                    if self.song_menus.len() >= SONG_MENUS {
+                        self.song_menus.clear();
+                    }
+                    self.song_menus.insert(video_id, menu);
+                }
+                Event::Credits(page, result) => {
+                    if let Some(Dialog::Credits {
+                        page: shown,
+                        credits,
+                    }) = self.dialog.get_mut()
+                        && *shown == page
+                    {
+                        *credits = Some(result);
+                    }
+                }
                 Event::EditFailed(change, message) => {
                     if !self.edit_answered(&change) {
                         // A newer change to the same thing is on its way.
@@ -1900,6 +2039,20 @@ impl App {
                         Edit::ForgetSearch { words, .. } => {
                             self.forgotten_searches.remove(&words.to_lowercase());
                         }
+                        Edit::Feedback { change, .. } => match change {
+                            Change::Pin { key, pin } => {
+                                self.pinned.insert(key.clone(), !pin);
+                            }
+                            Change::SaveSong { video_id, save } => {
+                                self.songs_saved.insert(video_id.clone(), !save);
+                            }
+                            // Back on the page, as YouTube has it.
+                            Change::Hide { route, .. } => {
+                                if self.pages.contains_key(route) {
+                                    self.refresh(route.clone());
+                                }
+                            }
+                        },
                         // Show the playlist as it really is.
                         Edit::RemoveFromPlaylist { playlist_id, .. }
                         | Edit::RenamePlaylist { playlist_id, .. } => {
@@ -1941,6 +2094,24 @@ impl App {
                         }
                         Edit::AddToPlaylist { playlist_id, .. } => {
                             self.reload_playlist(&playlist_id);
+                        }
+                        // Home's Listen again and Library > Songs show it
+                        // the next time they open (not under the user).
+                        Edit::Feedback {
+                            change: Change::Pin { .. },
+                            ..
+                        } => {
+                            if self.route != Route::Home {
+                                self.pages.remove(&Route::Home);
+                            }
+                        }
+                        Edit::Feedback {
+                            change: Change::SaveSong { .. },
+                            ..
+                        } => {
+                            if self.route != Route::LibrarySongs {
+                                self.pages.remove(&Route::LibrarySongs);
+                            }
                         }
                         // Taken: nothing to go back to any more. Liked
                         // Music shows the change the next time it opens
@@ -2080,6 +2251,8 @@ impl App {
             self.song_failed(&entry.track.title, failure.message, failure.song_only);
         }
         self.keep_ahead();
+        // A playlist's form asked for on its card, once its page is here.
+        self.edit_when_open();
     }
 
     // ---- Radar's station ----
@@ -3908,12 +4081,81 @@ impl App {
                 playlist_id,
                 title,
                 video_ids,
+                source,
             } => {
                 self.notify(format!("Added to {title}"));
                 self.send_edit(Edit::AddToPlaylist {
                     playlist_id,
                     video_ids,
+                    source,
                 });
+            }
+            Action::Pin { key, token, pin } => {
+                self.pinned.insert(key.clone(), pin);
+                self.notify(if pin {
+                    "Pinned to Listen again"
+                } else {
+                    "Unpinned from Listen again"
+                });
+                self.send_edit(Edit::Feedback {
+                    token,
+                    change: Change::Pin { key, pin },
+                });
+            }
+            Action::SaveSong {
+                video_id,
+                token,
+                save,
+            } => {
+                self.songs_saved.insert(video_id.clone(), save);
+                self.notify(if save {
+                    "Saved to your library"
+                } else {
+                    "Removed from your library"
+                });
+                self.send_edit(Edit::Feedback {
+                    token,
+                    change: Change::SaveSong { video_id, save },
+                });
+            }
+            Action::Hide { key, token, said } => {
+                let route = self.route.clone();
+                if let Some(Loadable::Ready(page)) = self.pages.get_mut(&route) {
+                    for section in &mut page.sections {
+                        section
+                            .items
+                            .retain(|item| item_key(item).as_deref() != Some(&key));
+                    }
+                    page.sections.retain(|section| !section.items.is_empty());
+                }
+                self.notify(said);
+                self.send_edit(Edit::Feedback {
+                    token,
+                    change: Change::Hide { route, key },
+                });
+            }
+            Action::ShowCredits(page) => {
+                *self.dialog.get_mut() = Some(Dialog::Credits {
+                    page: page.clone(),
+                    credits: None,
+                });
+                self.dialog_fresh.set(true);
+                self.backend.send(Request::Credits(page));
+            }
+            Action::DismissQueue => {
+                // As YouTube Music's: the queue goes, and the music with it.
+                self.finish_report();
+                self.audio.send(Command::Stop);
+                self.queue.clear();
+                self.playback = Playback::default();
+                self.station = None;
+                self.now_playing = false;
+            }
+            Action::EditPlaylist(playlist_id) => {
+                let bare = playlist_id.trim_start_matches("VL").to_string();
+                self.edit_on_open = Some(bare.clone());
+                self.apply(Action::Navigate(Route::browse(format!("VL{bare}"), None)));
+                self.edit_when_open();
             }
             Action::Edit(change) => self.send_edit(change),
             Action::Suggest(text) => {
@@ -4173,6 +4415,9 @@ impl App {
                 self.likes.clear();
                 self.saved.clear();
                 self.subscribed.clear();
+                self.pinned.clear();
+                self.songs_saved.clear();
+                self.song_menus.clear();
                 self.edits_in_flight.clear();
                 self.like_before.clear();
                 self.settings.browser = None;
@@ -5337,6 +5582,7 @@ mod tests {
             description: String::new(),
             privacy: ytfast_core::library::Privacy::Private,
             songs: Vec::new(),
+            source: None,
         }));
         h.app.notice = Some(("Added to the queue".into(), Instant::now()));
         draw(&mut h, None);
@@ -5691,6 +5937,7 @@ mod tests {
             .expect("Home is asked for");
         let card = |n: usize, i: usize| {
             Item::Card(Card {
+                menu: None,
                 title: format!("Album {n}-{i}"),
                 subtitle: "Album • Artist".into(),
                 thumbnail: Some(Thumb {
@@ -5885,6 +6132,7 @@ mod tests {
         let cards = (0..12)
             .map(|i| {
                 Item::Card(Card {
+                    menu: None,
                     title: format!("Card {i}"),
                     subtitle: "Album".into(),
                     // Albums' covers (without, they are Explore's buttons).
@@ -6372,6 +6620,7 @@ mod tests {
                     })
                     .expect("Home is asked for");
             let tile = ytfast_core::read::Card {
+                menu: None,
                 title: "Tile song".into(),
                 subtitle: String::new(),
                 thumbnail: Some(ytfast_core::read::Thumb {
@@ -8481,6 +8730,321 @@ mod tests {
             assert_eq!(asks_first(&action, 2), asks, "{action:?}");
             assert!(!asks_first(&action, 1), "one song lined up: {action:?}");
         }
+    }
+
+    /// A song whose row brought YouTube's own menu entries (made-up
+    /// tokens): pin, the library, its credits, and History's removal.
+    fn with_menu(id: &str) -> Track {
+        use ytfast_core::read::{Feedback, Menu, Toggle, TrackMore};
+        let menu = Menu {
+            pin: Some(Toggle::new(
+                false,
+                format!("pin-{id}"),
+                format!("unpin-{id}"),
+            )),
+            library: Some(Toggle::new(
+                false,
+                format!("save-{id}"),
+                format!("unsave-{id}"),
+            )),
+            credits: Some(format!("MPTC{id}")),
+            forget: Some(Feedback {
+                token: format!("forget-{id}"),
+                said: None,
+            }),
+            ..Menu::default()
+        };
+        Track {
+            more: Some(Box::new(TrackMore {
+                menu: Some(Box::new(menu)),
+                ..TrackMore::default()
+            })),
+            ..by(id, "Artist")
+        }
+    }
+
+    /// The feedback sent to YouTube since the last look: each token and
+    /// what it does.
+    fn feedback_sent(requests: Vec<Request>) -> Vec<(String, Change)> {
+        requests
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Edit(Edit::Feedback { token, change }) => Some((token, change)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A song's menu on History offers YouTube's own entries, in its
+    /// order: Save to library after Start mix, View song credits before
+    /// Share, then Remove from history and Pin to Listen again. Pinning
+    /// sends the pin's token, and the menu then offers to unpin; Remove
+    /// from history takes the row away, and a refusal brings it back.
+    #[test]
+    fn a_songs_menu_offers_youtubes_own_entries() {
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        w.h.act(Action::Navigate(Route::History));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("History is asked for");
+        let page = Page {
+            sections: vec![Section {
+                title: "Today".into(),
+                items: vec![Item::Track(with_menu("a")), Item::Track(with_menu("b"))],
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(Route::History, load, Ok(page)));
+        w.point(egui::pos2(5.0, 5.0));
+        w.settle();
+        let a = w.find("A", 0);
+        w.right_click(a.center());
+        let order = [
+            "Play next",
+            "Add to queue",
+            "Start mix",
+            "Save to library",
+            "Add to liked songs",
+            "Save to playlist",
+            "Go to artist",
+            "View song credits",
+            "Share",
+            "Remove from history",
+            "Pin to Listen again",
+        ];
+        let tops: Vec<f32> = order.iter().map(|name| w.find(name, 0).top()).collect();
+        assert!(
+            tops.windows(2).all(|t| t[0] < t[1]),
+            "{order:?} at {tops:?}"
+        );
+        let pin = w.find("Pin to Listen again", 0);
+        w.click(pin.center());
+        assert_eq!(
+            feedback_sent(w.h.requests()),
+            [(
+                "pin-a".to_string(),
+                Change::Pin {
+                    key: "a".into(),
+                    pin: true
+                }
+            )]
+        );
+        assert_eq!(w.h.app.pinned.get("a"), Some(&true));
+        w.settle();
+        let a = w.find("A", 0);
+        w.right_click(a.center());
+        assert!(w.shows("Unpin from Listen again"));
+        let forget = w.find("Remove from history", 0);
+        w.click(forget.center());
+        w.settle();
+        assert!(!w.shows("A"), "the row left History");
+        assert!(w.shows("B"));
+        let sent = feedback_sent(w.h.requests());
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "forget-a");
+        // Refused: History loads again, as YouTube has it.
+        w.h.answer(Event::EditFailed(
+            Edit::Feedback {
+                token: sent[0].0.clone(),
+                change: sent[0].1.clone(),
+            },
+            "no".into(),
+        ));
+        assert!(w.h.requests().iter().any(|r| matches!(
+            r,
+            Request::Page {
+                route: Route::History,
+                ..
+            }
+        )),);
+    }
+
+    /// A song saved to the library or pinned shows so at once; a refusal
+    /// puts back what was shown.
+    #[test]
+    fn a_refused_pin_or_save_is_undone() {
+        let mut h = Harness::new();
+        h.act(Action::SaveSong {
+            video_id: "a".into(),
+            token: "save-a".into(),
+            save: true,
+        });
+        h.act(Action::Pin {
+            key: "MPREb_x".into(),
+            token: "pin-x".into(),
+            pin: true,
+        });
+        assert_eq!(h.app.songs_saved.get("a"), Some(&true));
+        assert_eq!(h.app.pinned.get("MPREb_x"), Some(&true));
+        for (token, change) in feedback_sent(h.requests()) {
+            h.answer(Event::EditFailed(
+                Edit::Feedback { token, change },
+                "no".into(),
+            ));
+        }
+        assert_eq!(h.app.songs_saved.get("a"), Some(&false));
+        assert_eq!(h.app.pinned.get("MPREb_x"), Some(&false));
+    }
+
+    /// "View song credits" opens its dialog and asks for them; an answer
+    /// for other credits is dropped.
+    #[test]
+    fn credits_arrive_in_their_dialog() {
+        let mut h = Harness::new();
+        h.act(Action::ShowCredits("MPTCa".into()));
+        assert!(
+            h.requests()
+                .iter()
+                .any(|r| matches!(r, Request::Credits(page) if page == "MPTCa"))
+        );
+        let credits = ytfast_core::read::Credits {
+            title: "A".into(),
+            artists: "Artist".into(),
+            roles: vec![("Written by".into(), vec!["Someone".into()])],
+        };
+        h.answer(Event::Credits("MPTCb".into(), Ok(credits.clone())));
+        assert!(matches!(
+            &*h.app.dialog.borrow(),
+            Some(Dialog::Credits { credits: None, .. })
+        ));
+        h.answer(Event::Credits("MPTCa".into(), Ok(credits.clone())));
+        assert!(matches!(
+            &*h.app.dialog.borrow(),
+            Some(Dialog::Credits { credits: Some(Ok(c)), .. }) if *c == credits
+        ));
+    }
+
+    /// Up next's "Dismiss queue" empties the queue and stops the music.
+    #[test]
+    fn dismissing_the_queue_stops_the_music() {
+        let mut h = Harness::new();
+        h.play(&["a", "b", "c"]);
+        h.act(Action::DismissQueue);
+        assert!(h.app.queue.entries().is_empty());
+        assert!(h.app.playback.entry.is_none());
+        assert!(h.commands().iter().any(|c| matches!(c, Command::Stop)));
+    }
+
+    /// An album's or playlist's "Save to playlist" adds all of it, by its
+    /// ID (as YouTube's own does).
+    #[test]
+    fn a_whole_album_is_saved_to_a_playlist() {
+        let mut h = Harness::new();
+        h.act(Action::AddToPlaylist {
+            playlist_id: "PLmine".into(),
+            title: "Mine".into(),
+            video_ids: Vec::new(),
+            source: Some("OLAK5uy_album".into()),
+        });
+        assert!(h.requests().iter().any(|r| matches!(
+            r,
+            Request::Edit(Edit::AddToPlaylist { playlist_id, video_ids, source })
+                if playlist_id == "PLmine"
+                    && video_ids.is_empty()
+                    && source.as_deref() == Some("OLAK5uy_album")
+        )));
+    }
+
+    /// A playlist card's "Edit playlist" opens its page, then its form
+    /// with the page's name, description and privacy once it has loaded.
+    #[test]
+    fn a_playlist_cards_edit_opens_its_form() {
+        let mut h = Harness::new();
+        h.act(Action::EditPlaylist("PLmine".into()));
+        let route = Route::browse("VLPLmine".into(), None);
+        assert_eq!(h.app.route, route);
+        assert!(h.app.dialog.borrow().is_none(), "not before its page");
+        let load = h
+            .requests()
+            .into_iter()
+            .find_map(|r| match r {
+                Request::Page { load, .. } => Some(load),
+                _ => None,
+            })
+            .expect("its page is asked for");
+        let page = Page {
+            header: Some(ytfast_core::read::Header {
+                title: "Mine".into(),
+                description: "Songs I like".into(),
+                subtitle: "Playlist \u{2022} Private \u{2022} 2026".into(),
+                editable: true,
+                ..ytfast_core::read::Header::default()
+            }),
+            ..Page::default()
+        };
+        h.answer(Event::Page(route, load, Ok(page)));
+        assert!(matches!(
+            &*h.app.dialog.borrow(),
+            Some(Dialog::Rename { playlist_id, name, description, privacy })
+                if playlist_id == "PLmine"
+                    && name == "Mine"
+                    && description == "Songs I like"
+                    && *privacy == ytfast_core::library::Privacy::Private
+        ));
+    }
+
+    /// A song's card (on Home) offers a song's menu, with what its menu
+    /// brought: Play next first, Pin to Listen again.
+    #[test]
+    fn a_song_cards_menu_is_a_songs() {
+        use ytfast_core::read::{CardLook, Menu, Toggle};
+        let mut w = Window::new(crate::theme::Theme::YouTubeMusic);
+        // A page of shelves of its own (Home was asked for as the window
+        // opened).
+        let route = Route::browse("FEmusic_shelves".into(), None);
+        w.h.act(Action::Navigate(route.clone()));
+        let load =
+            w.h.requests()
+                .into_iter()
+                .find_map(|r| match r {
+                    Request::Page { load, .. } => Some(load),
+                    _ => None,
+                })
+                .expect("the page is asked for");
+        let tile = Card {
+            title: "Tile song".into(),
+            subtitle: "Song \u{2022} Artist".into(),
+            // (A card with no picture is drawn as a mood's chip.)
+            thumbnail: Some(ytfast_core::read::Thumb {
+                url: "https://example.com/tile.jpg".into(),
+                width: 226,
+                height: 226,
+            }),
+            round: false,
+            open: Some(Target::Watch {
+                video_id: Some("tile".into()),
+                playlist_id: None,
+            }),
+            play: None,
+            podcast: None,
+            look: CardLook::default(),
+            menu: Some(Box::new(Menu {
+                pin: Some(Toggle::new(false, "pin-tile", "unpin-tile")),
+                ..Menu::default()
+            })),
+        };
+        let page = Page {
+            sections: vec![Section {
+                title: "Listen again".into(),
+                items: vec![Item::Card(tile)],
+                shape: ytfast_core::read::Shape::Carousel,
+                ..Section::default()
+            }],
+            ..Page::default()
+        };
+        w.h.answer(Event::Page(route, load, Ok(page)));
+        w.point(egui::pos2(5.0, 5.0));
+        w.settle();
+        let tile = w.find("Tile song", 0);
+        w.right_click(tile.center());
+        assert!(w.shows("Play next") && w.shows("Add to queue"));
+        assert!(w.shows("Pin to Listen again"));
     }
 
     /// A song's menu offers Play next first, and Start mix after Add to

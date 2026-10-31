@@ -173,16 +173,21 @@ impl Session {
         Ok(())
     }
 
-    /// Makes a playlist, with `video_ids` in it (it can start empty).
-    /// Returns its ID, without `VL`.
+    /// Makes a playlist, with `video_ids` in it (it can start empty), and
+    /// every song of `source` (an album or playlist "saved to" the new
+    /// playlist). Returns its ID, without `VL`.
     pub async fn create_playlist(
         &self,
         title: &str,
         description: &str,
         privacy: Privacy,
         video_ids: &[String],
+        source: Option<&str>,
     ) -> Result<String, ApiError> {
-        let body = create_playlist_body(title, description, privacy, video_ids);
+        let mut body = create_playlist_body(title, description, privacy, video_ids);
+        if let Some(source) = source {
+            body["sourcePlaylistId"] = json!(source);
+        }
         let reply = self.call("playlist/create", body).await?;
         read::created_playlist_id(&reply)
             .ok_or_else(|| ApiError::Unexpected("no ID for the new playlist".into()))
@@ -221,18 +226,24 @@ impl Session {
         .await
     }
 
-    /// Adds songs to the end of one of the account's own playlists. A
-    /// song already in it is added again (YouTube Music's "Add anyway").
+    /// Adds songs to the end of one of the account's own playlists, and
+    /// every song of `source` (an album's or playlist's ID: its "Save to
+    /// playlist"). A song already in it is added again (YouTube Music's
+    /// "Add anyway").
     pub async fn add_to_playlist(
         &self,
         playlist_id: &str,
         video_ids: &[String],
+        source: Option<&str>,
     ) -> Result<(), ApiError> {
-        if video_ids.is_empty() {
+        let mut actions = add_actions(video_ids);
+        if let Some(source) = source {
+            actions.push(add_list_action(source));
+        }
+        if actions.is_empty() {
             return Ok(());
         }
-        self.edit_playlist(edit_body(playlist_id, add_actions(video_ids)))
-            .await
+        self.edit_playlist(edit_body(playlist_id, actions)).await
     }
 
     /// Takes rows out of one of the account's own playlists. Each item is
@@ -272,13 +283,28 @@ impl Session {
     /// history, by the token its suggestion carries
     /// ([`read::SuggestedWords::forget`]).
     pub async fn forget_search(&self, token: &str) -> Result<(), ApiError> {
+        self.feedback(token).await
+    }
+
+    /// Sends one of the tokens a menu carries ([`read::Menu`]): pins a
+    /// song or list to Listen again or unpins it, saves a song to the
+    /// library or removes it, takes a song out of History, or tells Home
+    /// not to suggest something.
+    pub async fn feedback(&self, token: &str) -> Result<(), ApiError> {
         let reply = self.call("feedback", feedback_body(token)).await?;
         match read::feedback_processed(&reply) {
             Some(false) => Err(ApiError::Unexpected(
-                "the search was not removed from the history".into(),
+                "YouTube did not take the change".into(),
             )),
             _ => Ok(()),
         }
+    }
+
+    /// A song's credits ("View song credits"), from their page
+    /// ([`read::Menu::credits`]).
+    pub async fn credits(&self, page: &str) -> Result<read::Credits, ApiError> {
+        let reply = self.call("browse", json!({ "browseId": page })).await?;
+        read::credits(&reply).ok_or_else(|| ApiError::Unexpected("no credits for the song".into()))
     }
 
     /// Search results of one kind only (songs, albums...): `params` as a
@@ -456,6 +482,12 @@ fn add_actions(video_ids: &[String]) -> Vec<Value> {
         .collect()
 }
 
+/// Every song of an album or playlist, as ytmusicapi's
+/// `add_playlist_items` adds a `source_playlist`.
+fn add_list_action(source: &str) -> Value {
+    json!({ "action": "ACTION_ADD_PLAYLIST", "addedFullListId": source })
+}
+
 fn remove_actions(items: &[(String, String)]) -> Vec<Value> {
     items
         .iter()
@@ -616,6 +648,11 @@ mod tests {
         // Nothing typed yet: the past searches.
         assert_eq!(suggestions_body(""), json!({"input": ""}));
         assert_eq!(feedback_body("t"), json!({"feedbackTokens": ["t"]}));
+        // A whole album or playlist added, as ytmusicapi adds a source.
+        assert_eq!(
+            add_list_action("OLAK5uy_a"),
+            json!({"action": "ACTION_ADD_PLAYLIST", "addedFullListId": "OLAK5uy_a"})
+        );
         assert_eq!(
             search_body("daft punk", SearchFilter::Songs.params()),
             json!({"query": "daft punk", "params": "EgWKAQIIAWoMEA4QChADEAQQCRAF"})

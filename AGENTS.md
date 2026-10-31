@@ -336,6 +336,26 @@ Paolino), as `audio.rs` does.
   undoes them (back to what was shown before) and says so. Disliking the
   song playing moves on to the next, as YouTube Music does (Settings,
   "Skip songs you dislike", on by default).
+- Menus are YouTube Music's, in its order (read on the owner's account,
+  31 October 2026; `widgets::song_menu`, `widgets::card_menu`). A song:
+  Play next, Add to queue, Start mix (the owner wanted Play next first),
+  Save to library, Add to liked songs, Save to playlist, Remove from
+  queue or playlist, Go to album, Go to artist, View song credits, Share,
+  Remove from history (History), Pin to Listen again, Not interested and
+  Don't recommend artist (Home), Dismiss queue (Up next: the queue goes,
+  and the music with it). A song's card offers a song's menu. An album or
+  playlist: Shuffle play, Start mix, Edit playlist (own), Play next, Add
+  to queue, Save to library, Save to playlist (the whole list, YouTube's
+  `ACTION_ADD_PLAYLIST`), Go to artist, Share, Delete playlist (own),
+  Pin, Not interested. An artist: Subscribe, Share, Pin. The entries
+  YouTube carries out by its own tokens (pin, a song in the library,
+  Remove from history, Not interested, Don't recommend artist) send the
+  token the row's menu holds (`read::Menu`, read with each row and card,
+  never saved; `Session::feedback`), show at once (`App.pinned`,
+  `App.songs_saved`; a row taken off its page) and are put back on a
+  refusal. Credits come from their page into a dialog (`read::credits`).
+  The playing song's menu comes from its details when its row brought
+  none (`App::song_menus`). Download and Report are left out.
 - Every song's row says whether the account likes it: a page's rows by
   their like button, Up next's by their menu's "Add to liked songs"
   (read on the owner's account, 11 October 2026: every row of Liked
@@ -1616,6 +1636,36 @@ page, Your stats this week and all time ("12 of these plays were on
 your other devices, from your YouTube history"), and Settings. Not yet
 tested: YTFast with the owner's account (their phone's History taken
 in, the genres and picks that follow), and the Mac.
+
+Then (31 October 2026, version 1.9.0), at the owner's word, angry that
+Radar played music videos and missed YouTube Music's menu entries.
+Radar takes songs only: a radio's music video whose song exists is
+taken as its song, videos with no song and fans' uploads are left out,
+and a song is not new when the listener knows its music video or a song
+of the same title and artist (above, Radar). And the menus are YouTube
+Music's (above, Menus), read first on the owner's account (only the
+entries' names, icons and order printed, and one song's credits page
+saved on the laptop; nothing changed): Pin to Listen again, a song's
+Save to library, View song credits, Remove from history, Home's Not
+interested and Don't recommend artist, Dismiss queue, a whole album or
+playlist saved to a playlist, an album's Go to artist, an artist's
+Subscribe, a playlist card's Edit and Delete; a song's card now offers
+a song's menu (it offered only Share). Tested on the owner's Windows
+laptop: the unit tests (438, among them a radio read as songs only, a
+video taken as its song with the same map, songs known by their video
+or name left out of the pool and the station; a menu's tokens, pin
+state, subscription and credits read; the History menu drawn in
+YouTube's order, pinning sending its token and then offering to unpin,
+Remove from history taking the row away and a refusal bringing History
+back, a refused pin or save undone, credits arriving in their dialog, a
+late answer dropped, Dismiss queue stopping the music, a whole album
+added by its ID, a playlist card's Edit opening the form once its page
+loads, and a song card offering a song's menu), and the demo off the
+screen (its screen asleep: the pictures and a right-click came from the
+app itself, with a hook not committed): History's song menu with every
+new entry in order, and the credits dialog. Not yet tested: any of it
+with the owner's account (YouTube taking the tokens: the pin showing on
+Home's Listen again, a song saved to the library), and the Mac.
 
 Where the look still differs from YouTube Music's (the rest is in
 `docs/look/gaps.md`): YouTube Sans is not shipped (Roboto Bold stands in);

@@ -7,8 +7,8 @@
 
 use ytfast_core::library::LibraryTab;
 use ytfast_core::read::{
-    Card, CardButton, CardLook, Header, Item, Page, PageKind, Rating, Section, Shape, SortMenu,
-    SortOrder, Target, Thumb, TopResult, Track, TrackKind, TrackMore,
+    Card, CardButton, CardLook, Feedback, Header, Item, Menu, Page, PageKind, Rating, Section,
+    Shape, SortMenu, SortOrder, Target, Thumb, Toggle, TopResult, Track, TrackKind, TrackMore,
 };
 
 use crate::backend::Route;
@@ -122,15 +122,33 @@ fn song(i: usize) -> Track {
         } else {
             Rating::Indifferent
         }),
-        // Some made-up songs are explicit, as real ones are.
-        more: (i % 5 == 1).then(|| {
-            Box::new(TrackMore {
-                counterpart: None,
-                segments: Vec::new(),
-                explicit: true,
-                ..TrackMore::default()
-            })
-        }),
+        // Some made-up songs are explicit, as real ones are; every one's
+        // menu has YouTube's own entries.
+        more: Some(Box::new(TrackMore {
+            explicit: i % 5 == 1,
+            menu: Some(Box::new(song_menu(i))),
+            ..TrackMore::default()
+        })),
+    }
+}
+
+/// A made-up song's menu: pin to Listen again (a few pinned), the library
+/// (its liked songs saved), its credits; the tokens made up.
+fn song_menu(i: usize) -> Menu {
+    let id = format!("demo{:07}", i % SONGS.len());
+    Menu {
+        pin: Some(Toggle::new(
+            i.is_multiple_of(7),
+            format!("pin-{id}"),
+            format!("unpin-{id}"),
+        )),
+        library: Some(Toggle::new(
+            liked_song(i),
+            format!("save-{id}"),
+            format!("unsave-{id}"),
+        )),
+        credits: Some(format!("MPTC{id}")),
+        ..Menu::default()
     }
 }
 
@@ -152,6 +170,7 @@ fn chart(from: usize, count: usize) -> Vec<Item> {
             let views = 40 - 3 * place;
             track.album = None;
             track.more = Some(Box::new(TrackMore {
+                menu: track.more.take().and_then(|more| more.menu),
                 counterpart: None,
                 segments: Vec::new(),
                 rank: Some((place + 1).to_string()),
@@ -167,6 +186,7 @@ fn chart(from: usize, count: usize) -> Vec<Item> {
 fn video(i: usize) -> Item {
     let track = song(i);
     Item::Card(Card {
+        menu: None,
         subtitle: format!("{} \u{2022} {}M views", track.artists, 2 + i % 9),
         title: track.title.clone(),
         thumbnail: track.thumbnail.clone(),
@@ -283,6 +303,7 @@ fn card(title: &str, subtitle: &str, kind: PageKind) -> Item {
     };
     let playable = matches!(kind, PageKind::Album | PageKind::Playlist);
     Item::Card(Card {
+        menu: None,
         title: title.into(),
         subtitle: subtitle.into(),
         // Moods and genres are buttons, without a picture.
@@ -506,10 +527,31 @@ fn unsorted(route: &Route) -> Page {
         Route::Browse { id, .. } => browse(id),
         Route::Search(query) => search(query),
         Route::SearchOnly(query, params) => search_only(query, params),
-        Route::LibrarySongs | Route::History => Page {
+        Route::LibrarySongs => Page {
             sort: None,
             header: None,
             sections: vec![section("", songs(3, 16))],
+        },
+        // History's rows can be taken out of it, as YouTube's.
+        Route::History => Page {
+            sort: None,
+            header: None,
+            sections: vec![section(
+                "",
+                songs(3, 16)
+                    .into_iter()
+                    .map(|item| match item {
+                        Item::Track(mut track) => {
+                            let token = format!("forget-{}", track.video_id);
+                            if let Some(menu) = track.more.as_mut().and_then(|m| m.menu.as_mut()) {
+                                menu.forget = Some(Feedback { token, said: None });
+                            }
+                            Item::Track(track)
+                        }
+                        other => other,
+                    })
+                    .collect(),
+            )],
         },
         Route::LibraryAlbums => Page {
             sort: None,
@@ -662,6 +704,28 @@ pub fn listening(now: u64) -> ytfast_core::radar::Listening {
         listening.rated(&song(i), rating, now.saturating_sub(days * 86_400 + 1_800));
     }
     listening
+}
+
+/// A made-up song's credits ("View song credits").
+pub fn credits(page: &str) -> ytfast_core::read::Credits {
+    let i = (seed(page) % SONGS.len() as u64) as usize;
+    let (title, artist, ..) = SONGS[i];
+    ytfast_core::read::Credits {
+        title: title.into(),
+        artists: artist.into(),
+        roles: vec![
+            ("Performed by".into(), vec![artist.into()]),
+            (
+                "Written by".into(),
+                vec![artist.into(), "Robin Vale".into(), "Kit Morrow".into()],
+            ),
+            ("Produced by".into(), vec!["Kit Morrow".into()]),
+            (
+                "Music metadata provided by".into(),
+                vec!["Demo Records".into()],
+            ),
+        ],
+    }
 }
 
 /// One of [`NEW_SONGS`], as a row gives it.
@@ -919,6 +983,7 @@ fn browse(id: &str) -> Page {
                 if let Item::Track(track) = item {
                     let plays = 9 + seed(&track.video_id) % 40 - row as u64;
                     track.more = Some(Box::new(TrackMore {
+                        menu: track.more.take().and_then(|more| more.menu),
                         counterpart: None,
                         segments: Vec::new(),
                         rank: None,
@@ -975,6 +1040,7 @@ fn browse(id: &str) -> Page {
                 if let Item::Track(track) = item {
                     track.duration_seconds = None;
                     track.more = Some(Box::new(TrackMore {
+                        menu: track.more.take().and_then(|more| more.menu),
                         counterpart: None,
                         segments: Vec::new(),
                         rank: None,
@@ -1313,6 +1379,7 @@ pub fn suggestions(text: &str) -> ytfast_core::read::Suggestions {
     {
         let mut track = song(i);
         track.more = Some(Box::new(TrackMore {
+            menu: track.more.take().and_then(|more| more.menu),
             counterpart: None,
             segments: Vec::new(),
             rank: None,

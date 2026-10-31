@@ -1958,6 +1958,7 @@ impl Radar {
                 .into_iter()
                 .map(|a| {
                     Item::Card(Card {
+                        menu: None,
                         title: a.name.clone(),
                         subtitle: a.subtitle.clone(),
                         thumbnail: a.thumbnail.clone(),
@@ -1985,6 +1986,7 @@ impl Radar {
             .take(CARDS_SHOWN)
             .map(|r| {
                 Item::Card(Card {
+                    menu: None,
                     title: r.title.clone(),
                     subtitle: format!("{} \u{2022} {}", r.kind, r.artist),
                     thumbnail: r.thumbnail.clone(),
@@ -2066,6 +2068,7 @@ mod tests {
 
     fn artist_card(name: &str) -> Item {
         Item::Card(Card {
+            menu: None,
             title: name.to_string(),
             subtitle: "1M monthly audience".into(),
             thumbnail: None,
@@ -2083,6 +2086,7 @@ mod tests {
 
     fn release_card(title: &str, subtitle: &str) -> Item {
         Item::Card(Card {
+            menu: None,
             title: title.to_string(),
             subtitle: subtitle.to_string(),
             thumbnail: None,
@@ -3027,6 +3031,7 @@ mod tests {
             serde_json::from_str(include_str!("../tests/fixtures/home_synthetic.json")).unwrap();
         assert!(AccountPlays::often_of(&crate::read::page(&home)).is_empty());
         let song_tile = Item::Card(Card {
+            menu: None,
             title: "Lemon".into(),
             subtitle: "Song \u{2022} Kenshi Yonezu".into(),
             thumbnail: None,
@@ -3040,6 +3045,7 @@ mod tests {
             look: CardLook::default(),
         });
         let episode_tile = Item::Card(Card {
+            menu: None,
             title: "Episode 12".into(),
             subtitle: "2d ago \u{2022} 15 min".into(),
             thumbnail: None,
